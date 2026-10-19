@@ -1,0 +1,17 @@
+{
+  "note": "Key walks in rytm-emu (research R0, mods/0021-ext/user-slots-research.md): measured 2026-10-10 on the base of tools/emu/us_base.sh (sections/led.img's project, track BD on BD PLASTIC). downs: the us1 list after the takeover (Task 7), re-measured by machine byte: DISABLE 14, U1..U5 15..19, 6-OP FM 20, JUNO 21, DIGIDRUM 22, PLAITS 23, DSP SAMPLE 24, DAISYSP 25 (the last); downs_sd: from track SD (SD selected by its pad; its list starts on its own machine, measured by machine byte 2026-10-10: U1 18, U3 20); downs_before_takeover: Tasks 2..6's builds; downs_kit1: from track BD on pattern A02 (BANK_A held + T2; kit 1, whose BD machine is 28), measured by machine byte 2026-10-11; sound_rights_to_u1: RIGHTs on the SOUND menu's MACHINE item (FUNC + FLTR) from BD PLASTIC to U1, by machine byte 2026-10-10 (the list's order); freshtrig_after_yes_M: BD pressed this long after the machine list's YES lands between us_defaults (word 0 written 30..35M after the YES) and kit_param_changed's drain (60..70M), measured on b2beef3's us1 2026-10-11 (there the live array then kept the old P9..P16)",
+  "list_open": ["SRC", "SRC"],
+  "list_confirm": "YES",
+  "step_M": 100,
+  "settle_M": 200,
+  "downs": {"u1": 15, "juno": 21, "plaits": 23, "daisysp": 25},
+  "downs_sd": {"u1": 18, "u3": 20},
+  "downs_kit1": {"u1": 11},
+  "downs_before_takeover": {"plaits": 18, "daisysp": 20},
+  "knob_enc": {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4, "F": 5, "G": 6, "H": 7},
+  "inp_nat_value": 16,
+  "menu_hold_M": 300,
+  "menu_downs_to_u1": 4,
+  "sound_rights_to_u1": 15,
+  "freshtrig_after_yes_M": [36, 40, 45, 50, 55, 60]
+}

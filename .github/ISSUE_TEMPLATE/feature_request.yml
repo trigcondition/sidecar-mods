@@ -1,0 +1,21 @@
+name: Feature request
+description: An idea for a machine, effect, page or tool.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What should it do, and on which platform (Sidecar Mini, Sidecar, the Rytm mods)?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The problem it solves or how you would use it.
+  - type: textarea
+    id: refs
+    attributes:
+      label: References
+      description: Links to similar features or open-source code (with its licence), if any.

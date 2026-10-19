@@ -1,0 +1,38 @@
+[mod]
+id      = "0025-sendfx-report"
+title   = "Sidecar send FX: the reporter (sound index 0 per track, FX words 0/29/38..41 to the USB host) and FX 38..41 storage"
+
+enabled = false
+
+# Its cave is 0002-euclid-accents' block at the head of `cave` (0x402cc920); 0021 excludes 0002,
+# so every user-slot build (us1, hwus1) leaves it free (its end, 0x402ccd7c.., holds 0021's .ust). Its detour is 0006-comp-preview's site
+# (0x401213a0, the audio interrupt right after fx_generate); 0021 excludes 0006 too.
+excludes = ["0002-euclid-accents", "0006-comp-preview"]
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+Every audio block, the words the trig loop last wrote to the per-track
+trig array (after p-locks, before the LFO): sound index 0 of tracks 1..12 and FX
+words 0, 29, 38..41 of the FX track. A changed track goes to the USB host as
+host-link SysEx F0 7D 52 54 20 01 <track> <hi lo>... F7 (rytm-teensy
+sim/protocol.py SENDFX), so a p-lock arrives in the block its trig plays; one
+track in turn is resent every `rr` blocks. Sent only when the OS's USB MIDI
+sender is safe from the interrupt (0021's tests). The values are the Sidecar's
+per-track SEND FX 1/2 levels (index 0 bits 8..14 / 1..7) and its send-FX knobs.
+Since M1b (2026-10-16) FX words 38..41 are stored: kit storage 0x816..0x81D (FX loader/saver detours) and
+p-lock types 42..45 / 46..49 on the FX track (hi / lo halves; lock loader, full rebuild and incremental save
+detours), dropped harmlessly by stock. Emulator only (rytm-emu, 2026-10-16).
+"""
+
+[sources]
+stub = "stub.s"      # generated from sfx.c by build.sh
+
+[params]
+rr   = 115   # a track resent every rr audio blocks (115: ~77 ms, all 13 in ~1 s; was 64: 23 messages a second); 0 never; 0..127
+maxb = 4     # at most maxb messages an audio block, 1..8
+
+[requires]
+shared = false
+symbols = ["trig_sound_array"]

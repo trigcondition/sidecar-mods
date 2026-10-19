@@ -1,0 +1,40 @@
+[mod]
+id      = "0014-hidden-machines"
+title   = "The 19 machines the firmware carries but never lists"
+
+enabled = false
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+Machines 34..52 - BT IMPROVED, the "2" variants of BD HARD, BD CLASSIC, SD HARD,
+SD CLASSIC, RS HARD, RS CLASSIC and BD FM, the one labelled RS FM 2, FUNC. GEN.,
+and a TEST machine per circuit - each have names, parameter records and an engine
+routine, and a voice mask of 0. The mask is the only gate: it decides both the
+machine list and whether the engine accepts the sound at load
+(re/subsystems/machines.md). This sets each one's home track and mask, so they
+appear in the machine list of the tracks below - by group (params): variants is
+BT IMPROVED (34) only since 2026-10-10, because 35..42 are 0021-ext's (U1..U5,
+6-OP FM, JUNO, DIGIDRUM; 0021 sets their masks itself); funcgen is FUNC. GEN. (43);
+test the nine TEST machines (44..52). 0021 needs funcgen=0 and test=0 (build.py
+refuses otherwise: their records are its page 2 and its list entries). 0020-dmach's
+machines (35, 38, 39, 41, 42) are no longer listed by variants (see its design.md).
+
+What they sound like, and whether any drives a voice in a way stock machines avoid,
+is not established. Experimental: off in the default build. A kit saved with one of
+these on a track does not play that track on a stock OS.
+"""
+
+[params]
+# Each group is its own patch, so a problem can be bisected by group.
+# variants: BT IMPROVED (BT) only - the "2" variants are 0021's (user slots, 6-OP FM, JUNO, DIGIDRUM)
+# funcgen:  FUNC. GEN., on every track like UT NOISE (0 in builds with 0021's user slots: their page-2 records include FUNC. GEN.'s 403..405)
+# test:     BD/SD/RS/BT/LT/MT/HH/CY/CB TEST, each on its own circuit
+# All off by default (2026-10-09, docs/REVIEW-2026-10-09.md): none of these
+# engines has run on hardware, so a build lists a group only when asked for it
+# (--param 0014-hidden-machines:variants=1 ...). Hardware builds start with all
+# three 0 (docs/FLASHING.md). 0021-ext needs test=0 (it takes TEST list entries).
+variants = 0
+funcgen  = 0
+test     = 0

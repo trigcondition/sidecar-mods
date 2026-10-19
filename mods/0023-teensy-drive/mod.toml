@@ -1,0 +1,35 @@
+[mod]
+id      = "0023-teensy-drive"
+title   = "TEENSY: the Teensy's SD card as a folder in the Rytm's own file browser"
+
+enabled = false
+
+# 0020-dmach and 0023 never share an image with 0021's DAISYSP builds that use
+# 0020's caves; 0023 uses cave16's rest after 0021.
+excludes = ["0020-dmach"]
+
+# linked with 0021-ext's slots (build.py refuses a mismatch; --param slots=N sets all).
+linked_params = ["slots"]
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+GLOBAL > SAMPLES (and the other +Drive browsers) list a folder TEENSY after the
++Drive's own. Milestone 1: a fixed test listing (two folders, five files) served
+by wrapping the filesystem's readdir, node resolve, exists and the two size
+functions for ids 0x7E......; the +Drive's own entries untouched. Later: the
+Teensy's real listings over SysEx, and LOAD TO PROJ adding to a Teensy pool.
+Reads only; writes inside TEENSY refused (milestone 4). Emulator only (rytm-emu, 2026-10-08).
+"""
+
+[sources]
+stub = "stub.s"      # generated from teensy_drive.c by build.sh
+
+[requires]
+shared = false
+symbols = []
+
+[params]
+# slots: 1 is the 12 B mailbox with td_pool_tab for 0021's user slots; 0 (default): c127fe8's 8 B one.
+slots = 0

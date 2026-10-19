@@ -1,0 +1,46 @@
+[mod]
+id      = "0022-looper"
+title   = "Looper mode: TRK + REC, pads as clip slots for an Overbridge host's master looper"
+
+enabled = false
+
+# linked with 0021-ext's slots (build.py refuses a mismatch; --param slots=N sets all).
+linked_params = ["slots"]
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+TRK + REC toggles looper mode. In it, the 12 pads are clip slots (UP/DOWN pages
+of 12) and their presses go to the USB host as SysEx (F0 7D 52 54 06 slot down F7;
+mode and page: 05 on page) instead of the Rytm; with TRK held the pads keep their
+stock action. The host (a Teensy, rytm-teensy) records the master out and loops
+it, quantised to bars from the Rytm's MIDI clock. Hooks the UI loop's call of
+key_dispatch. Emulator only (rytm-emu, 2026-10-08).
+"""
+
+[sources]
+stub = "stub.s"      # generated from looper.c by build.sh
+
+[requires]
+shared = false
+symbols = []
+
+[params]
+# slots: 1 passes 0021's user slots' SysEx (1A..1D) to its mailbox; 0 (default): c127fe8's router (15..17).
+slots = 0
+# keys: 1 (default) hooks TRK + REC, the pads, the panel writer and the LED selector (looper mode).
+# 0: only the SysEx router (host -> Rytm for 0021 and 0023: 0E, 14, 15..1D, and 07/08), no key,
+# pad or LED hook - the looper is unreachable and [YES]/key_dispatch is stock (user, 2026-10-15:
+# the looper needs another key combo).
+keys = 1
+# sfx: 1 (needs slots = 1) also passes SENDFX NAMES/STATE/LABELS (21, 22, 24) to 0029-sendfx-ui's mailbox (0x401b9e54,
+# cave23), and the looper's reports never wait on USB (a try-lock of the MIDI mutex, as 0026);
+# 0 (default): the router byte for byte as before.
+sfx = 0
+# rui: 1 (needs sfx = 1) also passes the remote UI's 0x30..0x3F to 0026-remote-ui's mailbox (0x401b9e5c, cave23);
+# 0 (default): the router byte for byte as before.
+rui = 0
+# fxin: 1 (needs rui = 1) also takes FX IN (26) for 0030-fx-in: writes 0030's switch in cave23's last 6 B
+# (0x401b9e64 'FXI1' / 'FXI0', 0x401b9e68 the request count); 0 (default): the router byte for byte as before.
+fxin = 0

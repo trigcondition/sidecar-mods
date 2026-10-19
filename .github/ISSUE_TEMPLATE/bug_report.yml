@@ -1,0 +1,37 @@
+name: Bug report
+description: Something does not work as the documentation says.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. Please do not attach Elektron firmware files (.syx), memory dumps or anything extracted from the Rytm's OS: they cannot be published here.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Sidecar version (shown on the SYSTEM page or the web console), the Rytm build (e.g. rui1027d), and the platform.
+      placeholder: "Sidecar 0.1.0, rui1027d, Sidecar Mini (Teensy 4.1, no PSRAM)"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Serial or web console output, photos of the Rytm's screen. Remove anything personal (Wi-Fi names, passwords).

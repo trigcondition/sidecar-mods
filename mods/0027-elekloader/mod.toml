@@ -1,0 +1,29 @@
+[mod]
+id      = "0027-elekloader"
+title   = "elekloader: core-ar2 (boot copier + hook bus) and the 128 KB DDR area for mod code"
+
+enabled = false
+
+# core-ar2 hooks the UI loop's key dispatch call (0x400a47cc) for ev_key; 0022's keys=1
+# patches the same call's operand (looper_key). Use ev_key instead (design.md).
+excludes_params = ["0022-looper:keys"]
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+Builds the image through elekloader (vendor/elekloader, GPL-2.0-or-later, pinned): build.py
+applies every other mod's caves, detours and patches as before, then hands the result to
+elekloader as one format-2 mod (each changed run a site with its stock bytes) together with
+the code of the mods marked area = "elek", and elekloader links that code into
+0x47BE0000-0x47C00000, appends its core-ar2 boot copier and repacks. core-ar2 0.1 itself
+is hardware-verified by elekloader (Rytm 1.73, 2026-10-11); this combination is emulator
+only. design.md.
+"""
+
+# elekloader core this mod pulls in (vendor/elekloader/mods/<core>), and its expected id
+[elek]
+core = "core-ar2"
+
+[requires]
+shared = false

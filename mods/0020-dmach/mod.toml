@@ -1,0 +1,51 @@
+[mod]
+id      = "0020-dmach"
+title   = "Digital machines: FM4, EFM, FMBD, GND and SWAV on hidden machines 35, 42, 41, 39 and 38"
+
+enabled = false
+
+# build.py prints this when 0020 is in an image (2026-10-11)
+warning = "0014's variants no longer list 0020's machines (35, 38, 39, 41, 42 keep voice mask 0: unlisted, refused at sound load) - see design.md"
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+Machine 42 (hidden; "S2 FM", listed on BD, SD and RS/CP by 0014-hidden-machines'
+variants gate) becomes a digital FM drum. Its engine routine renders a sine
+carrier phase-modulated by a sine modulator (after Mutable Instruments Braids'
+RenderFm, MIT) into the voice's digital-layer buffer A, 32 samples a block, which
+voice_output_mix sends to the voice's own DAC channel: so the voice's analog
+filter, overdrive and amp shape it. The analog oscillators are muted (LEVEL CVs 0),
+buffer B and the sample gain zeroed.
+
+Parameters, by machine 42's names: TUN pitch (+-32 semitones around the trig's
+note), FMA modulation depth (up to about one cycle), FMT modulator ratio (16
+steps, 0.5 to 16), DEC amp decay and FMD modulation decay (4 ms to about 8 s),
+NOD/NOL a noise burst's decay and level, LEV level. State lives in the voice's
+own 32-byte block at 0x8000fef8 + 32v (the firmware zeroes it on a trig), so
+there is no RAM claim.
+
+Machine 35 (BD HARD 2) becomes FM4, a four-operator FM voice with eight
+algorithms, renamed with its own knob names, ranges and defaults (design.md).
+
+Emulator only so far (rytm-emu, 2026-10-06/07): EFM about 116 instructions a
+sample, FM4 about 155.
+
+Stale since 2026-10-10: 0014's variants group lists only BT IMPROVED now (35..42
+went to 0021-ext, which excludes 0020), so a 0020 build has its machines' masks at
+0 - unlisted, and refused at sound load - until 0020 sets them itself (measured:
+the image's masks for 35, 38, 39, 41, 42 are 0000 with variants=1).
+"""
+
+[sources]
+stub = "stub.s"
+
+[requires]
+shared = false
+symbols = []
+
+[params]
+# 1 = FM4 renders at 24 kHz and interpolates to 48 kHz: about half the CPU, less
+# top end (after DT-FM). 0 = full rate.
+fm4_half = 0

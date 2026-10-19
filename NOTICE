@@ -1,0 +1,46 @@
+Sidecar | Expander Rytm mods - notices
+======================================
+
+Copyright (c) 2026 trigcondition and contributors.
+
+Unofficial software. Not affiliated with, endorsed by or supported by Elektron
+Music Machines. "Analog Rytm" and "Overbridge" are trademarks of their owner and
+are used only to say what this software works with.
+
+Licence of this repository
+--------------------------
+The patch sources, tools and documentation here are licensed under the GNU
+General Public License, version 2 or (at your option) any later version
+(GPL-2.0-or-later): LICENSE.
+
+No firmware
+-----------
+No Elektron firmware, and nothing extracted from it, is in this repository:
+no .syx, no sections, no disassembly listings or code blocks copied from the
+image (a detour re-emits the one or two instructions it displaces, written as
+assembly source, as any patch must). You supply
+your own stock OS file (stock/SHA256SUMS names the one the build is pinned to);
+every build starts from it. Addresses in re/ and mods/ document where a patch
+goes in that image; they are facts about it, not part of it. The registry's
+guards hold the stock bytes they expect only as length + SHA-256, and a patch
+that copies a stock record names its address (replace_from): the build reads
+both from your image (tools/hash_expect.py).
+
+Mods 0002-euclid-accents and 0003-velocity-humanise (older experiments, not in
+any Sidecar release) are not published: 0002's accent icons were made from the
+stock glyph bitmaps.
+
+Third-party code
+----------------
+Not vendored here; `make setup` clones each at a pinned commit into vendor/
+(git-ignored):
+
+  elektron-firmware-tool   MIT, Copyright (c) 2026 Marcel Bierling
+                           https://github.com/mischa85/elektron-firmware-tool
+  elekloader               GPL-2.0-or-later, Copyright (C) 2026 irpina and
+                           contributors (with code from digikit, GPL-2.0-or-later)
+                           https://github.com/irpina/elekloader
+                           (used by builds with 0027-elekloader)
+
+The Python packages in requirements.txt are installed from PyPI under their own
+licences.

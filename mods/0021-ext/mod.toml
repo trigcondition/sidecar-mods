@@ -1,0 +1,73 @@
+[mod]
+id      = "0021-ext"
+title   = "PLAITS and DAISYSP: external voice machines on every track, for an Overbridge host (a Teensy)"
+
+enabled = false
+
+# 0020-dmach replaces the same page-2 lookups (0x4003795a, 0x4003793c,
+# 0x40007028); 0002-euclid-accents detours param_value_text's entry
+# (0x400a85e0), which 0021 patches to reach ext_pvt: never in one image.
+# 0006-comp-preview and 0013-voice-dac: their caves (cave4, cave9, cave3, cave5) hold the user slots (R6, the user's decision of 2026-10-10).
+# 0009-main-rms: its cave (cave7's head) holds the machine choice's hooks (.us5, Task 11 review; the user's decision of 2026-10-10).
+# 0004-lfo-rnd: it packs its settings into sound index 0, which held the user slots' sound tag until 2026-10-16 and is
+# now the Sidecar's SEND FX 1/2 (rytm-teensy 2026-10-16-sidecar-send-fx-storage.md) (sound-tag-research.md;
+# the user's decision of 2026-10-10), and its cave2 holds the tag's code (.us6).
+# 0003-velocity-humanise: it needs 0002 (its stub calls 0002's code), so with 0021 it would build without
+# euclid's accents and lose them silently; refused outright (review 2026-10-11, MEDIUM 3).
+excludes = ["0020-dmach", "0002-euclid-accents", "0003-velocity-humanise", "0006-comp-preview", "0013-voice-dac", "0009-main-rms", "0004-lfo-rnd", "0010-kit-ab"]
+# The user slots take over FUNC. GEN.'s records 403..405 and LT/CB TEST's 438, 457..460 (page 2's
+# shared records): never with 0014 listing those machines (build.py check_param_excludes).
+excludes_params = ["0014-hidden-machines:funcgen", "0014-hidden-machines:test"]
+# slots: 0022 (its router passes the slots' SysEx) and 0023 (the 12 B mailbox, td_pool_tab) gate their
+# parts on their own `slots`; build.py refuses an image where they differ (--param slots=N sets all three).
+linked_params = ["slots"]
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+Machine 44 (BD TEST, hidden) becomes PLAITS, machine 51 (CY TEST) DAISYSP and
+machine 45 (SD TEST) DSP SAMPLE (a sample ringing DaisySP), all listed on every
+track; the host plays them with Plaits and with DaisySP's
+physical models (rytm-teensy). DAISYSP's reports flag the voice byte 0x10. Its
+engine, ext_render, runs the stock DISABLE machine's (27): the voice's own analog source stays
+silent, while the voice's Overbridge input (host -> Rytm, one channel per voice,
+mixed into the voice's digital layer by voice_output_mix before the analog filter)
+plays through the voice's filter, overdrive and amp whenever the voice is
+triggered. It reports each trig with P1..P8 (p-locks and LFO included), and
+P1..P8 when they change, to the USB host as SysEx (F0 7D 52 54 04/03 ...): the
+sequencer sends no MIDI notes. Its knobs also carry the standard machine-parameter
+CC 16..23 and NRPN 1:0..7. Needs 0014-hidden-machines built with test=0
+(this mod takes BD TEST's and CY TEST's list entries). Emulator only (rytm-emu, 2026-10-07).
+
+User slots U1..U5 (2026-10-10/11; only with the build param slots=1, default 0 = the
+pre-slot image of c127fe8, byte for byte): machines 35..39 on every track, named, labelled
+and texted by the Teensy at runtime (rytm-teensy sim/protocol.py 19..1E); five items
+in the track menu assign them. An explicit choice (machine list YES, the SOUND
+menu's MACHINE step, a slot-menu assign) gives the plugin's defaults and tags the
+sound with its fingerprint (sound slot 47 / live +0x6e since 2026-10-16; sound index 0 is the
+Sidecar's SEND FX 1/2); a sound tagged for another plugin is
+silent on the Teensy and shows !NAME. Needs 0014 with funcgen=0 and test=0;
+excludes 0002, 0003, 0004, 0006, 0009, 0013 and 0020 (caves, hooks, sound index 0).
+Tested in rytm-emu and with the real Teensy over the bridge; never on a Rytm
+(design.md, "User slots").
+"""
+
+[sources]
+stub = "stub.s"      # generated from ext.c by build.sh
+
+[params]
+# diag: DSP SAMPLE's SMPL knob C is the read-only diagnostic (DGN, for the
+# hardware bring-up stages, docs/FLASHING.md); 0 (default): it is MOD, the
+# host's sample playback mode (rytm-teensy docs/psram.md).
+diag = 0
+# slots: the user slots U1..U5 (machines 35..39, the slot menu, the sound tag; everything gated on
+# `slots` in the registry and EXT_SLOTS in ext.c). 0 (default): the pre-slot image - with the same
+# mods and params, byte-identical to c127fe8's (the build reviewed and emulator-tested 2026-10-09).
+# Default 0 so that no hardware command gains the user slots without asking for them (FLASHING.md:
+# the hardware builds say slots=0, the user-slot builds us1 / hwus1 slots=1).
+slots = 0
+
+[requires]
+shared = false
+symbols = []

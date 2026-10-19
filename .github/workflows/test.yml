@@ -1,0 +1,36 @@
+# The required status check "test": the build tools' unit tests and the calibration self-tests, which need no stock
+# firmware and no hardware, and the check that the registry holds no stock bytes (tools/hash_expect.py --check).
+# A full build needs your own stock .syx, so it is not run here.
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: System libraries (PortAudio, ALSA headers for python-rtmidi)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libportaudio2 libasound2-dev
+      - name: Python packages
+        run: pip install -r requirements.txt
+      - name: Registry holds no stock bytes
+        run: python tools/hash_expect.py --check
+      - name: Build tool tests
+        run: |
+          python tools/test_build_excludes.py
+          python tools/test_layout.py
+          python tools/test_cavescan.py
+      - name: Calibration self-tests (mod 0006)
+        run: |
+          python tools/comp/calib_tables.py --check
+          python tools/comp/calframes_selftest.py
+          python tools/comp/verify_selftest.py > /dev/null && echo "verify: PASS"
+          python tools/comp/preflight_selftest.py

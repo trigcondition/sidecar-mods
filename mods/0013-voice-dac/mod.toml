@@ -1,0 +1,114 @@
+[mod]
+id      = "0013-voice-dac"
+title   = "Voices to MAIN through the DAC, with a per-sound high-pass"
+
+enabled = true
+
+# cave9 is one of the pools 0011's fill covers; the two never share an image.
+excludes = ["0011-batch-probe"]
+
+# re-only | built | hardware-verified | retracted
+status  = "hardware-verified"
+
+summary = """
+All eight voices leave the analog main bus and reach it again through the DAC,
+panned and summed on the ColdFire: the groundwork for processing a voice after
+its analog filter, such as a digital high-pass.
+
+The route mask store in the audio interrupt sets every voice's main-disable bit.
+After the receive buffer fills, each voice slot - the voice after its analog
+filter and amp, before pan - is split by the pan of its VCA words, as 0006 does,
+and the two sums are added to the PRE return pair of the output ring, which
+enters the analog mix ahead of the master distortion and compressor. A voice
+whose track stock has off the main bus stays out of the sum. The cost is fixed
+per block; nothing stands aside.
+
+Each voice is high-passed first, a bilinear one-pole (6 dB/oct, exactly -3 dB
+at the cutoff and flat above it), at its track's HPF: a
+knob, top left, on a second FILTER page, HIGH-PASS, reached by pressing
+FILTER again while DAC SUM is on. OFF, then 48 steps from 20 Hz to 1 kHz. The
+value is kept in the live sound's spare bytes and saved in the stored record's
+spare slot 42 (sound-storage.md); a tick in the UI's idle routine copies each
+track's into the table the audio interrupt reads.
+
+DAC SUM, the last item of AUDIO ROUTING, switches it at run time. OFF is
+stock's routing and no sum. It is kept with the project's globals, beside the
+routing it overrides: stored bytes +12 (tag) and +13 of each of the four
+projectGlobalsStorage_v2_t records, which stock's load and save never touch.
+Each record keeps its own value; the UI's idle tick follows the active one. A
+record saved without the tag loads as OFF. The item is built
+after USB TO MAIN with USB OUT's sequence and managers; its value draws as ON
+or OFF and changes with the value controls, up for ON. Switching clicks once:
+the analog bus changes at once, the DAC path 2.58 ms later.
+
+Hardware, 2026-09-28, the HPF control, with the shipping mods: the HIGH-PASS
+page shows only while DAC SUM is on, the knob and its popup work, each track
+keeps its own value, and 0004's LFO RND and 0008's FRQ popup are unaffected.
+The value survives kit save and reload, another kit loaded and back, a
+pattern change to another kit and back, NO + PLAY kit reload, the sound pool,
+sound copy/paste and a power cycle; an untouched sound reads OFF. Muted tracks
+go silent with DAC SUM on as with it off. DAC SUM survives power cycles, on
+and off, without a project save.
+
+Headroom, 2026-09-28, the timing build's peak and clip counters over A01-A16
+and B01-B05 with DAC SUM on and every HPF off (build/mix/20260928_145359,
+tools/voice_dac_headroom.py): the DAC sum, PRE returns included, peaked at
+-12.3 dBFS at most (A16; -21.6 at least, A09), and no side-frame reached full
+scale on any pattern.
+
+The filter skips a pair of slots whose HPFs are both OFF, keeping its state on
+the signal so turning an HPF up does not click (by ear, 2026-09-28). From the
+profile, that takes the stub from about 3.2% of a block to about 1.6% with no
+HPF engaged, about 0.4% a pair engaged; not measured since. The route byte's only other writers
+are analog circuit calibration's, which only ever take voices off the bus
+(compressor-hardware.md), so nothing puts the analog path back under the DAC
+path.
+
+Hardware, 2026-09-28, before the switch: the voices sounded right, the pan split
+matched stock within 0.01 per slot over USB, the latency was 2.58 ms and the
+polarity was inverted, since fixed. K and the slot trims were then set from
+A/Bs on and off: slots 0-3 and 5 match the analog path within 0.1 dB; slot 6's
+trim was corrected from the same measurement and not measured again.
+
+Known limits: the voices reach MAIN 2.58 ms later than they would through the
+analog bus. They share the PRE pair with the delay and reverb returns and the
+PRE-FX audio input, and are clamped at its full scale (about 12 dB above the
+loudest pattern measured). Individual outputs are unaffected, and carry the
+voice before the high-pass. The HPF cannot be p-locked or reached over MIDI:
+it lives outside the sound's 42 parameters. The slot 4 and 7 trims rest on one
+pattern each. With DAC SUM on the USB voice channels carry the filtered voices.
+"""
+
+[sources]
+stub = "stub.s"
+
+[params]
+# K, Q15: a voice slot's gain into the PRE pair at hard pan. 11190 is 0.341:
+# 10150 (0.310, inferred from 0006's calibration) read 0.85 dB low against the
+# analog path on slots 0-3 and 5, DAC SUM on against off in one session over
+# USB, A02 and A04 (build/mix/20260928_113815, _113939), 2026-09-28.
+k = 11190
+# 1 streams voice_sum's run and the interval between interrupts, DMA timer 0
+# ticks, on USB channel 10 in place of voice slot 7, for
+# tools/voice_dac_timing.py; the device's audio is untouched, slot 7 being
+# restored before the sum. The words do come back into MAIN if the Mac loops
+# the Rytm's USB audio back to it: MAIN reads hot and clicks at about 27 Hz, the
+# rate stock alternates its USB paths, until USB is unplugged (2026-09-28).
+# Measured
+# with it, DAC SUM on, hpf 150, all eight voices: 4.79% of a block (median),
+# 5.60% p99; 5.59% before the filter ran a slot at a time. Keep at 0 to ship.
+timing = 0
+# With timing: 1 makes the compressor's MUP integer part (CC 81) a stage
+# selector at run time, bit 0 skipping the filter pass, bit 1 the sum and
+# output pass, and bit 2 filtering a slot at a time instead of in pairs, for
+# tools/voice_dac_timing.py --prof. Keep at 0 to ship.
+prof = 0
+# 1 shows, in place of DAC SUM's ON/OFF, how often DAC SUM's project load and
+# save hooks have run since power-on and the two stored bytes the last load
+# found: "L<loads> S<saves> <tag><on>". For tracing its persistence. Keep at 0.
+dbg = 0
+
+[requires]
+shared = true
+symbols = ["mem_new", "std_string_from_cstr", "std_string_dtor", "text_draw",
+           "project_singleton", "track_index_of"]

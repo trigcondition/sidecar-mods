@@ -1,0 +1,37 @@
+[mod]
+id      = "0029-sendfx-ui"
+title   = "Sidecar send FX pages: AMPLITUDE 2 (SEND FX 1/2 per track) and SEND FX 1/2 (TYPE + P1..P5) behind DELAY / REVERB"
+
+enabled = false
+
+# code in elekloader's DDR area (needs 0027-elekloader)
+area    = "elek"
+
+# 0004-lfo-rnd: the same page_info / page_get_value / page-cycle sites and page id 12 (0021 excludes it too).
+# 0013-voice-dac: page id 13 (its FILTER page 2).
+excludes = ["0004-lfo-rnd", "0013-voice-dac"]
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+A second press of AMP opens AMPLITUDE 2 with SFX1 / SFX2, the track's SEND FX 1 / 2 levels in
+sound index 0 (hi / lo half); on the FX track a second DELAY (SRC) press opens SEND FX 1 and a
+second REVERB (SMPL) press SEND FX 2: TYPE + P1..P5 in FX words 29/38/39 and 0/40/41 (hi / lo
+halves; the mapping of rytm-teensy sim/protocol.py). Values are stored in the kit and p-locked
+through the stock paths (parameter records 14..27 given a real container index; the parameter
+sets' read / write / lock entries wrapped so two knobs share a word); TYPE and P1 are kit-only.
+TYPE shows the Sidecar's names (host-link 21) and !NAME for a missing effect (22); P1 is ROUT
+(PRE 0..63 / POST 64..127); P2..P5 take the Sidecar's per-TYPE labels and zone names (24), else
+P2..P5 and numbers. The ASK never waits on USB (try-lock). Needs
+0025-sendfx-report (FX 38..41 storage) and 0022 sfx=1 for the names. Emulator only. design.md.
+"""
+
+[sources]
+stub = "stub.s"      # generated from sfu.c by build.sh
+
+[elek]
+subscribe = [{ event = "ev_tick", fn = "sfu_tick", order = 60 }]
+
+[requires]
+shared = false

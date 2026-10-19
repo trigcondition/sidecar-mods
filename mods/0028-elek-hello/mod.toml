@@ -1,0 +1,28 @@
+[mod]
+id      = "0028-elek-hello"
+title   = "elek hello: a counter on ev_tick and on a rytm-mods detour, its code in elekloader's area"
+
+enabled = false
+
+# code linked by elekloader into its DDR area, not into a cave (build.py refuses it without 0027-elekloader)
+area    = "elek"
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+The integration's test mod (mods/0027-elekloader/design.md, milestone 1). Its code is in
+elekloader's blob area. eh_tick, subscribed to core-ar2's ev_tick (~20 Hz), counts in
+eh_ticks; the registry detour at 0x400a4684 (the UI task's message loop) jumps to eh_loop,
+which counts in eh_loops and replays the displaced pea. Both words follow the magic "EH01"
+at the start of its .run. Emulator only.
+"""
+
+[sources]
+stub = "stub.s"
+
+[elek]
+subscribe = [{ event = "ev_tick", fn = "eh_tick", order = 50 }]
+
+[requires]
+shared = false

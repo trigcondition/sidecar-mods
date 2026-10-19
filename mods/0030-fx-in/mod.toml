@@ -1,0 +1,37 @@
+[mod]
+id      = "0030-fx-in"
+title   = "FX in: the delay + reverb return on Overbridge IN L/R in place of AUDIO IN, switched by the USB host"
+
+enabled = false
+
+# code in elekloader's DDR area (needs 0027-elekloader)
+area    = "elek"
+
+# 0024-ob-mix (ob-fx branch) patches the same two jsr operands with a build-time switch (fxret); 0006's
+# telemetry and calibration builds write the same words 10/11.
+excludes = ["0006-comp-preview"]
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+Off at boot: stock (AUDIO IN L/R on Overbridge channels 10/11). The USB host
+sends F0 7D 52 54 26 01 F7 (on) / 26 00 (off) / 26 7F (ask), through 0022's
+router (fxin=1); the Rytm answers F0 7D 52 54 27 <0|1> F7, and sends a 27
+unasked each time its USB port comes up. On, channels 10/11 carry the delay +
+reverb return, stereo, at the MIX page's return levels (gd * delay + 2 gr *
+reverb per side, 0024-ob-mix's measured mix), from the CPU's own effect
+buffers of the same block as the voices on 2..9. Back to off when the USB port
+goes down. AUDIO IN still reaches the sampler and the analog path. Emulator
+only.
+"""
+
+[sources]
+stub = "stub.s"      # generated from fxin.c by build.sh
+
+[elek]
+subscribe = [{ event = "ev_tick", fn = "fxin_tick", order = 75 }]
+
+[requires]
+shared = false
+symbols = ["fx_return_gain_pre", "fx_return_gain_post", "fx_delay_out", "fx_reverb_out", "ob_in_write"]

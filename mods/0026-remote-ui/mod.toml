@@ -1,0 +1,43 @@
+[mod]
+id      = "0026-remote-ui"
+title   = "Remote UI (M1): the Rytm as a terminal for pages the Sidecar draws - blit + keys/encoders"
+
+enabled = false
+
+# code in elekloader's DDR area (needs 0027-elekloader); host messages through 0022's router (rui=1)
+area    = "elek"
+
+# re-only | built | hardware-verified | retracted
+status  = "built"
+
+summary = """
+TRK + YES opens a remote page: the screen shows the 1 KB frame the Sidecar sends (38 rectangles of
+framebuffer bytes, 39 commit, 3A open/close, 3C keepalive, through 0022's router with rui=1), and
+the keys and encoders the Sidecar's mask names go to it (31, 32). TRK + YES again, the
+Sidecar's 3A 0, or 1 s without a host message returns the stock screen. core-ar2 events only
+(ev_tick, ev_draw, ev_key, ev_enc), no patch site; nothing waits on USB (a try-lock, reports
+kept for the next tick). 1021: text in the Rytm's own fonts by its own text routine at runtime
+(3D / 3E, composed over the frame), the local echo of encoder values (3F), turns reported at once.
+1022: the catch mask (37): only the page's keys and knobs go to the Sidecar, the rest work as on the
+stock screen; RECORD / PLAY / STOP always stock's; a key's release goes where its press went.
+1023: the connect splash: 35 hello when the USB port comes up (uptime, caps), the host's 36 shows its frame for a
+time with every key and knob stock's; a non-playing key or a turn ends it. 1025: the tracks' machines (33). 1026: TRK + LFO opens the page on
+the Sidecar's LFO page (the 30's page byte 1); the trig keys' LEDs in the host's palette colours (34) while the page is
+open (a detour at the UART8 panel writer rewrites stock's trig LED colours as they pass; leaving gives stock's back).
+1027: the SRC view: on the stock SRC page of a Sidecar track the host's frame over it, every key and knob stock's (29
+view on / off, 2A the page's values); the 33s' voice bytes by the voice owner table. Emulator only. design.md.
+"""
+
+[sources]
+stub = "stub.s"      # generated from rui.c by build.sh
+
+[elek]
+subscribe = [
+  { event = "ev_tick", fn = "rui_tick", order = 70 },
+  { event = "ev_draw", fn = "rui_draw", order = 90 },
+  { event = "ev_key",  fn = "rui_key",  order = 10 },
+  { event = "ev_enc",  fn = "rui_enc",  order = 10 },
+]
+
+[requires]
+shared = false
