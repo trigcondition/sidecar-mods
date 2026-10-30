@@ -14,7 +14,7 @@ the JIT off while a watch is set). After each run: no watch hit, every canary wo
 no strict access, no FAULT. --blob-check TAG also compares the run image in the area with
 what rytm-mods' build/manifest_TAG.json says elekloader appended (only the words the mods
 own may differ) and prints 0028-elek-hello's counters if present.
-RYTM_EMU: rytm-emu's checkout (default ../rytm-emu (a sibling checkout))."""
+RYTM_EMU: rytm-emu's checkout (default ../rytm-emu)."""
 import json
 import os
 import re
@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "rytm-emu"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 AREA_HI = 0x47C00000
 STEP = 32

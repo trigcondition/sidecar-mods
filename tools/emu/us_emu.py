@@ -22,8 +22,8 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "rytm-emu"))
-TEENSY = os.environ.get("RYTM_TEENSY", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "sidecar-firmware"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
+TEENSY = os.environ.get("RYTM_TEENSY", "../rytm-teensy")
 sys.path.insert(0, os.path.join(TEENSY, "sim"))
 import protocol as P   # noqa: E402
 
@@ -85,7 +85,7 @@ class Emu:
         self.card = os.path.join(EMU, "sections", f"us_{tag}.img")
         self.snap = os.path.join(EMU, "sections", f"us_{tag}.snap")
         self.clock = json.load(open(os.path.join(EMU, "sections", f"us_{tag}.json")))["clock"]
-        self.out = os.path.join(ROOT, "build", "emu", tag)
+        self.out = os.path.join(os.environ.get("RYTM_OUT_ROOT") or os.path.join(ROOT, "build", "emu"), tag)
         os.makedirs(self.out, exist_ok=True)
         self.tmp = tempfile.mkdtemp()
         atexit.register(shutil.rmtree, self.tmp, True)
@@ -352,7 +352,7 @@ def t_labels(e):
     w8 = e.u32(s, desc(334) + 32)
     sx = elek_sym(e, "rytm-0029-sendfx-ui:sfu_xtext")
     if sx and w8 == sx:   # 0029 (sfx-enum-knobs) steps P1 (an enum: 4 zones) and wraps its text: 0021's is saved there
-        w8 = e.u32(s, elek_sym(e, "rytm-0029-sendfx-ui:sfu_x") + 1560 + 2 * 127 + 4 * 127 + 4 * (334 - 334))
+        w8 = e.u32(s, elek_sym(e, "rytm-0029-sendfx-ui:sfu_x") + 1560 + 130 * 8 + 2 * 127 + 4 * 127 + 4 * (334 - 334))
     check("labels: the value text is the user slots' (descriptor word 8; through 0029's enum wrapper when built in)",
           w8 == inv, f"{w8:#x} {inv:#x}")
     look = [e.u32(s, desc(334 + k) + 36) for k in (2, 7)]
@@ -540,7 +540,7 @@ def t_page2(e):
 def card_copy(e, name):
     """A copy of the base's card for a run that writes it (a power-off)."""
     c = os.path.join(e.tmp, f"{name}.img")
-    shutil.copy(e.card, c)
+    subprocess.run(["cp", "-c", e.card, c], check=True)   # an APFS clone, not a 906 MB copy
     return c
 
 

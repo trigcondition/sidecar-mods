@@ -52,7 +52,7 @@ combine with anyone else's Rytm mods under elekloader's own overlap, name and RA
 1. Everything up to the patched image is unchanged. Claims of area mods are skipped: their caves are not written,
    and their detours and `from_symbol` patches are queued for elekloader. Their stock bytes are still checked.
 2. `elek_pinning`: `vendor/elekloader` must be at `ELEK_REV` (build.py and the Makefile name the same commit,
-   8972d70). elekloader's Rytm 1.73 release must also match ours: stock .syx sha256 (`stock/SHA256SUMS`), MAIN OS
+   8972d70 until 2026-10-27, now c150ac5 with the core from 8972d70's source: section 8). elekloader's Rytm 1.73 release must also match ours: stock .syx sha256 (`stock/SHA256SUMS`), MAIN OS
    sha256 and length (`re/symbols.toml` meta), and load address. **The two tools' hash pinning must agree, or the
    build stops.**
 3. `owners_of_changes`: every byte that differs from stock is attributed to the applied claim that covers it. A
@@ -252,3 +252,111 @@ In hwus1nlel2 that code is linked into the area instead:
   stub was written for this repository and copies no elekloader code.
 - **Third-party input.** The core-ar2 site list and the area's evidence come from elekloader's docs and
   Iced-Cream/rytm-mods-src (GPL-2.0). They were used as facts and are cited, not copied.
+
+## 8. Release 0.3.0: one bundle for the web page, on upstream c150ac5 (2026-10-27)
+
+The user's decisions (2026-10-27): the Sidecar set ships as ONE `rytm-sidecar-0.3.0.elemod` with elekloader's
+core-ar2 0.1 beside it, installable from the elekloader web page on OS 1.73; the build moves to the current upstream;
+one hardware flash later, by the user; the mods are GPL-2.0-or-later. How a user installs it: `docs/ELEKLOADER.md`.
+Feasibility: the assessment of 2026-10-27 (not in this tree). Tags as above; [measured] is this tree, rytm-emu,
+2026-10-27. Nothing was flashed.
+
+**The pin.** `ELEK_REV` is upstream `c150ac5` (2026-10-25, also the commit the live web page runs). Upstream's main
+has moved core-ar2 to 0.6, OS 1.74 only, so build.py builds the core from its source as it was at `ELEK_CORE_REV`
+(`8972d70`, core-ar2 0.1: `git archive` of `mods/core` and `mods/core-ar2`) with the current builder. That gives the
+same `core-0.1.elemod` as before, sha256 `33de51c0...` [measured]. The rui1051 set built on the new pin: build and
+verify PASS, MAIN OS `e4534dfb...` byte-identical to rui1051's [measured]. The `.syx` differs (`f0926cf4...`, was
+`a5058810...`) only because upstream rewrote its aplib packer on 2026-10-24: the packed bytes are new, and the Rytm's
+depacker has run them only in rytm-emu so far (below), not on a unit.
+
+**The bundle.** `tools/build.py --elek-bundle` writes one elemod for every enabled mod: id `rytm-sidecar`, version
+from `VERSION`, author trigcondition, licence GPL-2.0-or-later, the homepage in the description. Each area mod's stub
+is one of its sources, with its params as `.set` lines (elekloader's `defsym` would give every source all of them),
+its `.run` padded to 4 as the linker pads a mod's section. So the members land where their own elemods put them: the
+bundle's image is byte-identical to the per-mod build's, MAIN OS `e4534dfb...` and `.syx` `f0926cf4...` [measured].
+build.py refuses a bundle when a jmp / ptr / subscriber name is defined by two members, or when a member needs a mod
+the bundle lacks.
+
+**`requires` between per-mod files** (without `--elek-bundle`; still the default). Each file requires:
+- `core` when it has area code;
+- every mod whose cave claims a 32-bit word of its bytes points into (`cross_refs`: its sites' new bytes and its
+  area code, every even offset): measured for the rui1051 set, 0021 -> 0023 (td_pool_tab, the pool table), 0022 ->
+  0021, 0023, 0026, 0029, 0030 (the router's mailboxes and 0030's switch), 0026 -> 0021 (us_cubox), 0029 -> 0021
+  (ext_stepbox);
+- what its mod.toml names in `[requires] mods`, for what no address shows: 0021, 0023, 0026, 0030 -> 0022 (their
+  host messages come only through the router), 0029 -> 0022 and 0025 (the names; FX words 38..41 in the kit).
+
+The `excludes` become `conflicts` (`rytm-<id>`). elekloader then refuses `core + rytm-0021` alone ("requires
+rytm-0023-teensy-drive") and `core + 0029 + 0030` [measured]. The manifest's `elek` record keeps `requires` and the
+addresses found (`refs`).
+
+**Not "core 0.1 only" in the format, so a guard.** `requires` names an id (every core is `core`) and
+`resources.core` is a minimum. core-ar2 0.2 (92a99c9, the last 1.73 core, not released) keeps mod storage in the
+sound's spare bytes (live +0x6d..+0x6f, stored +0x70..+0x73/+0x77) and the kit's (+0x816..+0x81d stored), where 0013
+(HPF, stored slot 42 = +0x70), 0021 (slot 47 / live +0x6e) and 0025 (FX words 38..41, kit storage 0x816..0x81D)
+already keep theirs. With the rui1051 per-mod files, core 0.2 combined: "OK: the mods combine" [measured]. Now
+0013/0021 and 0025 (and so the bundle) carry, for their scope, a `bytes` site with new = stock over the first word of
+core 0.2's st_sound_save / st_sound_load (0x4000843a, 0x400081f6) and st_kit_save / st_kit_load (0x400088d6,
+0x4000863e): nothing in the image changes, and elekloader refuses core 0.2 with *"rytm-sidecar 0.3.0 site
+0x400081f6 and core 0.2 site 0x400081f6 overlap"* [measured]. Its limits: it is bound to those
+addresses and to today's overlap rule (elekloader's `common_checks`: any shared byte, identical bytes included). A
+future 1.73 core that hooked storage at other instructions, or an elekloader that let byte-identical sites coexist,
+would pass silently: release-check would catch the second at the next release, but files already published would then
+combine on the live page. There is no later 1.73 core today (0.2 is the last; docs/CORES.md says each core keeps all
+of the one before, so a 0.2.x would keep these sites). The rule in docs/ELEKLOADER.md therefore stands on its own:
+core 0.1 by its sha256. The real fixes: a max-core version or a storage resource name upstream, or moving
+0013/0021/0025 onto `core_store` fields (section 5, the 1.74 port).
+
+**The release gate.** `make release` builds the set (`RELEASE_MODS` / `RELEASE_ARGS`: the rui1051 set without
+0028-elek-hello, a test counter nothing needs) with `--elek-bundle`, runs verify.py, and puts in
+`build/release/0.3.0/`: `core-0.1.elemod`, `rytm-sidecar-0.3.0.elemod`, the source of elekloader's parts
+(`elekloader-8972d70-core-ar2-src.tar.gz`, `elekloader-c150ac5-src.tar.gz`: GPL-2.0 section 3), `TOOLCHAIN.txt`
+(rytm-mods and elekloader commits, `m68k-elf-as` and Python versions: the bytes depend on the assembler), `LICENSE`,
+`NOTICE` and `SHA256SUMS`. The tag is `rel<VERSION with - for .>` (rel0-3-0). `make release-check`
+(`tools/release_check.py`) takes only the published files and the stock `.syx`: lint, `patch --check`,
+`patch --out --version 1.73`, and the web page's own `web/bridge.py` (run in CPython, its `/work` on a scratch
+folder): add both as the user's own files, tick the bundle (it ticks the core), check, build with 1.73 and with the
+page's default `2.0a`. Every image: MAIN OS the release build's, sections 1/2/5/8 stock, the bootstrap at
+`1b8d3b72...`. The CLI's and the web page's 1.73 builds must be build.py's `.syx`, the core its pinned sha256, the
+refusal with core 0.2 at one of the guard's addresses, and docs/ELEKLOADER.md's three hashes the release's.
+
+Release 0.3.0 without 0028 [measured, 2026-10-27]: bundle `63d603d4...`, core `33de51c0...`, `.syx` (version 1.73)
+`74348b99...`, MAIN OS `5cb34202...`: no longer rui1051's `e4534dfb...`, by 0028's code (40 B of area code, its
+ev_tick entry) and its detour at 0x400a4684. release-check PASS, 45 checks. The live page's commit that day,
+`b893c93` (10 commits past c150ac5, linker changes), builds the same `.syx` from the published files [measured, CLI
+at b893c93].
+
+The earlier set with 0028 (`rel030`: MAIN OS `e4534dfb...` = rui1051's, `.syx` `f0926cf4...`) passed every suite but
+rled's two stockupkeys failures, which rui1051 shows too (below).
+
+**Emulator [measured, rytm-emu-seqp2 50a0139, rytm-teensy integ-1027's sim].** rytm-emu enters MAIN OS directly and
+depacks it with its own reimplementation (rytm-emu src/machine.rs, src/firmware.rs), so the suites prove the image,
+not the Rytm bootstrap's depacker on the new packer's stream. For that, the argument is the stream's tokens
+(reviewer's count, 2026-10-27): the new stream uses only what Elektron's own stock 1.73 stream uses, within its
+maxima: reuse of the last offset (43,917 times; stock 32,751), also right after a match (31; stock 27), offsets up
+to 1,048,116 (stock 1,048,473), counts up to 2048 (stock 2048). Every Rytm depacks the stock stream at every boot. The
+old packer, which booted on the unit, never used reuse or offsets above 64 K. Size and in-place gap sit between
+stock's and rui1051's, both of which boot. So the first hardware boot is expected to work; the bootstrap (untouched)
+is the way back if not.
+
+Release 0.3.0 (`rel0-3-0`, without 0028): `tools/emu/us_base.sh rel0-3-0` booted
+`build/Analog-Rytm_MKII_OS1.73_rel0-3-0.syx` (the web page's and the CLI's 1.73 file, `74348b99...`), and
+`build/suites/run.sh -j 4 rel0-3-0` ran every suite: bk, cu, frz, fxin, mrep, pc, rui, sfu, sfx, sp, sq, sv, td, us
+ALL PASS. rled: the same 2 failures, `stockupkeys gridtrig: UP held + RECORD / PLAY: CLASH`, which rled gives on
+rui1051 as built today too (run in this tree on rytm-emu's us_rui1051 base, 2026-10-27): pre-existing, not from
+elekloader or the bundle. The suites read the manifest's `rytm-<id>:<label>` names, which a bundle build writes for its
+members (equal to the per-mod build's). bk's comparisons need build/emu/rui1043's manifest, copied from rytm-mods-1051.
+
+**Status.** Still `built`. The new packer's first hardware boot is the user's flash of the page-built file. Then
+0027's status can move.
+
+**Open.**
+- The mailboxes in cave23's tail (0x401b9e54..0x401b9e6a: 0029's, 0026's, 0030's switch) are written only at run
+  time, so no site claims them: elekloader cannot refuse someone else's site there. Not an issue on 1.73 today (no
+  one else's mods), but a third-party mod could take those bytes.
+- Version field (hardware question, unmeasured): the web page's default version for the Rytm is `2.0a`. Whether a
+  unit reporting 2.0a can go back to stock 1.73, by USB (MAIN OS carries "Downgrade not possible") or by the STARTUP
+  menu (the bootstrap carries a VERSION CHECK, re/subsystems/os-upgrade.md), is untested. The guide says never to
+  flash a build whose version is not 1.73.
+- The live page moves: the guide pins c150ac5, says how to see the page's commit (`build.json`), and gives the pinned
+  command line for when the hash differs.

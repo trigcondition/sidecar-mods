@@ -7,6 +7,10 @@ enabled = false
 # code in elekloader's DDR area (needs 0027-elekloader); host messages through 0022's router (rui=1)
 area    = "elek"
 
+# its UART8 panel-writer detour (0x400019e4, the trig LEDs) is the site 0022's keys=1 patches (looper_uart);
+# never both in one build (it needs 0027 anyway, which refuses keys=1 too). Lets layout.py see them as exclusive.
+excludes_params = ["0022-looper:keys"]
+
 # re-only | built | hardware-verified | retracted
 status  = "built"
 
@@ -25,7 +29,67 @@ time with every key and knob stock's; a non-playing key or a turn ends it. 1025:
 the Sidecar's LFO page (the 30's page byte 1); the trig keys' LEDs in the host's palette colours (34) while the page is
 open (a detour at the UART8 panel writer rewrites stock's trig LED colours as they pass; leaving gives stock's back).
 1027: the SRC view: on the stock SRC page of a Sidecar track the host's frame over it, every key and knob stock's (29
-view on / off, 2A the page's values); the 33s' voice bytes by the voice owner table. Emulator only. design.md.
+view on / off, 2A the page's values); the 33s' voice bytes by the voice owner table. 1030: the chord write-back (28 1
+<track> <root> <CHD> <INV> <SPR> <VOI>, 13 B): the step live recording last wrote on a Sidecar track gets NOTE = root and
+P13..P16 locks by stock's writers (a detour at live_rec_trig 0x400b45e0 notes the step); 28 2 <track> <step> <status> back;
+0022's router passes 28 with rui=1.
+1031: 6-OP FM's SMPL E..H as CHD INV SPR VOI (the host's chord texts, stepped lists) and the MULTISAMPLE machine (52,
+voice flag 0x30) listed on every track with its labels, through 0021's us_cubox; 0029's lists gain 'beyond the end reads
+entry 0'.
+1032 (seq): the sequencer link for the Sidecar sequencer: the host's 2E marks seq tracks; 2C step ticks stamped with the
+audio block counter (detours at trig_fire 0x4009a9bc and the sequencer clock's exit 0x4009bf9e, sent from that interrupt
+by 0021's rules), 2D transport / pattern / switch / mutes / rec / tempo / seq mode / position; seq mode (a seq track
+selected, GRID REC on): T1..T16, PAGE and the encoders under a held trig go to the host, which owns the trig LEDs (34)
+and the PAGE LEDs (2F); live record writes nothing on a seq track. 0022's router passes 2E / 2F with rui=1.
+1033 (seq2): the analog pin (Mod B: a detour at the voice frame sender 0x4007a538 holds a pinned track's voice open -
+amp records held, filter envelope 0, VCA at velocity 127 - so an empty seq track sounds; 2E's pin mask, 46 closes a
+silent one), the stock edit functions wrapped (14 detours) and reported (2D 0A, with seq mode's own trig / page
+gestures), SCALE (2D 04), pattern dirty (2D 0B), FILL (2D 0C); FUNC + PAGE stock's in seq mode; 0022's router passes 46.
+1036 (seq-ux): FUNC + LFO (1037: TRK + TRIG) opens the page on the Sidecar's SEQ page of the selected track (30 page 0x10 + track; again:
+leave); seq mode with the page closed and a trig held: the page keys, NO and the pushes are the host's (its p-lock
+pages); the SRC view reports encoder pushes (31, not caught); 47 the source lists' names (GRANULAR SRC, WAVETABLE TBL,
+MULTISAMPLE INST value texts); 48 a parameter write as a knob turn (answered 48 <track> <param> <status>); 0022's router
+passes 47 / 48. 1036b: UP + T1..T5 the Pi display's page (49 1), the selected track's machine, name and P1..P8 with
+labels (49 2 / 3) for its VOICE view.
+1037: TRK + TRIG opens the SEQ page (1036's FUNC + LFO gesture, same 30; stock 1.73 binds nothing to TRK + TRIG
+[measured]); FUNC + LFO is stock's LFO page again; seq mode with a trig held: YES is the host's too (its step preview;
+stock's trig held + YES = YES alone [measured]).
+1038: source banks: GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST = index << 8 | bank << 5 (P1's record fine-flagged,
+range 0..0x7fe0, 0029 steps one index a detent and keeps the bank); 47 with a bank byte (one bank's names a list); the
+bank list: knob A turned on a drawn SRC view opens it (4A open / close; its turns 32, LEFT RIGHT UP DOWN 31; YES / NO
+close), the host's 48 <flags 1> commits it (the steps held at the YES locked, else the kit); UP + T6..T10 -> 49 1 6..10.
+1037b: YES while TRK is still held after TRK + TRIG / TRK + LFO is the page's (the make prompt's answer), not TRK + YES;
+PLAY MODE without FUNC always stock's (leaves MUTE mode under the page); the dirty poll a long word a load (0026's UI
+time per tick ~6x less) [measured].
+1039: rui1038 + rui1037b merged (stub.s regenerated from the merged rui.c); no new behaviour.
+1040: the rui1039 hardware report - seq mode's held trig / PAGE + FUNC + REC / STOP / PLAY caught with the host's page
+open too (2D 0A ops 13..15 / 9..11, src 1; rui1039 gave stock its track ops); TRIG alone in seq mode the host's (its SEQ
+page / TRIG view); FUNC + YES on the bank list: 4A on 3, the host's file browser (host -> Rytm 4A <track> <0/1>, YES / NO
+the host's while 1, 1 s without an answer the list's); 0022's router passes 4A (rui=1); a pad pressed while the page's
+caught TRK is held gives stock that TRK press first (TRK + pad selects the track under the page).
+1043: bank A's value text like B..H's for SRC / TBL / INST (index 0 OFF, a named row its name, else A005; no more
+GRANULAR's IN MAIN .. texts or min(v, total - 1)); WAVETABLE's default TBL 1 (A001). Wire unchanged.
+1045: DSP SAMPLE's SMP (P11, word 19; 0021's record 441, fine-flagged, 0..0x7fe0) banked like SRC / TBL / INST:
+index << 8 | bank << 5 over the SAMPLES pool's eight banks; its value text the 47 names of list 0, 0029's banked step;
+turning SMP (knob D) on DSP SAMPLE's SMPL page opens the bank list (4A with P11, the view over that page while it is
+open: 29 1 / 0), the commit 48 <t> 10 .. 1, with trigs held a P11 lock (k 19). Emulator only. design.md.
+1046: UP + T11..T13 -> 49 1 11..13 (the host's SONG, PROJECT, POOL; stock's UP + T11..T13 = T alone [measured]); UP the one
+Sidecar modifier: UP + TRIG / LFO / FX / YES as TRK's (kept), UP + SRC the source list, on a poly track trig + UP + REC /
+STOP / PLAY the steps' copy / paste / clear (trig + FUNC kept); stock's UP + key free where bound [measured]. Emulator only.
+1047: UP + AMP -> 30 page 3 (the INSERT page's OUT view). Emulator only.
+1048: POLY CONFIG, the last item of stock's track menu (FUNC + CHRO), appended by a detour after TrackMenuView's
+constructor call (0x400cb5be) as stock builds its items; YES with a host that has drawn: the menu closes and the page
+opens on 30 page 0x20 + track (the host's POLY CONFIG page); else a popup (NO SIDECAR / SOUND TRACKS ONLY). Emulator only.
+1052: the project slot reports (4B; the hello's caps bit 2): the active slot with its name, and the project manager's
+SAVE / PASTE / CLEAR / DELETE / RENAME of a slot (detours at write-slot 0x40034e98, delete 0x40034a54, copy 0x4003502c,
+save 0x400b0738), so the Sidecar keys a project's files by slot and copies / trashes them with it. 4C the next free
+opcode. 1052b: LIST / LIST END (all 128 slots' names from the project manager's header table, after each hello and
+LOST), LOAD (the active-slot setter 0x400fa694), the ring drained into LOST while no host. 1052c: LOAD only from LOAD
+PROJECT (the setter's detour reads its caller from the stack), each LIST sent twice. 1052d: the kit reports (4C SAVE /
+RELOAD / RELOAD ALL: detours at kit_save 0x400b119c, kit_reload 0x400af0d2, 0x400b131a); NO + SCNE / CHRO / PLAYMODE
+under a page is stock's reload (NO kept back to its release or the next key); YES the host's while FUNC or a page trig
+is down, UP / DOWN while FUNC is (until the host's next mask); send() waits while a stock dump's SysEx is under way (bounded: 2 s with the flag never seen clear, the audio interrupt
+watching its gaps); 4D reports dropped key presses. Emulator only.
 """
 
 [sources]
@@ -37,7 +101,10 @@ subscribe = [
   { event = "ev_draw", fn = "rui_draw", order = 90 },
   { event = "ev_key",  fn = "rui_key",  order = 10 },
   { event = "ev_enc",  fn = "rui_enc",  order = 10 },
+  { event = "ev_render_in", fn = "rui_render_in", order = 90 },   # round 6: the stock SysEx flag's gaps (txsx_wait)
 ]
 
 [requires]
 shared = false
+# the host's 0x30..0x3F reach it only through 0022's SysEx router (rui=1); elekloader's `requires` (with what build.py finds in the bytes; tools/build.py cross_refs)
+mods = ["0022-looper"]

@@ -362,3 +362,14 @@ turns; for 0021's stepped list knobs the name is already drawn where the dial wa
 was on the screen twice while scrolling. The record's text (`sfu_xtext`, d[8]) now gives the step's 1-based number for
 the named modes (zones, list); the draw keeps the name (`xname`). The 128-value knobs keep 0021's text (their number is
 in the dial and the label as before). Test: `sfu_emu.py TAG fmname` (screen bands compared; fails on sfx1019).
+
+## 10. rui1038 (2026-10-21): banked list knobs (ext_steps bit 11)
+
+0021's ext_steps answer (mode << 8 | N, bit 10 "beyond the end reads entry 0") gains **bit 11, keep the bank**, which
+0026 sets for GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST (index << 8 | bank << 5; 0026 design.md "1038"). For such a
+record (`xk[]`, appended to sfu_x so the fields before keep their offsets): x_knob passes the word's fraction bits 0xe0 into
+the knob's value and x_half keeps them (the value text, 0026's cu_text, reads the bank from them); sfu_s_write and
+sfu_s_lset store the index with the bank the word (or the step's lock) holds (`x_keep`), so the knob's arithmetic never
+moves or clears the bank; the record's range is (N - 1) << 8 | 0xe0. Without bit 11 nothing changes. [measured, rytm-emu,
+`tools/emu/bk_emu.py rui1038 knob range lock`: one index a detent, the bank kept, bank H's 127 within range, a lock by a
+turn with a trig held keeps the bank]

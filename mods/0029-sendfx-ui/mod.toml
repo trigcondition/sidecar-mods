@@ -35,3 +35,5 @@ subscribe = [{ event = "ev_tick", fn = "sfu_tick", order = 60 }]
 
 [requires]
 shared = false
+# 0025 keeps FX words 38..41 in the kit; the names come through 0022's router (sfx=1); elekloader's `requires` (with what build.py finds in the bytes; tools/build.py cross_refs)
+mods = ["0022-looper", "0025-sendfx-report"]

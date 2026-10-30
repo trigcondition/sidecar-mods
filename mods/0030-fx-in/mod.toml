@@ -35,3 +35,5 @@ subscribe = [{ event = "ev_tick", fn = "fxin_tick", order = 75 }]
 [requires]
 shared = false
 symbols = ["fx_return_gain_pre", "fx_return_gain_post", "fx_delay_out", "fx_reverb_out", "ob_in_write"]
+# its switch is written by 0022's router (fxin=1) on a host 26; elekloader's `requires` (with what build.py finds in the bytes; tools/build.py cross_refs)
+mods = ["0022-looper"]

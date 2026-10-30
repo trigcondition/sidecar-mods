@@ -127,8 +127,10 @@ struct sfu_state sfu_st = {
 
 /* 24 SENDFX LABELS (rytm-teensy sim/protocol.py sendfx_labels): per TYPE the labels of P2..P5 and its zones. Fixed
    tables, NLT TYPEs of NZ zones (the message's cap); written by the MIDI task (sfu_sysex), read by the UI task. An
-   entry is free while idp1 (id + 1) is 0; a 21 with replace frees them all. */
-#define NLT 8
+   entry is free while idp1 (id + 1) is 0; a 21 with replace frees them all. 1049: 16 (8 before; the Sidecar has 9
+   TYPEs with labels since SPACE: a host past rui1049's hello caps bit 1 sends up to 16). The emulator tests' offsets of
+   the fields after lab[] follow NLT (tools/emu/sfu_emu.py DL, us_emu.py). */
+#define NLT 16
 #define NZ 12
 #define XR0 334                 /* 0021's records: the user slots 334..373, JUNO / FM 374..389, DIGIDRUM 390.., */
 #define NXR 127                 /* PLAITS 408.., DSP SAMPLE / DAISYSP 416..453, page 2 457..460 */
@@ -165,6 +167,12 @@ struct sfu_x {
   uint32_t xsave[NXR][5];         /* its descriptor words 0 1 2 4 12 before the enum look */
   uint32_t xsteps, xwraps;
   uint32_t lv_sum, lv_max, lv_n;  /* DTCN0 inside 0021's us_live (its own work, timed apart from 0029's) */
+  /* rui1031 (appended): a list whose value beyond its end reads as entry 0 (ext_steps' bit 10: the chord knobs, as the
+     host's core/poly.cpp idx()), not the last */
+  uint8_t xf[NXR];
+  /* rui1038 (appended): a banked knob (ext_steps' bit 11: 0026's GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST, index
+     << 8 | bank << 5): the knob's value carries the word's fraction bits 0xe0, a turn or a lock keeps the stored bank */
+  uint8_t xk[NXR];
 };
 struct sfu_x sfu_x;   /* .bss (zeroed by core-ar2's boot copier) */
 #define X sfu_x
@@ -261,6 +269,8 @@ static int32_t xmode(int32_t r) {
     X.xsteps++;
     X.xm[i] = (uint8_t)(m >> 8 & 3);
     X.xn[i] = (uint8_t)m;
+    X.xf[i] = (uint8_t)(m >> 10 & 1);
+    X.xk[i] = (uint8_t)(m >> 11 & 1);
     if (X.xn[i] < 2) X.xm[i] = 0;
     X.xtick[i] = st.ticks + 1;
   }
@@ -276,7 +286,8 @@ static int32_t xmode(int32_t r) {
       d[8] = (uint32_t)sfu_xtext;
       X.xwraps++;
     }
-    rec[3] = (uint32_t)(X.xn[i] - 1) << 8;   /* every time: 0021 writes a slot's ranges at its page set-up */
+    rec[3] = (uint32_t)(X.xn[i] - 1) << 8 | (X.xk[i] ? 0xe0u : 0);   /* every time: 0021 writes a slot's ranges at its
+                                                                      page set-up; rui1038: a banked knob up to bank H */
   } else if (d[8] == (uint32_t)sfu_xtext) {   /* a list gone (another project, no presets): the dial back */
     d[0] = X.xsave[i][0]; d[1] = X.xsave[i][1]; d[2] = X.xsave[i][2]; d[4] = X.xsave[i][3]; d[12] = X.xsave[i][4];
     d[8] = X.xtext[i];
@@ -289,16 +300,20 @@ static int32_t x_knob(int32_t r, int32_t h) {
   if (v < 0) v = 0;
   if (v > 127) v = 127;
   if (X.xm[i] == 1) v = (v * n) >> 7;
-  else if (X.xm[i] == 2 && v > n - 1) v = n - 1;
-  return v << 8;
+  else if (X.xm[i] == 2 && v > n - 1) v = X.xf[i] ? 0 : n - 1;
+  return v << 8 | (X.xk[i] ? h & 0xe0 : 0);   /* rui1038: a banked knob shows its bank */
 }
 static int32_t x_half(int32_t r, int32_t v) {
   int32_t i = r - XR0, k = v >> 8, n = X.xn[i];
   if (k < 0) k = 0;
-  if (k > n - 1) k = n - 1;
+  if (k > n - 1) k = X.xf[i] && X.xm[i] == 2 ? 0 : n - 1;
   if (X.xm[i] == 1) k = (128 * k + n - 1) / n;   /* the zone's lowest value: v x N / 128 reads k again */
   X.steps++;
-  return k << 8;
+  return k << 8 | (X.xk[i] ? v & 0xe0 : 0);
+}
+/* rui1038: a banked knob's write keeps the bank the word holds (cur), whatever the knob's arithmetic did to the fraction */
+static int32_t x_keep(int32_t r, int32_t v, int32_t cur) {
+  return X.xk[r - XR0] && cur >= 0 ? (v & 0x7f00) | (cur & 0xe0) : v;
 }
 /* 0021's value text, given the stored value (its zone / entry rule), for the knob's step */
 static int32_t xname(void *functor, int32_t value, void *str) {
@@ -316,7 +331,7 @@ int32_t sfu_xtext(void *functor, int32_t value, void *str) {
   if ((uint32_t)i < NXR && X.xtext[i] && (X.xm[i] == 1 || X.xm[i] == 2)) {
     k = value >> 8;
     if (k < 0) k = 0;
-    if (k > X.xn[i] - 1) k = X.xn[i] - 1;
+    if (k > X.xn[i] - 1) k = X.xf[i] && X.xm[i] == 2 ? 0 : X.xn[i] - 1;
     return STR_PRINTF(str, fmt_d, s_empty, k + 1);
   }
   return xname(functor, value, str);
@@ -342,7 +357,7 @@ int32_t sfu_f_read(void *set, int32_t id) {
 }
 int32_t sfu_s_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
   if (OURS(id)) { st.calls++; v = merge(id - ID0, S_READ(set, id), v); }
-  else if (xmode(id)) v = x_half(id, v);
+  else if (xmode(id)) v = x_keep(id, x_half(id, v), S_READ(set, id));
   return S_WRITE(set, id, v, a, b);
 }
 /* FX words 38..41 have no stock storage map: the stock write's project-copy observer indexes the 38-entry
@@ -396,7 +411,10 @@ int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
     cur = S_LGET(set, id, step);
     if (cur < 0) cur = S_READ(set, id);
     v = merge(id - ID0, cur, v);
-  } else if (xmode(id)) v = x_half(id, v);   /* a stepped list knob locks the stored value */
+  } else if (xmode(id)) {   /* a stepped list knob locks the stored value; rui1038: a banked one the lock's (or word's) bank */
+    int32_t cur = S_LGET(set, id, step);
+    v = x_keep(id, x_half(id, v), cur >= 0 ? cur : S_READ(set, id));
+  }
   return S_LSET(set, id, v, step);
 }
 int32_t sfu_f_lset(void *set, int32_t id, int32_t v, int32_t step) {

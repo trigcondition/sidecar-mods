@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "rytm-emu"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
 
 
 def key_codes():

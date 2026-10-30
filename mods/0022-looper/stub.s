@@ -366,36 +366,68 @@ looper_sysex:
 	moveq #8,%d2
 	cmp.l %d0,%d2
 	jeq .L51
-.L52:
-	moveq #38,%d1
-	cmp.l %d0,%d1
-	jne .L59
-	mvz.b 5(%a0),%d0
-	mov3q.l #1,%d2
+	moveq #9,%d3
+	cmp.l %d0,%d3
+	jcs .L56
+	mov3q.l #7,%d2
 	cmp.l %d0,%d2
-	jcs .L60
-	add.l #1180191024,%d0
-	move.l %d0,1075551844
-.L60:
-	move.w 1075551848,%d0
-	addq.l #1,%d0
-	move.w %d0,1075551848
+	jne .L56
+	cmp.l %a1,%d2
+	jeq .L56
+	mvz.b 5(%a0),%d0
+	moveq #95,%d3
+	cmp.l %d0,%d3
+	jcs .L56
+	lea slot_state,%a1
+	lea (6,%a0),%a2
+	move.b (%a2),(%a1,%d0.l)
+	tst.b looper.l
+	jeq .L56
+	mvz.b 5(%a0),%d0
+	moveq #19,%d3
+	move.w %d0,%d1
+	mulu.w #43691,%d1
+	move.l %d1,%d2
+	lsr.l %d3,%d2
+	move.l %d2,%a0
+	mvz.b looper+1,%d2
+	cmp.l %d2,%a0
+	jne .L56
+	move.w %a0,%d1
+	muls.w #12,%d1
+	sub.l %d1,%d0
+	mvz.b %d0,%d0
+	move.l %d0,-(%sp)
+	jsr paint
+	addq.l #4,%sp
 	jra .L56
 .L48:
 	move.l %d1,%d2
 	add.l #-33,%d2
 	mvz.b %d2,%d2
 	lsr.l #2,%d2
-	jeq .L73
-	add.l #-48,%d1
+	jeq .L81
+	moveq #38,%d2
+	cmp.l %d0,%d2
+	jeq .L59
+	jcc .L56
+	moveq #40,%d2
+	cmp.l %d0,%d2
+	jeq .L62
+	add.l #-46,%d1
 	mvz.b %d1,%d1
-	lsr.l #4,%d1
-	jne .L52
-	move.l #1381321040,%d3
-	cmp.l 1075551836.l,%d3
+	moveq #28,%d3
+	cmp.l %d1,%d3
+	jcs .L56
+	move.l #386138111,%d0
+	btst %d1,%d0
+	jeq .L56
+.L62:
+	move.l #1381321040,%a2
+	cmp.l 1075551836.l,%a2
 	jne .L56
 	move.l 1075551840,%d0
-	jra .L74
+	jra .L84
 .L51:
 	move.b mutes_held,%d0
 	tst.b 5(%a0)
@@ -438,7 +470,7 @@ looper_sysex:
 	cmp.l 1075550836.l,%d3
 	jne .L56
 	move.l 1075550840,%d0
-.L74:
+.L84:
 	move.l %a1,-(%sp)
 	move.l %a0,-(%sp)
 	move.l %d0,%a0
@@ -450,8 +482,8 @@ looper_sysex:
 	cmp.l 1073904132.l,%a2
 	jne .L56
 	move.l 1073904136,%d0
-	jra .L74
-.L73:
+	jra .L84
+.L81:
 	moveq #35,%d1
 	cmp.l %d0,%d1
 	jeq .L56
@@ -459,39 +491,18 @@ looper_sysex:
 	cmp.l 1075551828.l,%d2
 	jne .L56
 	move.l 1075551832,%d0
-	jra .L74
+	jra .L84
 .L59:
-	mov3q.l #7,%d3
-	cmp.l %d0,%d3
-	jne .L56
-	cmp.l %a1,%d3
-	jeq .L56
 	mvz.b 5(%a0),%d0
-	moveq #95,%d1
+	mov3q.l #1,%d1
 	cmp.l %d0,%d1
-	jcs .L56
-	lea slot_state,%a1
-	lea (6,%a0),%a2
-	move.b (%a2),(%a1,%d0.l)
-	tst.b looper.l
-	jeq .L56
-	mvz.b 5(%a0),%d0
-	moveq #19,%d3
-	move.w %d0,%d1
-	mulu.w #43691,%d1
-	move.l %d1,%d2
-	lsr.l %d3,%d2
-	move.l %d2,%a0
-	mvz.b looper+1,%d2
-	cmp.l %d2,%a0
-	jne .L56
-	move.w %a0,%d1
-	muls.w #12,%d1
-	sub.l %d1,%d0
-	mvz.b %d0,%d0
-	move.l %d0,-(%sp)
-	jsr paint
-	addq.l #4,%sp
+	jcs .L64
+	add.l #1180191024,%d0
+	move.l %d0,1075551844
+.L64:
+	move.w 1075551848,%d0
+	addq.l #1,%d0
+	move.w %d0,1075551848
 	jra .L56
 	.size	looper_sysex, .-looper_sysex
 	.text
@@ -515,43 +526,43 @@ looper_key:
 	move.l 12(%a1),%a0
 	and.l 16(%a1),%d1
 	cmp.l #134,%a0
-	jne .L77
+	jne .L87
 	move.b %d1,looper+2
-.L78:
+.L88:
 	tst.b looper.l
-	jeq .L83
+	jeq .L93
 	move.l %a0,%d0
 	add.l #-66,%d0
 	lsr.l #1,%d0
-	jne .L83
+	jne .L93
 	tst.l %d1
-	jeq .L76
+	jeq .L86
 	move.b looper+1,%d0
 	moveq #66,%d1
 	cmp.l %a0,%d1
-	jne .L84
+	jne .L94
 	mvz.b %d0,%d1
 	mov3q.l #6,%d2
 	cmp.l %d1,%d2
-	jcs .L86
+	jcs .L96
 	move.l %d0,%d1
 	addq.l #1,%d1
-.L97:
+.L107:
 	move.b %d1,%d0
 	move.b %d1,looper+1
-.L86:
+.L96:
 	mvz.b %d0,%d0
 	move.l %d0,-(%sp)
 	mov3q.l #1,-(%sp)
-	jra .L99
-.L77:
+	jra .L109
+.L87:
 	moveq #80,%d2
 	cmp.l %a0,%d2
-	jne .L79
+	jne .L89
 	tst.l %d1
-	jeq .L80
+	jeq .L90
 	tst.b looper+2.l
-	jeq .L78
+	jeq .L88
 	move.b looper,%d0
 	mov3q.l #1,%d1
 	moveq #1,%d2
@@ -562,7 +573,7 @@ looper_key:
 	move.b %d0,looper
 	mvz.b %d0,%d0
 	move.l %d0,-(%sp)
-.L99:
+.L109:
 	mov3q.l #5,-(%sp)
 	jsr report
 	lea (12,%sp),%sp
@@ -570,33 +581,33 @@ looper_key:
 	move.l (%sp)+,%d3
 	addq.l #4,%sp
 	jra paint_all
-.L80:
+.L90:
 	tst.b looper+3.l
-	jeq .L78
+	jeq .L88
 	clr.b %d0
 	move.b %d0,looper+3
-.L76:
+.L86:
 	move.l (%sp)+,%d2
 	move.l (%sp)+,%d3
 	addq.l #4,%sp
 	rts
-.L79:
+.L89:
 	move.l %a0,%d2
 	moveq #11,%d0
 	add.l #-144,%d2
 	cmp.l %d2,%d0
-	jcs .L78
+	jcs .L88
 	mov3q.l #1,%d0
 	lsl.l %d2,%d0
 	tst.l %d1
-	jeq .L82
+	jeq .L92
 	tst.b looper.l
-	jeq .L83
+	jeq .L93
 	move.w looper+4,%d1
 	mov3q.l #1,-(%sp)
 	or.l %d1,%d0
 	move.w %d0,looper+4
-.L98:
+.L108:
 	move.b looper+1,%d0
 	muls.w #12,%d0
 	lea 112(%a0,%d0.l),%a0
@@ -606,25 +617,25 @@ looper_key:
 	mov3q.l #6,-(%sp)
 	jsr report
 	lea (12,%sp),%sp
-	jra .L76
-.L82:
+	jra .L86
+.L92:
 	move.w looper+4,%d2
 	move.l %d0,%d3
 	and.l %d2,%d3
 	tst.w %d3
-	jeq .L78
+	jeq .L88
 	not.l %d0
 	and.l %d2,%d0
 	clr.l -(%sp)
 	move.w %d0,looper+4
-	jra .L98
-.L84:
+	jra .L108
+.L94:
 	tst.b %d0
-	jeq .L86
+	jeq .L96
 	move.l %d0,%d1
 	subq.l #1,%d1
-	jra .L97
-.L83:
+	jra .L107
+.L93:
 	move.l %a1,20(%sp)
 	move.l 8(%sp),16(%sp)
 	move.l (%sp)+,%d2
@@ -1028,15 +1039,17 @@ looper_sysex:
 	moveq #20,%d3
 	cmp.l %d0,%d3
 	jcs .L49
-	moveq #14,%d1
-	cmp.l %d0,%d1
+	moveq #14,%d2
+	cmp.l %d0,%d2
 	jeq .L50
 	cmp.l %d0,%d3
 	jeq .L50
-	moveq #8,%d2
-	cmp.l %d0,%d2
+	moveq #8,%d3
+	cmp.l %d0,%d3
 	jeq .L51
-.L52:
+	moveq #9,%d2
+	cmp.l %d0,%d2
+	jcs .L61
 	mov3q.l #7,%d1
 	cmp.l %d0,%d1
 	jne .L56
@@ -1074,16 +1087,25 @@ looper_sysex:
 	add.l #-33,%d2
 	mvz.b %d2,%d2
 	lsr.l #2,%d2
-	jeq .L71
-	add.l #-48,%d1
+	jeq .L79
+	moveq #40,%d2
+	cmp.l %d0,%d2
+	jeq .L59
+.L61:
+	add.l #-46,%d1
 	mvz.b %d1,%d1
-	lsr.l #4,%d1
-	jne .L52
-	move.l #1381321040,%d3
-	cmp.l 1075551836.l,%d3
+	moveq #28,%d3
+	cmp.l %d1,%d3
+	jcs .L56
+	move.l #386138111,%d0
+	btst %d1,%d0
+	jeq .L56
+.L59:
+	move.l #1381321040,%a2
+	cmp.l 1075551836.l,%a2
 	jne .L56
 	move.l 1075551840,%d0
-	jra .L72
+	jra .L82
 .L51:
 	move.b mutes_held,%d0
 	tst.b 5(%a0)
@@ -1126,7 +1148,7 @@ looper_sysex:
 	cmp.l 1075550836.l,%d3
 	jne .L56
 	move.l 1075550840,%d0
-.L72:
+.L82:
 	move.l %a1,-(%sp)
 	move.l %a0,-(%sp)
 	move.l %d0,%a0
@@ -1138,8 +1160,8 @@ looper_sysex:
 	cmp.l 1073904132.l,%a2
 	jne .L56
 	move.l 1073904136,%d0
-	jra .L72
-.L71:
+	jra .L82
+.L79:
 	moveq #35,%d1
 	cmp.l %d0,%d1
 	jeq .L56
@@ -1147,7 +1169,7 @@ looper_sysex:
 	cmp.l 1075551828.l,%d2
 	jne .L56
 	move.l 1075551832,%d0
-	jra .L72
+	jra .L82
 	.size	looper_sysex, .-looper_sysex
 	.text
 	.align	2
@@ -1170,43 +1192,43 @@ looper_key:
 	move.l 12(%a1),%a0
 	and.l 16(%a1),%d1
 	cmp.l #134,%a0
-	jne .L75
+	jne .L85
 	move.b %d1,looper+2
-.L76:
+.L86:
 	tst.b looper.l
-	jeq .L81
+	jeq .L91
 	move.l %a0,%d0
 	add.l #-66,%d0
 	lsr.l #1,%d0
-	jne .L81
+	jne .L91
 	tst.l %d1
-	jeq .L74
+	jeq .L84
 	move.b looper+1,%d0
 	moveq #66,%d1
 	cmp.l %a0,%d1
-	jne .L82
+	jne .L92
 	mvz.b %d0,%d1
 	mov3q.l #6,%d2
 	cmp.l %d1,%d2
-	jcs .L84
+	jcs .L94
 	move.l %d0,%d1
 	addq.l #1,%d1
-.L95:
+.L105:
 	move.b %d1,%d0
 	move.b %d1,looper+1
-.L84:
+.L94:
 	mvz.b %d0,%d0
 	move.l %d0,-(%sp)
 	mov3q.l #1,-(%sp)
-	jra .L97
-.L75:
+	jra .L107
+.L85:
 	moveq #80,%d2
 	cmp.l %a0,%d2
-	jne .L77
+	jne .L87
 	tst.l %d1
-	jeq .L78
+	jeq .L88
 	tst.b looper+2.l
-	jeq .L76
+	jeq .L86
 	move.b looper,%d0
 	mov3q.l #1,%d1
 	moveq #1,%d2
@@ -1217,7 +1239,7 @@ looper_key:
 	move.b %d0,looper
 	mvz.b %d0,%d0
 	move.l %d0,-(%sp)
-.L97:
+.L107:
 	mov3q.l #5,-(%sp)
 	jsr report
 	lea (12,%sp),%sp
@@ -1225,33 +1247,33 @@ looper_key:
 	move.l (%sp)+,%d3
 	addq.l #4,%sp
 	jra paint_all
-.L78:
+.L88:
 	tst.b looper+3.l
-	jeq .L76
+	jeq .L86
 	clr.b %d0
 	move.b %d0,looper+3
-.L74:
+.L84:
 	move.l (%sp)+,%d2
 	move.l (%sp)+,%d3
 	addq.l #4,%sp
 	rts
-.L77:
+.L87:
 	move.l %a0,%d2
 	moveq #11,%d0
 	add.l #-144,%d2
 	cmp.l %d2,%d0
-	jcs .L76
+	jcs .L86
 	mov3q.l #1,%d0
 	lsl.l %d2,%d0
 	tst.l %d1
-	jeq .L80
+	jeq .L90
 	tst.b looper.l
-	jeq .L81
+	jeq .L91
 	move.w looper+4,%d1
 	mov3q.l #1,-(%sp)
 	or.l %d1,%d0
 	move.w %d0,looper+4
-.L96:
+.L106:
 	move.b looper+1,%d0
 	muls.w #12,%d0
 	lea 112(%a0,%d0.l),%a0
@@ -1261,25 +1283,25 @@ looper_key:
 	mov3q.l #6,-(%sp)
 	jsr report
 	lea (12,%sp),%sp
-	jra .L74
-.L80:
+	jra .L84
+.L90:
 	move.w looper+4,%d2
 	move.l %d0,%d3
 	and.l %d2,%d3
 	tst.w %d3
-	jeq .L76
+	jeq .L86
 	not.l %d0
 	and.l %d2,%d0
 	clr.l -(%sp)
 	move.w %d0,looper+4
-	jra .L96
-.L82:
+	jra .L106
+.L92:
 	tst.b %d0
-	jeq .L84
+	jeq .L94
 	move.l %d0,%d1
 	subq.l #1,%d1
-	jra .L95
-.L81:
+	jra .L105
+.L91:
 	move.l %a1,20(%sp)
 	move.l 8(%sp),16(%sp)
 	move.l (%sp)+,%d2

@@ -882,3 +882,37 @@ junopat`: 16 then 17 -> one 13 within 300 M; the same build without the change: 
 (ENV) move kit words 1 and 4 and the page shows the new values (`junopat`, `junoknobs.png`). JUNO is rendered by the
 Sidecar (ext_render passes the words on in the 03 / 04 reports); rytm-emu without the Sidecar's JUNO engine sounds
 nothing different, so the effect is the host's.
+
+## rui1031: MULTISAMPLE (machine 52) and 6-OP FM's chord page
+
+Machine 52 (CB TEST) runs ext_render with voice flag 0x30 (rytm-teensy `kMultiMachine`); its SRC records are 398 443
+399 400 401 402 406 407 (registry: machine 52, sound indices 9..16, CC 16..23, NRPN 1:0..7). Its SMPL page and 6-OP
+FM's SMPL E..H are the user slots' shared page-2 records, set up by 0026 through `us_cubox` (.ush, fixed 0x4001a3dc:
+'CHRD', setup, steps). Labels, value texts, the list name and mask live in 0026 (mods/0026-remote-ui/design.md, "1031").
+With 0014 variants=1 (BT IMPROVED listed) BT IMPROVED has no knobs: its records 398..402 are MULTISAMPLE's. Emulator only.
+
+## rui1034: WAVETABLE (machine 46) and GRANULAR (machine 47)
+
+Machines 46 (RS TEST) and 47 (BT TEST) run ext_render with voice flags 0x28 / 0x38 (rytm-teensy core/machines.h
+`kWaveMachine`, `kGranMachine`; `us_flag_tab`). No parameter records are free (334..460 are all 0021's), so their SRC
+pages list MULTISAMPLE's records 398 443 399 400 401 402 406 407 (registry); 0026 sets those up for whichever of the three
+machines uses them (names, looks, texts, defaults, the machine field) and gives 46 / 47 machine 52's ids in
+sound_param_id_for_index's table. `us_page_record` and `us_param_record` treat 46 and 47 as 52 (page 2: the shared
+records through `us_cubox`). Labels, value texts, names and masks are 0026's (design.md "1034"). Emulator only.
+
+## 1045: DSP SAMPLE's SMP banked (record 441)
+
+DSP SAMPLE's SMP (word 19) moves from stock's record 41 to record 441 (index << 8 | bank << 5 over the Sidecar's
+SAMPLES pool, fine-flagged, 0..0x7fe0 by registry patch); TUN (word 17), whose record 441 was a byte-identical copy of
+stock's 39, uses 39 [measured, rytm-emu rui1043]. us_param_record (and ext_param_record for slots=0) map them, the SD
+SAMPLE page lists 39 442 444 441 445..448, 441's look is a dial; 0026 gives it its value text, step and bank list (0026
+design.md "1045"). The .us1 claim grew to all of cave4 (2004 B).
+
+## 1051: LIVE IN (machine 48) and CHOP (machine 49)
+
+Machines 48 (LT TEST) and 49 (MT TEST) run ext_render with voice flags 0x78 / 0x18 (rytm-teensy core/machines.h
+`kLiveMachine`, `kChopMachine`; `us_flag_tab` idx 13 / 14; 0x18 was the host's GRAIN placeholder, never sent - the host
+moved it to 0x98, off the wire). Their engine entries (0x4029043c / 0x40290440) are ext_render; their SRC pages
+(0x4028838c / 0x402883b0) list MULTISAMPLE's records 398 443 399 400 401 402 406 407, set up by 0026 for whichever machine
+uses them; `us_page_record` and `us_param_record` treat 46..49 (WT_MACHINES 4) as 52 (page 2: the shared records through
+`us_cubox`). Labels, value texts, names, masks and page 2's defaults are 0026's (design.md "1051"). Emulator only.

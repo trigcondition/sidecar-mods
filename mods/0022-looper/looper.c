@@ -196,9 +196,11 @@ LP4 int looper_sysex(const uint8_t *d, int32_t len) {
   }
 #endif
 #if LP_RUI   /* build param rui: 1 with 0026-remote-ui */
-  if (d[4] >= 0x30 && d[4] <= 0x3f) {
-    /* Remote UI (38 rect, 39 commit, 3A open/close, 3C keepalive) for 0026: its mailbox at a fixed address
-       (0x401b9e5c, cave23's tail after 0029's), live when the magic 'RUIP' is there (0026's first ev_tick). */
+  if ((d[4] >= 0x30 && d[4] <= 0x3f) || d[4] == 0x28 || d[4] == 0x2e || d[4] == 0x2f || (d[4] >= 0x46 && d[4] <= 0x48) ||
+      d[4] == 0x4a) {
+    /* Remote UI (38 rect, 39 commit, 3A open/close, 3C keepalive; 1030: 28 the chord write-back) for 0026: its
+       mailbox at a fixed address (0x401b9e5c, cave23's tail after 0029's), live when the magic 'RUIP' is there (0026's
+       first ev_tick); 1032: 2E the seq tracks, 2F the PAGE LEDs; 1033: 46 the pinned tracks' silence; 1036: 47 the source lists' names, 48 a parameter write; 1040: 4A the host's file browser over the bank list. */
     volatile uint32_t *mb = (volatile uint32_t *)0x401b9e5cu;
     if (mb[0] == 0x52554950u) ((int (*)(const uint8_t *, int32_t))mb[1])(d, len);
     return 1;
