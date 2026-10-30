@@ -3,15 +3,21 @@
 The source of the Analog Rytm MKII OS mods that Sidecar | Expander uses: the patch sources, the symbol map, the
 allocation registry and the build that turns your own stock OS 1.73 `.syx` into a modded one.
 
-This repository holds the source of the **Rytm firmware 0.3.0** (`rytm-sidecar-0.3.0.elemod` with elekloader's
-`core-0.1.elemod`), released with **Sidecar 0.3.0**.
+This repository holds the source of the **Rytm firmware 0.3.0**, released with **Sidecar 0.3.0** (Raspberry Pi 4B and
+Pi 5). It is one elekloader module, `rytm-sidecar-0.3.0.elemod`, used with elekloader's `core-0.1.elemod` on OS 1.73.
+Build the `.syx` from your own stock file on elekloader's page or command line, or in the browser patcher (build
+`rel0-3-0`); both give the same file.
+
+> **Sidecar Mini (Teensy 4.1) is phased out.** It is frozen at 0.1.0, with its Rytm build `rui1027d` (below): no new
+> features. The 0.1.0 release stays downloadable.
 
 - Release (the two `.elemod` files, `SHA256SUMS`, `LICENSE`, `NOTICE`, the source of elekloader's parts):
   <https://github.com/trigcondition/sidecar-mods/releases/tag/v0.3.0>; install: `docs/ELEKLOADER.md`
-- The older builds (`rui1027d`, `sfx1021`, for Sidecar 0.1.0 and 0.2.0), the browser patcher and install guides:
+- The older builds (`rui1027d`, `sfx1021`, for Sidecar 0.1.0, Sidecar Mini 0.1.0 and Sidecar 0.2.0) and install guides:
   <https://github.com/trigcondition/sidecar-expander/releases>
-- Documentation: <https://trigcondition.github.io/sidecar-expander/>
-- The Sidecar engine: [sidecar-firmware](https://github.com/trigcondition/sidecar-firmware)
+- Documentation and the browser patcher: <https://trigcondition.github.io/sidecar-expander/>
+- The Sidecar engine: [sidecar-firmware](https://github.com/trigcondition/sidecar-firmware), its 0.3.0 release:
+  <https://github.com/trigcondition/sidecar-firmware/releases/tag/v0.3.0>
 
 > **Unofficial, experimental software.** Not affiliated with, endorsed by or supported by Elektron. No Elektron
 > firmware, and nothing extracted from it, is in this repository: you supply the stock `.syx` yourself. Flashing a
@@ -69,14 +75,18 @@ The Sidecar mods as one elekloader module, `rytm-sidecar-<VERSION>.elemod`, with
                           # source of elekloader's parts, SHA256SUMS
     make release-check    # the published files through elekloader's command line and web page code path
 
+`make release-check` takes only the published files and the stock `.syx` through elekloader's command line and its web
+page's code path: MAIN OS must come out as the release build's, the other sections stock.
+
 With the toolchain `TOOLCHAIN.txt` names, `core-0.1.elemod` has sha256
 `33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825` and `rytm-sidecar-0.3.0.elemod`
 `e93a0b2794a8316dad1d6cfe52151820e153d6f86427d12343a5f947cae0c28a`, the released files; the `.syx` elekloader
 builds from them (version 1.73) has sha256 `893ed9a5fc27ab18687c1ea95d7a07f4ff4b23fde235173ce332e54055a733ab`.
 
-## The Sidecar build `rui1027d` (Sidecar 0.1.0 and 0.2.0)
+## The Sidecar build `rui1027d` (Sidecar 0.1.0, Sidecar Mini 0.1.0, Sidecar 0.2.0)
 
-The patch build released with Sidecar 0.1.0 (the browser patcher's 0.2.0 build). From a clean checkout, after `make setup`
+The patch build released with Sidecar 0.1.0 and kept for 0.2.0 (the browser patcher's older build); Sidecar Mini, frozen
+at 0.1.0, stays on it. From a clean checkout, after `make setup`
 and with the stock file in `stock/`:
 
     .venv/bin/python tools/symbols.py
@@ -128,7 +138,7 @@ In the 0.3.0 module and the Sidecar build `rui1027d` (0028 in `rui1027d` only); 
 | 0014 | the hidden machines the firmware carries but never lists |
 | 0021 | external voice machines on every track, for the USB host (the Sidecar), and the user slots |
 | 0022 | looper mode, and switches the other Sidecar mods share |
-| 0023 | the Sidecar's SD card as the SIDECAR folder in the Rytm's sample browser |
+| 0023 | the Sidecar's SD card as the SIDECAR folder in the Rytm's sample browser (the mod's name `teensy-drive` dates from Sidecar Mini) |
 | 0025 | the send FX reporter and its storage |
 | 0026 | the remote pages: the Rytm as a terminal for pages the Sidecar draws, and the SRC view |
 | 0027 | elekloader's core: the boot copier, hook bus and code area for mod code |
