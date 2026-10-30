@@ -1,46 +1,96 @@
-Sidecar | Expander Rytm mods - notices
-======================================
+rytm-mods (Sidecar mods for the Elektron Analog Rytm MKII, OS 1.73)
+Copyright (C) 2026 trigcondition
 
-Copyright (c) 2026 trigcondition and contributors.
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 2 of the License, or (at your option) any later
+version. See LICENSE for version 2. SPDX-License-Identifier: GPL-2.0-or-later
 
-Unofficial software. Not affiliated with, endorsed by or supported by Elektron
-Music Machines. "Analog Rytm" and "Overbridge" are trademarks of their owner and
-are used only to say what this software works with.
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-Licence of this repository
---------------------------
-The patch sources, tools and documentation here are licensed under the GNU
-General Public License, version 2 or (at your option) any later version
-(GPL-2.0-or-later): LICENSE.
+Corresponding source
+--------------------
+The published files of a release (rytm-sidecar-<version>.elemod, and
+core-0.1.elemod beside it) are built from this repository at the release's
+tag, v<version>, at https://github.com/trigcondition/sidecar-mods:
+`make setup`, then `make release` (docs/ELEKLOADER.md), with the toolchain
+the release's TOOLCHAIN.txt names (the bytes depend on the m68k-elf-as
+version). That tag holds the complete source of our bytes (mods/,
+registry/, re/, tools/) and pins the exact third-party sources the build
+uses (Makefile, tools/build.py):
 
-No firmware
------------
-No Elektron firmware, and nothing extracted from it, is in this repository:
-no .syx, no sections, no disassembly listings or code blocks copied from the
-image (a detour re-emits the one or two instructions it displaces, written as
-assembly source, as any patch must). You supply
-your own stock OS file (stock/SHA256SUMS names the one the build is pinned to);
-every build starts from it. Addresses in re/ and mods/ document where a patch
-goes in that image; they are facts about it, not part of it. The registry's
-guards hold the stock bytes they expect only as length + SHA-256, and a patch
-that copies a stock record names its address (replace_from): the build reads
-both from your image (tools/hash_expect.py).
+  - core-0.1.elemod is elekloader's core-ar2 0.1, built unchanged by
+    elekloader's own builder from mods/core-ar2 and mods/core at elekloader
+    commit 8972d70629f230af99c63c8624a886b33ec08299
+    (https://github.com/irpina/elekloader, GPL-2.0-or-later);
+  - the builder, linker and packer are elekloader at commit
+    c150ac583a4b7e6d64680d5592f4a40f409193f7.
 
-Mods 0002-euclid-accents and 0003-velocity-humanise (older experiments, not in
-any Sidecar release) are not published: 0002's accent icons were made from the
-stock glyph bitmaps.
+Their source is also in the release folder, beside the files (GPL-2.0
+section 3): elekloader-8972d70-core-ar2-src.tar.gz (mods/core and
+mods/core-ar2 at 8972d70, with elekloader's LICENSE and NOTICE) and
+elekloader-c150ac5-src.tar.gz (all of elekloader at c150ac5).
+
+Some of our stubs are generated from C (mods/*/build.sh says how); the C file
+is the source, the generated stub.s is committed beside it.
 
 Third-party code
 ----------------
-Not vendored here; `make setup` clones each at a pinned commit into vendor/
-(git-ignored):
+Nothing below is copied into this repository. `make setup` fetches it into
+vendor/ (git-ignored) at pinned commits, and the build executes it.
 
-  elektron-firmware-tool   MIT, Copyright (c) 2026 Marcel Bierling
-                           https://github.com/mischa85/elektron-firmware-tool
-  elekloader               GPL-2.0-or-later, Copyright (C) 2026 irpina and
-                           contributors (with code from digikit, GPL-2.0-or-later)
-                           https://github.com/irpina/elekloader
-                           (used by builds with 0027-elekloader)
+  vendor/elekloader
+      https://github.com/irpina/elekloader, (C) 2026 irpina and contributors,
+      GPL-2.0-or-later (its LICENSE and NOTICE; its js/ kit, not used here, is
+      GPL-3.0-or-later). Builds the elemods, links them into the image
+      with its core-ar2 (boot copier and hook bus), packs and checks the .syx.
+      A built image, and core-0.1.elemod, contain elekloader's core-ar2 code.
 
-The Python packages in requirements.txt are installed from PyPI under their own
-licences.
+  vendor/elektron-firmware-tool
+      https://github.com/mischa85/elektron-firmware-tool, (C) 2026 Marcel
+      Bierling, MIT licence (its LICENSE). Unpacks and repacks the .syx
+      container; our checks extract every image with it.
+
+Facts, not code
+---------------
+  - mods/0020-dmach's phase-modulation and interpolated-sine cores follow
+    Mutable Instruments Braids (MIT, (c) 2012 Emilie Gillet), as dmach.c says.
+    0020 is not in any release bundle. To the extent its code is adapted from
+    Braids, that part is under Braids' licence:
+
+      Copyright 2012 Emilie Gillet.
+
+      Permission is hereby granted, free of charge, to any person obtaining a
+      copy of this software and associated documentation files (the
+      "Software"), to deal in the Software without restriction, including
+      without limitation the rights to use, copy, modify, merge, publish,
+      distribute, sublicense, and/or sell copies of the Software, and to
+      permit persons to whom the Software is furnished to do so, subject to
+      the following conditions:
+
+      The above copyright notice and this permission notice shall be included
+      in all copies or substantial portions of the Software.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+      OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+      MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+      IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+      CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+      TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+      SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+  - core-ar2's site list and the area's evidence come from elekloader's docs
+    and Iced-Cream/rytm-mods-src (GPL-2.0); they are cited, not copied
+    (mods/0027-elekloader/design.md).
+
+Elektron
+--------
+Elektron and Analog Rytm are trademarks of Elektron Music Machines. This
+project is not affiliated with or endorsed by Elektron. It contains no
+Elektron firmware and publishes no firmware image: the .elemod files carry
+our own bytes and the sha256 of the stock bytes they replace, plus a few
+short stock fragments where a mod must repeat them (the stock instructions a
+detour stub re-executes, and the 2-byte stock words of the core-0.2 guard
+sites, which leave the image unchanged). Every image is built on the user's
+machine from the stock OS file the user supplies. Never publish a built .syx: it contains Elektron's code.

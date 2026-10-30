@@ -235,8 +235,11 @@ def t_kits(e):
             kit_of_a2 != 0 and (1, 2) in ty and (5, 6) in ty and ty.index((1, 2)) < ty.index((5, 6)), str(ty))
 
 
-# struct sfu_x (sfu.c): lab[8] (130 B each), gen, shown_gen, cur[2], shown[2], lbl[2][4][5], fxset, dial, counters
-X_GEN, X_CUR, X_LBL, X_CNT = 1040, 1048, 1052, 1100   # counters: fxset_changes lab_drop lab_rx asks tx_busy relabels
+# struct sfu_x (sfu.c): lab[NLT] (130 B each), gen, shown_gen, cur[2], shown[2], lbl[2][4][5], fxset, dial, counters.
+# NLT 16 since rui1049 (8 before): every offset below moves by DL
+NLT = 16
+DL = 130 * (NLT - 8)
+X_GEN, X_CUR, X_LBL, X_CNT = 1040 + DL, 1048 + DL, 1052 + DL, 1100 + DL   # counters: fxset_changes lab_drop lab_rx asks tx_busy relabels
 
 
 def lbl(e, snap, fx):
@@ -299,7 +302,7 @@ def t_labels(e):
             lbl(e, s, 0) == ["P2", "P3", "P4", "P5"], str(lbl(e, s, 0)))
 
 
-X_TIME = 1124   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
+X_TIME = 1124 + DL   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
 ST_TICKS = 1034   # m68k: 2-byte alignment (calls at 1030)
 
 
@@ -333,7 +336,7 @@ def t_cost(e):
     U.check("cost: no 0029 UI call above 100 k instructions", ui_max * k <= 100000, f"{ui_max * k:.0f}")
     U.check("cost: no host message above 100 k instructions in 0029's MIDI-task handler", mt_max * k <= 100000,
             f"{mt_max * k:.0f}")
-    lv_sum, lv_max, lv_n = (e.u32(s, a + 5378 + 4 * i) for i in range(3))   # 0021's us_live, from 0029's ev_tick
+    lv_sum, lv_max, lv_n = (e.u32(s, a + 5378 + DL + 4 * i) for i in range(3))   # 0021's us_live, from 0029's ev_tick
     if lv_n:
         print(f"    0021 us_live (slot menu refresh): {lv_n} calls, {lv_sum * k / lv_n:.0f} instr/call, worst {lv_max * k:.0f}")
         U.check("cost: 0021's us_live <= 10 k instructions a tick on average, no call above 100 k",
@@ -342,8 +345,8 @@ def t_cost(e):
 
 # ---- sfx-enum-knobs (2026-10-18): stepped knobs as stock's FILTER TYPE (record 49) ----
 # struct sfu_x, appended fields (sfu.c; offsets from m68k-elf-gcc offsetof)
-X_UN, X_KN, X_KLO, X_LOOK, X_STEPS = 1412, 1420, 1428, 1524, 1552
-X_XM = 1560                      # xm[127], then xn[127] (0021's records 334..460)
+X_UN, X_KN, X_KLO, X_LOOK, X_STEPS = 1412 + DL, 1420 + DL, 1428 + DL, 1524 + DL, 1552 + DL
+X_XM = 1560 + DL                 # xm[127], then xn[127] (0021's records 334..460)
 REC = lambda r: 0x401bf918 + 0x34 * r          # noqa: E731
 DESC = lambda r: 0x419a4888 + 84 * r           # noqa: E731
 # Turns start LATE after the base resumes: in its first seconds the FX track's views take a turn as already awake
@@ -450,8 +453,8 @@ def t_typelist(e):
         s = e.run(f"tlist-{k}", t + 20 + 30 * k + 150, evk, save=True, extra=poke_type(e, 1, 0))
         seq.append(w16(e, s, FXW) >> 8)
     un = e.u32(s, a + X_UN)
-    U.check("typelist: the UI's list is the 21's (5 ids, OFF first)", un == 5 and list(e.peek(s, a + 1284, 5)) ==
-            [0, 2, 6, 15, 64], f"un {un} {e.peek(s, a + 1284, 5).hex()}")
+    U.check("typelist: the UI's list is the 21's (5 ids, OFF first)", un == 5 and list(e.peek(s, a + 1284 + DL, 5)) ==
+            [0, 2, 6, 15, 64], f"un {un} {e.peek(s, a + 1284 + DL, 5).hex()}")
     order = [0, 2, 6, 15, 64]
     pos = [order.index(v) if v in order else -9 for v in seq]
     U.check("typelist: TYPE steps OFF -> COMB -> RINGS -> STUTTER (the list's order, never an unlisted id, never "

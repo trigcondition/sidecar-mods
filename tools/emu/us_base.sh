@@ -9,11 +9,11 @@
 #   sections/us_<TAG>.snap         the state after the boot and the settings
 #   sections/us_<TAG>.json         {"clock": the snapshot's clock in M instructions}
 # and in this checkout build/emu/<TAG>/: the build's manifest and its 0021 / 0023 objects (us_emu.py's symbols).
-# RYTM_EMU: rytm-emu's checkout (default ../rytm-emu, a sibling checkout of this repo).
+# RYTM_EMU: rytm-emu's checkout (default ../rytm-emu).
 set -eo pipefail
 TAG=${1:?usage: us_base.sh TAG}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-EMU=${RYTM_EMU:-$(cd "$(dirname "$0")/../../.." && pwd)/rytm-emu}
+EMU=${RYTM_EMU:-../rytm-emu}
 SYX="$ROOT/build/Analog-Rytm_MKII_OS1.73_$TAG.syx"
 [ -f "$SYX" ] || { echo "no $SYX: build it first (tools/build.py --tag $TAG ...)"; exit 1; }
 # the objects us_emu.py reads symbols from and the manifest (params): build/obj holds the last build's, so this runs
@@ -34,7 +34,7 @@ for m in 0021-ext 0023-teensy-drive; do cp "$ROOT/build/obj/$m.elf" "$ROOT/build
 cd "$EMU"
 FW=fw/AR173_us_$TAG.syx CARD=sections/us_$TAG.img SNAP=sections/us_$TAG.snap
 cp "$SYX" "$FW"
-cp sections/led.img "$CARD"
+cp -c sections/led.img "$CARD"   # an APFS clone, not a 906 MB copy
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 # dtboot RUN...: run dtboot, show its saved/FAULT lines, abort on a FAULT or a failed run

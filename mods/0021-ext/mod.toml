@@ -17,6 +17,8 @@ enabled = false
 excludes = ["0020-dmach", "0002-euclid-accents", "0003-velocity-humanise", "0006-comp-preview", "0013-voice-dac", "0009-main-rms", "0004-lfo-rnd", "0010-kit-ab"]
 # The user slots take over FUNC. GEN.'s records 403..405 and LT/CB TEST's 438, 457..460 (page 2's
 # shared records): never with 0014 listing those machines (build.py check_param_excludes).
+# rui1031: BT IMPROVED's records 398..402 are MULTISAMPLE's knobs (slots=1): with 0014 variants=1 BT IMPROVED is listed
+# without them (no build of record uses variants=1; the us1 config test still allows it).
 excludes_params = ["0014-hidden-machines:funcgen", "0014-hidden-machines:test"]
 # slots: 0022 (its router passes the slots' SysEx) and 0023 (the 12 B mailbox, td_pool_tab) gate their
 # parts on their own `slots`; build.py refuses an image where they differ (--param slots=N sets all three).
@@ -71,3 +73,5 @@ slots = 0
 [requires]
 shared = false
 symbols = []
+# the Sidecar's messages (user slots, names) reach it only through 0022's SysEx router; elekloader's `requires` (with what build.py finds in the bytes; tools/build.py cross_refs)
+mods = ["0022-looper"]

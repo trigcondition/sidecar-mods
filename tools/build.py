@@ -101,6 +101,9 @@ def load_mods(only):
         mod["_elek"] = m.get("elek", {})
         mod["_provides"] = bool(mod.get("provides_shared"))
         mod["_needs_shared"] = bool(m.get("requires", {}).get("shared"))
+        # mods it needs that no address shows (a mailbox it waits on, data another keeps):
+        # the elemods' `requires` (elek_build), next to the references found in the bytes
+        mod["_needs_mods"] = list(m.get("requires", {}).get("mods", []))
         if only is not None:
             mod["enabled"] = mod["id"] in only
         mods[mod["id"]] = mod
@@ -243,11 +246,41 @@ def check_linked_params(mods, enabled):
 # elekloader (mods/0027-elekloader/design.md). vendor/elekloader is GPL-2.0-or-later
 # and is only executed here, like elektron-firmware-tool: nothing of it is copied into
 # this repository. The pinned commit is the Makefile's ELEK_REV; build.py refuses another.
+# The core is built from its source as it was at ELEK_CORE_REV (the same repository): core-ar2
+# 0.1, the last core for OS 1.73 without mod storage, which the Rytm runs since rui1051.
+# Upstream's main has moved core-ar2 to 0.6, OS 1.74 only; 0.2 (storage) collides with our
+# sound and kit bytes (mods/0027-elekloader/design.md section 8). The current builder makes
+# from that source the same core-0.1.elemod 8972d70 made (sha256 33de51c0..., measured).
 ELEK_DIR = ROOT / "vendor" / "elekloader"
-ELEK_REV = "8972d70629f230af99c63c8624a886b33ec08299"
+ELEK_REV = "c150ac583a4b7e6d64680d5592f4a40f409193f7"
+ELEK_CORE_REV = "8972d70629f230af99c63c8624a886b33ec08299"
+ELEK_CORE_VERSION = "0.1"
 ELEK_MOD = "0027-elekloader"
 ELEK_CROSS = "m68k-elf-"
 ELEK_ID = "rytm-"          # elemod id = this + the mod's id, e.g. rytm-0021-ext
+
+# --elek-bundle: one elemod for the whole set, the file we publish for the elekloader web page
+# (docs/ELEKLOADER.md). Its version is the release's, from VERSION (the one version source).
+BUNDLE_ID = "rytm-sidecar"
+BUNDLE_META = {
+    "title": "Sidecar for the Analog Rytm MKII",
+    "category": "Sidecar", "author": "trigcondition", "license": "GPL-2.0-or-later",
+}
+HOMEPAGE = "https://github.com/trigcondition/sidecar-mods"
+
+# core-ar2 0.2 and newer keep mod storage in the sound's and the kit's spare bytes, the bytes
+# 0013 / 0021 (sound) and 0025 (kit FX words 38..41) already use (design.md section 8). The
+# format cannot say "core 0.1 only" (requires names an id, resources.core is a minimum), so a
+# mod with that data claims, with a site that leaves the stock bytes as they are, the first
+# word of each storage hook core 0.2 adds on 1.73 (92a99c9 mods/core-ar2/mod.json, the same
+# sites every later 1.73 core keeps): elekloader then refuses the mod with any such core
+# ("... overlap"), and links it with 0.1 as before. Nothing in the image changes.
+CORE_STORE_GUARD = {
+    "sound": [(0x4000843a, "st_sound_save"), (0x400081f6, "st_sound_load")],
+    "kit": [(0x400088d6, "st_kit_save"), (0x4000863e, "st_kit_load")],
+}
+CORE_STORE_SCOPES = {"0013-voice-dac": ["sound"], "0021-ext": ["sound"],
+                     "0025-sendfx-report": ["kit"]}
 
 
 def elek_pinning(meta):
@@ -334,13 +367,55 @@ def elek_source(mod, dst):
          objdir / f"{mod['id']}.elf", mod["_dir"] / mod["_sources"]["stub"]])
 
 
+def read_version():
+    """The release version, from VERSION at the repository's root (the one place it is set)."""
+    v = (ROOT / "VERSION").read_text().strip()
+    if not v or any(c.isspace() for c in v):
+        raise SystemExit(f"VERSION: {v!r} is not a version")
+    return v
+
+
+def cross_refs(blobs, mid, cave_spans):
+    """The other mods `mid`'s bytes point into: every 32-bit word, at every even offset of
+    its sites' new bytes and its area code, that falls in another enabled mod's cave claim
+    (a mailbox, a table, a routine at a fixed address). -> {owner: {addresses}}."""
+    out = {}
+    for b in blobs:
+        for i in range(0, len(b) - 3, 2):
+            w = int.from_bytes(b[i:i + 4], "big")
+            for lo, hi, owner in cave_spans:
+                if lo <= w < hi and owner != mid:
+                    out.setdefault(owner, set()).add(w)
+    return out
+
+
+def area_code(mid):
+    """The allocated bytes of an area mod's -mcpu=5475 assembly (elek_source), for cross_refs.
+    Absolute addresses are in them as assembled: they need no relocation."""
+    sys.path.insert(0, str(ELEK_DIR))
+    try:
+        from elekloader.sdk import elf
+    finally:
+        sys.path.pop(0)
+    e = elf.Elf.load(str(BUILD / "obj" / f"{mid}.elf"))
+    return [bytes(x.data) for x in e.sections if x.flags & 2 and x.data]
+
+
+def defined_labels(mid):
+    """Labels an area mod's assembly defines in its own sections (not absolute equates)."""
+    out = run(["m68k-elf-nm", BUILD / "obj" / f"{mid}.elf"])
+    return {f[2] for f in (l.split() for l in out.splitlines()) if len(f) == 3 and f[1] not in "aAU"}
+
+
 def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, reg_claims,
-               elek_patches):
+               elek_patches, cave_spans, bundle):
     """Hand the patched image to elekloader: every byte build.py changed becomes a site
-    of one format-2 mod ("rytm-mods", its stock bytes pinned by sha256 again), the area =
-    "elek" mods' sources its code, their elek detours `jmp` sites; elekloader links that
-    code into its DDR area with its core (core-ar2), appends the boot copier, repacks and
-    verifies. Returns the manifest's "elek" record, plus "_mainos" (the depacked MAIN OS)."""
+    (its stock bytes pinned by sha256 again), the area = "elek" mods' sources code, their
+    elek detours `jmp` sites; elekloader links that code into its DDR area with its core
+    (core-ar2), appends the boot copier, repacks and verifies. One format-2 mod per
+    rytm-mods mod (rytm-<id>, version = the tag), or with `bundle` one for the whole set
+    (BUNDLE_ID, version = VERSION). Returns the manifest's "elek" record, plus "_mainos"
+    (the depacked MAIN OS)."""
     rev, ddr = elek_pinning(meta)
     base = meta["base"]
     core = mods[ELEK_MOD].get("_elek", {}).get("core", "core-ar2")
@@ -353,33 +428,34 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
     def elek(*args):
         return run([py, "-m", *args], cwd=ELEK_DIR, env=env)
 
-    elek("elekloader.sdk.build", ELEK_DIR / "mods" / core, "--stock", STOCK_SYX,
+    # the core's source at ELEK_CORE_REV: its mod.json names ../core/*.s, so both folders
+    src = work / "core-src"
+    src.mkdir()
+    arc = subprocess.run(["git", "-C", ELEK_DIR, "archive", ELEK_CORE_REV, "mods/core",
+                          f"mods/{core}"], check=True, capture_output=True).stdout
+    subprocess.run(["tar", "-x", "-C", src], input=arc, check=True)
+    cver = json.loads((src / "mods" / core / "mod.json").read_text())["version"]
+    if cver != ELEK_CORE_VERSION:
+        raise SystemExit(f"{core} at {ELEK_CORE_REV[:7]} is {cver}, not {ELEK_CORE_VERSION}")
+    elek("elekloader.sdk.build", src / "mods" / core, "--stock", STOCK_SYX,
          "--out", work / "core")
     core_mod = next((work / "core").glob("*.elemod"))
 
-    # one format-2 mod per rytm-mods mod, so each is an ordinary elekloader module that
-    # combines with anyone else's for the Rytm under elekloader's own checks: its sites are
-    # the bytes its registry claims changed (each pinned again by elekloader through the
-    # stock bytes' sha256); an area = "elek" mod adds its sources, subscriptions and its
-    # elek detours (jmp sites elekloader resolves)
+    # the sites of each rytm-mods mod are the bytes its registry claims changed (each pinned
+    # again by elekloader through the stock bytes' sha256); an area = "elek" mod adds its
+    # sources, subscriptions and its elek detours (jmp sites elekloader resolves)
     owner_of = owners_of_changes(stock_img, bytes(img), base, reg_claims)
     elek_mods = sorted(m for m in enabled if mods[m].get("area") == "elek")
     shutil.copy(BUILD / "symbols.inc", work / "symbols.inc")
-    built, nsites = [], 0
-    for mid in sorted(set(owner_of.values()) | set(elek_mods)):
-        mdir = work / "mods" / mid
-        mdir.mkdir(parents=True)
+    members = sorted(set(owner_of.values()) | set(elek_mods))
+    for mid in elek_mods:
+        elek_source(mods[mid], work / f"{mid}.s")
+
+    def sites_of(mid):
         sites = [{"addr": f"0x{a:08x}", "stock": st.hex(), "op": "bytes", "new": nw.hex()}
                  for a, st, nw in change_runs(stock_img, bytes(img), base,
                                               lambda va: owner_of.get(va) == mid)]
-        sources, subscribe = [], []
         if mid in elek_mods:
-            elek_source(mods[mid], mdir / "stub.s")
-            shutil.copy(work / "symbols.inc", mdir / "symbols.inc")
-            if (BUILD / "shared.inc").exists():
-                shutil.copy(BUILD / "shared.inc", mdir / "shared.inc")
-            sources = ["stub.s"]
-            subscribe = mods[mid].get("_elek", {}).get("subscribe", [])
             for d in elek_detours:
                 if d["owner"] == mid:
                     # elek_size: a jmp whose 6 bytes end mid-instruction covers the whole
@@ -392,21 +468,113 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                 if q["owner"] == mid:
                     sites.append({"addr": f"0x{q['addr']:08x}", "stock": q["expect"],
                                   "op": "ptr", "target": q["from_symbol"]})
-        requires = (["core"] if mid in elek_mods else []) + \
-            [ELEK_ID + p for p in sorted(enabled) if mods[p].get("_provides") and
-             mods[mid].get("_needs_shared") and p != mid]
-        modjson = {"id": ELEK_ID + mid, "version": tag, "title": mods[mid]["title"],
-                   "category": "rytm-mods", "author": "rytm-mods",
-                   "license": "NOASSERTION",
-                   "description": (mods[mid].get("summary") or "").strip()[:1000],
-                   "device": "analog-rytm-mk2", "os": "1.73", "requires": requires,
-                   "sources": sources, "subscribe": subscribe, "sites": sites,
-                   "defsym": {f"P_{k.upper()}": int(v) for k, v in mods[mid]["_params"].items()}
-                   if mid in elek_mods else {}}
+        for scope in CORE_STORE_SCOPES.get(mid, []):
+            for addr, what in CORE_STORE_GUARD[scope]:
+                o = addr - base
+                # the word still stock: claim it. Changed: some mod's real site there guards it
+                # already (in per-mod mode possibly another mod's file)
+                if img[o:o + 2] == stock_img[o:o + 2]:
+                    sites.append({"addr": f"0x{addr:08x}", "stock": stock_img[o:o + 2].hex(),
+                                  "op": "bytes", "new": stock_img[o:o + 2].hex()})
+        return sites
+
+    # what each mod needs of the others: the addresses its bytes point to (cross_refs) and
+    # what its mod.toml names ([requires] mods)
+    needs, found = {}, {}
+    for mid in members:
+        blobs = [nw for a, st, nw in change_runs(stock_img, bytes(img), base,
+                                                 lambda va, m=mid: owner_of.get(va) == m)]
+        if mid in elek_mods:
+            blobs += area_code(mid)
+        found[mid] = cross_refs(blobs, mid, cave_spans)
+        needs[mid] = set(found[mid]) | set(mods[mid]["_needs_mods"])
+        if mods[mid].get("_needs_shared"):
+            needs[mid] |= {p for p in enabled if mods[p].get("_provides") and p != mid}
+    for mid in members:
+        for other in sorted(needs[mid] - enabled):
+            print(f"WARNING: {mid} needs {other}, which is not in this build")
+
+    if bundle:
+        version = read_version()
+        missing = {mid: sorted(needs[mid] - set(members)) for mid in members
+                   if needs[mid] - set(members)}
+        if missing:
+            raise SystemExit(f"--elek-bundle: the bundle lacks what its mods need: {missing}")
+        # one link unit: a jmp / ptr / subscriber is found by name, so each must be
+        # defined by one member only
+        labels = {mid: defined_labels(mid) for mid in elek_mods}
+        for mid in elek_mods:
+            names = [d["entry"] for d in elek_detours if d["owner"] == mid] + \
+                [q["from_symbol"] for q in elek_patches if q["owner"] == mid] + \
+                [x["fn"] for x in mods[mid].get("_elek", {}).get("subscribe", [])]
+            for n in names:
+                dup = [o for o in elek_mods if o != mid and n in labels[o]]
+                if dup:
+                    raise SystemExit(f"--elek-bundle: {mid}'s {n} is also defined by {dup}")
+        units = [(BUNDLE_ID, version, members)]
+    else:
+        units = [(ELEK_ID + mid, tag, [mid]) for mid in members]
+    unit_of = {mid: eid for eid, _v, ms in units for mid in ms}
+
+    built, nsites, sources_of = [], 0, {}
+    for eid, version, ms in units:
+        mdir = work / "mods" / eid
+        mdir.mkdir(parents=True)
+        sites, sources, subscribe, defsym = [], [], [], {}
+        for mid in ms:
+            sites += sites_of(mid)
+            if mid not in elek_mods:
+                continue
+            subscribe += mods[mid].get("_elek", {}).get("subscribe", [])
+            prm = {f"P_{k.upper()}": int(v) for k, v in mods[mid]["_params"].items()}
+            if bundle:
+                # several stubs in one mod: each gets its own params as .set lines, as
+                # elekloader's defsym would give every source all of them
+                body = (work / f"{mid}.s").read_text()
+                pre = "".join(f"        .set    {k}, {v}\n" for k, v in sorted(prm.items()))
+                # each stub's .run padded to 4 with zeros, as the linker pads each mod's
+                # section: the members then sit where their own elemods would put them
+                pad = '        .section .run, "ax"\n        .balign 4, 0\n'
+                (mdir / f"{mid}.s").write_text(f"| {mid}\n" + pre + body + pad)
+                sources.append(f"{mid}.s")
+            else:
+                shutil.copy(work / f"{mid}.s", mdir / "stub.s")
+                sources.append("stub.s")
+                defsym = prm
+        if sources:
+            shutil.copy(work / "symbols.inc", mdir / "symbols.inc")
+            if (BUILD / "shared.inc").exists():
+                shutil.copy(BUILD / "shared.inc", mdir / "shared.inc")
+        requires = (["core"] if sources else []) + \
+            sorted({unit_of[o] for mid in ms for o in needs[mid] if o in unit_of} - {eid})
+        conflicts = sorted({ELEK_ID + x for mid in ms for x in mods[mid].get("excludes", [])
+                            if x not in ms})
+        if bundle:
+            modjson = {"id": eid, "version": version, **BUNDLE_META,
+                       "description": (
+                           f"The Sidecar's mods for the Analog Rytm MKII on OS 1.73: "
+                           + ", ".join(ms) + ". Use it with core-ar2 0.1 (core-0.1.elemod, "
+                           f"published beside it) only: core 0.2 and newer keep their mod storage "
+                           f"in bytes these mods already use, and are refused. Source, licence "
+                           f"(GPL-2.0-or-later) and the install guide: {HOMEPAGE} "
+                           f"(tag v{version}, docs/ELEKLOADER.md).")}
+        else:
+            mid = ms[0]
+            modjson = {"id": eid, "version": version, "title": mods[mid]["title"],
+                       "category": "rytm-mods", "author": BUNDLE_META["author"],
+                       "license": BUNDLE_META["license"],
+                       "description": ((mods[mid].get("summary") or "").strip()[:900] +
+                                       f" Built for this set only (tag {tag}). {HOMEPAGE}")}
+        modjson.update({"device": "analog-rytm-mk2", "os": "1.73", "requires": requires,
+                        "conflicts": conflicts,
+                        "resources": {"core": ELEK_CORE_VERSION} if sources else {},
+                        "sources": sources, "subscribe": subscribe, "sites": sites,
+                        "defsym": defsym})
         (mdir / "mod.json").write_text(json.dumps(modjson, indent=1) + "\n")
         elek("elekloader.sdk.build", mdir, "--stock", STOCK_SYX, "--out", mdir / "out")
         built.append(next((mdir / "out").glob("*.elemod")))
         nsites += len(sites)
+        sources_of[eid] = ms
     version = STOCK_SYX.read_bytes()[0x3b:0x3f].decode()   # the stock container's "1.73"
     log = elek("elekloader.patch", "--stock", STOCK_SYX, "--mod", core_mod,
                *[x for b in built for x in ("--mod", b)], "--out", syx_out, "--version", version)
@@ -423,7 +591,7 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
     lay = man["link"]["layout"]
     detours = []
     for d in elek_detours:
-        target = smap.get(f"{ELEK_ID}{d['owner']}:{d['entry']}")
+        target = smap.get(f"{unit_of[d['owner']]}:{d['entry']}")
         if target is None or not (ddr[0] <= target < ddr[1]):
             raise SystemExit(f"{d['owner']}: {d['entry']} not placed in the area ({target})")
         rejoin = d.get("rejoin", d["addr"] + len(bytes.fromhex(d["expect"])))
@@ -432,15 +600,58 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                         "reemit": d.get("reemit", True), "elek": True})
     patches = []
     for q in elek_patches:
-        target = smap.get(f"{ELEK_ID}{q['owner']}:{q['from_symbol']}")
+        target = smap.get(f"{unit_of[q['owner']]}:{q['from_symbol']}")
         if target is None or not (ddr[0] <= target < ddr[1]):
             raise SystemExit(f"{q['owner']}: {q['from_symbol']} not placed in the area ({target})")
         patches.append({"mod": q["owner"], "addr": q["addr"], "symbol": q["from_symbol"],
                         "expect": q["expect"], "target": target})
+    if bundle:
+        # each member's labels as rytm-<id>:<label>, as its own elemod would name them (the
+        # emulator suites and the per-mod manifests use these): its offset in the bundle's
+        # .run / .bss is the members before it, in source order, each aligned as ld -r does
+        sys.path.insert(0, str(ELEK_DIR))
+        try:
+            from elekloader.sdk import elf
+        finally:
+            sys.path.pop(0)
+        wdir = work / "mods" / BUNDLE_ID / "out" / f"{BUNDLE_ID}.work"
+        at = {sec: lay["sections"][f"{BUNDLE_ID} {sec}"] for sec in (".run", ".bss")
+              if f"{BUNDLE_ID} {sec}" in lay["sections"]}
+        for mid in elek_mods:
+            e = elf.Elf.load(str(wdir / f"{mid}.s.o"))
+            base_of = {}
+            for x in e.sections:
+                if x.name in at:
+                    a = max(1, x.align)
+                    at[x.name] = (at[x.name] + a - 1) // a * a
+                    base_of[x.idx] = (x.name, at[x.name])
+            for y in e.symbols:
+                if y.shndx in base_of and y.name and not y.name.startswith(".L") \
+                        and y.type not in (elf.STT_SECTION, elf.STT_FILE):
+                    smap.setdefault(f"{ELEK_ID}{mid}:{y.name}", base_of[y.shndx][1] + y.value)
+                elif y.shndx == elf.SHN_ABS and y.name and y.type != elf.STT_FILE:
+                    smap.setdefault(f"{ELEK_ID}{mid}:{y.name}", y.value)
+            for x in e.sections:
+                if x.idx in base_of:
+                    at[x.name] += x.size
+        for k, v in list(smap.items()):    # the computed names must agree with the linker's
+            if k.startswith(BUNDLE_ID + ":"):
+                n = k.split(":", 1)[1]
+                own = [smap[f"{ELEK_ID}{m}:{n}"] for m in elek_mods if f"{ELEK_ID}{m}:{n}" in smap]
+                if len(own) == 1 and own[0] != v:
+                    raise SystemExit(f"bundle symbol {n}: linker 0x{v:08x}, computed 0x{own[0]:08x}")
     print("  elekloader:", " | ".join(l.strip() for l in log.splitlines()
                                       if l.startswith(("linked", "verified", "WROTE"))))
-    return {"rev": rev, "core": core, "core_elemod_sha256": sha256(core_mod.read_bytes()),
+    # what made the bytes: elekloader's builder assembles with the local binutils
+    asv = run(["m68k-elf-as", "--version"]).splitlines()[0]
+    return {"rev": rev, "core": core, "core_rev": ELEK_CORE_REV,
+            "toolchain": {"as": asv, "python": sys.version.split()[0]},
+            "core_elemod": core_mod.name, "core_elemod_sha256": sha256(core_mod.read_bytes()),
+            "bundle": bool(bundle), "units": sources_of,
             "elemods": {b.name: sha256(b.read_bytes()) for b in built}, "sites": nsites,
+            "requires": {mid: sorted(needs[mid]) for mid in members},
+            "refs": {mid: {o: sorted(f"0x{w:08x}" for w in ws) for o, ws in found[mid].items()}
+                     for mid in members if found[mid]},
             "version": version, "layout": lay, "area": list(ddr),
             "mods": elek_mods, "detours": detours, "patches": patches,
             "symbols": {k: v for k, v in smap.items()
@@ -459,6 +670,9 @@ def main():
     ap.add_argument("--area-elek", action="append", default=[], metavar="MOD",
                     help="link this mod's code into elekloader's DDR area instead of its caves "
                          "(needs 0027-elekloader; mods/0027-elekloader/design.md)")
+    ap.add_argument("--elek-bundle", action="store_true",
+                    help="with 0027-elekloader: one elemod for the whole set (rytm-sidecar-<VERSION>), "
+                         "not one per mod (docs/ELEKLOADER.md)")
     ap.add_argument("--param", action="append", default=[], metavar="MOD:KEY=VAL",
                     help="override a mod param for an ablation build; KEY=VAL without MOD: "
                          "sets a linked param (linked_params) on every mod that lists it")
@@ -742,11 +956,16 @@ def main():
         claims = [(a["stub_addr"], a["stub_size"], a["mod"]) for a in applied] + \
                  [(d["addr"], 6, d["mod"]) for d in detours_applied] + \
                  [(q["addr"], len(q["replace"]) // 2, q["mod"]) for q in patches_applied]
+        cave_spans = [(c["addr"], c["addr"] + c["size"], c["owner"]) for c in reg.get("cave", [])
+                      if c["owner"] in enabled and
+                      not layout.gated_out(c.get("gate"), mods[c["owner"]]["_params"], c["owner"])]
         elek = elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, claims,
-                          elek_patches)
+                          elek_patches, cave_spans, args.elek_bundle)
         detours_applied += elek["detours"]
         img = bytearray(elek.pop("_mainos"))   # stock length + the appended .boot and blob
     else:
+        if args.elek_bundle:
+            raise SystemExit(f"--elek-bundle needs {ELEK_MOD} in the build")
         for mid in sorted(enabled):
             if mods[mid].get("area") == "elek":
                 raise SystemExit(f"{mid} is area = \"elek\": it needs {ELEK_MOD} in the image")

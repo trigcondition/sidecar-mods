@@ -18,8 +18,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "rytm-emu"))
-TEENSY = os.environ.get("RYTM_TEENSY", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "sidecar-firmware"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
+TEENSY = os.environ.get("RYTM_TEENSY", "../rytm-teensy")
 sys.path.insert(0, os.path.join(TEENSY, "sim"))
 import protocol as P   # noqa: E402
 
@@ -59,7 +59,7 @@ class Emu:
         self.card = f"sections/us_{tag}.img"
         self.snap = f"sections/us_{tag}.snap"
         self.clock = json.load(open(os.path.join(EMU, f"sections/us_{tag}.json")))["clock"]
-        self.out = os.path.join(ROOT, "build", "emu", tag)
+        self.out = os.path.join(os.environ.get("RYTM_OUT_ROOT") or os.path.join(ROOT, "build", "emu"), tag)
         os.makedirs(self.out, exist_ok=True)
         m = json.load(open(os.path.join(self.out, "manifest.json")))
         self.syms = m["elek"]["symbols"]
@@ -488,8 +488,8 @@ def t_splash(e):
     r = e.run("spl-on", 2500, play, script=["--splash", "60"], counts=(TILE_FN,))
     h = evs(r, "hello")
     s1 = spl(e, r["snap"])
-    check("splash: hello (35) once with the Rytm's uptime (> 20 s, the base's boot) and caps 1",
-          len(h) == 1 and h[0]["up"] > 400 and h[0]["caps"] == 1, h)
+    check("splash: hello (35) once with the Rytm's uptime (> 20 s, the base's boot) and caps 7 (36; 1049: 16 label tables; "
+          "1052: the 4B project reports)", len(h) == 1 and h[0]["up"] > 400 and h[0]["caps"] == 7, h)
     frame = open(os.path.join(e.out, "spl-on.frame"), "rb").read()
     check("splash: on, the panel shows the host's splash frame byte for byte", s1["splash_on"] == 1 and r["oled"] == frame,
           f"{s1}, {sum(a != b for a, b in zip(r['oled'] or b'', frame))} bytes differ")

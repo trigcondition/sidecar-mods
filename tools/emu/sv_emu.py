@@ -35,7 +35,7 @@ def check(name, ok, detail=""):
 
 
 # ---- the host ------------------------------------------------------------------------------------------------------
-def host(link, log, frame, answer, stop_at, secs=900):
+def host(link, log, frame, answer, stop_at, secs=900, sends=None):
     import protocol as P
     h, p = link.rsplit(":", 1)
     t0 = time.time()
@@ -69,7 +69,11 @@ def host(link, log, frame, answer, stop_at, secs=900):
         lg.write(json.dumps(kw) + "\n")
         lg.flush()
     buf, rm = b"", b""
+    todo = sorted(json.load(open(sends))) if sends else []   # 1036: (s, hex) host messages at emulated times
     while time.time() - t0 < secs:
+        while todo and frames and emu() >= todo[0][0]:
+            midi(bytes.fromhex(todo.pop(0)[1]))
+            ev(ev="sent")
         if stop_at is not None and emu() >= stop_at:
             ev(ev="stop")
             break
@@ -127,6 +131,10 @@ def host(link, log, frame, answer, stop_at, secs=900):
                 ev(ev="mode", page=m[6], on=m[7], reason=m[8])
             elif c == 0x35:
                 ev(ev="hello")
+            elif c == 0x31 and len(m) == 10:
+                ev(ev="key", code=m[6] << 7 | m[7], down=m[8])
+            elif c == 0x48 and len(m) == 10:
+                ev(ev="w48", track=m[6], param=m[7], status=m[8])
         if frames and emu() - last_tx >= 0.25:
             midi(P.rui_keepalive())
     open(frame, "wb").write(bytes(fb))
@@ -140,14 +148,14 @@ class Emu:
         self.fw = f"fw/AR173_us_{tag}.syx"
         self.card = f"sections/us_{tag}.img"
         self.base = (f"sections/us_{tag}.snap", json.load(open(os.path.join(EMU, f"sections/us_{tag}.json")))["clock"])
-        self.out = os.path.join(ROOT, "build", "emu", tag)
+        self.out = os.path.join(os.environ.get("RYTM_OUT_ROOT") or os.path.join(ROOT, "build", "emu"), tag)
         os.makedirs(self.out, exist_ok=True)
         self.syms = json.load(open(os.path.join(self.out, "manifest.json")))["elek"]["symbols"]
 
     def sym(self, n):
         return self.syms["rytm-0026-remote-ui:" + n]
 
-    def run(self, name, ms, events=(), host=True, answer=True, stop_at=None, snap=None):
+    def run(self, name, ms, events=(), host=True, answer=True, stop_at=None, snap=None, sends=()):
         """events: (ms, 'press', KEY[, hold ms]) / (ms, 'turn', 'ENC:DELTA', count, spacing ms); snap: (path, clock M)."""
         snap = snap or self.base
         at = lambda t: f"{snap[1] + t / 5:g}M"   # noqa: E731
@@ -170,9 +178,11 @@ class Emu:
             if os.path.exists(f):
                 os.remove(f)
         hp = None
+        sf = os.path.join(self.out, f"sv_{name}.sends.json")
+        json.dump([(t / 1000.0, m.hex()) for t, m in sends], open(sf, "w"))
         if host:
             hp = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--host", f"127.0.0.1:{port}", log, frame,
-                                   "1" if answer else "0", "" if stop_at is None else str(stop_at)],
+                                   "1" if answer else "0", "" if stop_at is None else str(stop_at), sf],
                                   stdout=subprocess.DEVNULL, stderr=open(log + ".err", "w"))
         r = subprocess.run(cmd, cwd=EMU, env=dict(os.environ, DTEMU_STRICT="1", DTBOOT_OLED="1",
                                                   DTBOOT_END_PNG=os.path.join(self.out, f"sv_{name}.png")),
@@ -370,13 +380,127 @@ def t_dsp(e):
           bool(a) and a[-1]["vals"][0] == ((w[0] & 0x7f) << 7 | w[1] >> 1) and w[0] != 80, (a, w.hex()))
 
 
-TESTS = dict(dsp=t_dsp, juno=t_juno, knob=t_knob, list=t_list, leave=t_leave, gone=t_gone, trk=t_trk)
+def sx(cmd, *body):
+    return bytes([0xF0, 0x7D, 0x52, 0x54, cmd, 0x01, *body, 0xF7])
+
+
+def names47(lst, replace, total, first, names):
+    body = [lst, replace, total]
+    for i, n in enumerate(names):
+        body += [first + i] + list(n.encode()[:13].ljust(13, b"\0"))
+    return sx(0x47, *body)
+
+
+G = None   # the GRANULAR snapshot (BD on GRANULAR, the stock SRC page: no frame from the host)
+
+
+def gran(e):
+    global G
+    if G is None:
+        keys = UI["list_open"] + ["DOWN"] * 26 + [UI["list_confirm"]]
+        ev = [(500 + 300 * i, "press", k) for i, k in enumerate(keys)]
+        r = e.run("gran", 500 + 300 * len(keys) + 1500, ev, answer=False)
+        G = r["snap"]
+    return G
+
+
+def t_padmode(e):
+    """1041: in each pad mode (MUTE, CHRO, SCNE, PERF; PLAY as the control) the SRC view is on the glass 0.6 s after
+    SRC, as in PLAY mode (rui1040: 3 s late in MUTE / CHRO / SCNE, never in PERF: the mode's own view stacked on top,
+    1027d's unknown / cover rule). The stock SRC page in each mode is the PLAY mode's (the mode's view draws nothing
+    over it), so taking them as transparent hides nothing."""
+    juno(e)
+    pre = [(300, "press", "FLTR")]
+    base = e.run("pm-ref-none", 1600, pre + [(1000, "press", "SRC")], host=False, snap=J)["oled"]
+    for mode in (None, "MUTE", "CHRO", "SCNE", "PERF"):
+        ev = pre + ([(600, "press", mode)] if mode else []) + [(1000, "press", "SRC")]
+        r = e.run(f"pm-{mode or 'play'}", 1600, ev, snap=J)
+        ref = e.run(f"pm-ref-{mode or 'play'}", 1600, ev, host=False, snap=J)
+        b = evs(r, "v2b")
+        print(f"  {mode or 'PLAY'}: 2Bs {[(hex(x['state']), x['views'], x['vt']) for x in b[-3:]]}")
+        check(f"padmode {mode or 'PLAY'}: the host's frame on the glass 0.6 s after SRC", r["oled"] == r["frame"],
+              diff(r["oled"], r["frame"]))
+        check(f"padmode {mode or 'PLAY'}: the stock SRC page (no host) is the PLAY mode's", ref["oled"] == base,
+              diff(ref["oled"], base))
+        check(f"padmode {mode or 'PLAY'}: the last 2B: on, committed, shown (0x45), top SamplerLedView",
+              bool(b) and b[-1]["state"] == 0x45 and b[-1]["vt"] == "40234cfc", b[-1:])
+    r = e.run("pm-perf-trk", 1600, pre + [(600, "press", "PERF"), (1000, "press", "SRC"), (1300, "press", "TRK", 600)],
+              snap=J)
+    s = e.sv(r["snap"][0])
+    check("padmode PERF: TRK held over it still covers (TrackSelectionView after the mode's view)", s["covered"] == 1, s)
+
+
+def t_level(e):
+    """1041: LEVEL turned on the shown SRC view: 0.3 s after, the header's left field (rows 0..8, columns 0..69) is
+    stock's "TRK LEVEL" readout (not the host's frame there), the rest of the glass the host's frame; 3 s after, the
+    whole frame again."""
+    juno(e)
+    r = e.run("level", 600, [(300, "turn", "8:+3", 3, 20)], snap=J)
+    late = e.run("level-late", 3600, [(300, "turn", "8:+3", 3, 20)], snap=J)
+    o, f = r["oled"] or b"", r["frame"] or b""
+    def bits(fb, x, y):   # the host frame / the panel's bytes: byte 8 x + 7 - (y >> 3), bit y & 7
+        return fb[8 * x + 7 - (y >> 3)] >> (y & 7) & 1
+    inf = [(x, y) for x in range(70) for y in range(9)]
+    outside = [(x, y) for x in range(128) for y in range(64) if (x, y) not in set(inf)]
+    check("level: the field is not the host's frame (stock's readout drawn there)",
+          bool(o) and bool(f) and any(bits(o, x, y) != bits(f, x, y) for x, y in inf))
+    check("level: the rest of the glass is the host's frame", bool(o) and all(bits(o, x, y) == bits(f, x, y) for x, y in outside))
+    check("level: 3 s later the whole frame again", late["oled"] == late["frame"], diff(late["oled"], late["frame"]))
+
+
+def t_push(e):
+    """1036: the SRC view of a Sidecar track (BD on JUNO): PUSH_A and PUSH_C pressed and released reach the host (31
+    0x70 / 0x72 down, up) and stock still has them (the stock SRC page as the same run without the host's frame: the
+    view's screen equals the push-less run's)."""
+    juno(e)
+    a = e.run("push0", 1500, [], snap=J)
+    r = e.run("push", 1500, [(300, "press", "PUSH_A", 200), (800, "press", "PUSH_C", 100)], snap=J)
+    k = [(x["code"], x["down"]) for x in evs(r, "key")]
+    print(f"  keys {k}")
+    check("push: 31 PUSH_A down / up, PUSH_C down / up (the SRC view reports its pushes)",
+          k == [(0x70, 1), (0x70, 0), (0x72, 1), (0x72, 0)], k)
+    check("push: nothing caught (the view's frame and the sound as without the pushes)", r["oled"] == a["oled"] and
+          e.kword(r["snap"][0], 0, 0) == e.kword(a["snap"][0], 0, 0))
+    r2 = e.run("push_off", 1200, [(300, "press", "FLTR"), (700, "press", "PUSH_A")], snap=J)
+    check("push: on another page (FLTR) a push is stock's alone (no 31)", not evs(r2, "key"), evs(r2, "key"))
+
+
+def t_names(e):
+    """1036: BD on GRANULAR, the stock SRC page (the host draws nothing): 47 list 0 (GRANULAR SRC) with 4 names (rows 8..11
+    since 1043: a row's own name, no min(value, total - 1)); the SRC knob's value text is row 11's name (turned: the
+    screen differs from the run without the list, A011: PNGs sv_names0 / sv_names); 48 0 0 2 (BD P1 = 2): kit word 0 =
+    0x0200, answered 48 1 0 0 0, the view's 2A follows; 48 for a param SD's analog machine lacks: status 2; 47 malformed:
+    refused, the names kept."""
+    gran(e)
+    nm = names47(0, 1, 12, 8, ["PADS", "VOX CHOIR", "BELLS LONG NAME", "DRONE"])
+    turn = [(1000, "turn", "0:+1", 1, 50)]   # SRC turned by one: the page shows its value text (11: DRONE / A011)
+    a = e.run("names0", 1300, turn, snap=G, answer=False)
+    r = e.run("names", 1300, turn, snap=G, answer=False, sends=[(300, nm)])
+    print(f"  word 0 {e.kword(r['snap'][0], 0, 0).hex()}")
+    check("names: the SRC value text changed with the host's list (the screens differ)", r["oled"] != a["oled"])
+    nb = e.peek(r["snap"][0], e.sym("ux") + 36, 4)
+    check("names: the list's total 12 kept", nb[0] == 12, nb.hex())
+    w = e.run("write", 2000, [], snap=G, answer=False,
+              sends=[(300, nm), (500, sx(0x48, 0, 0, 2)), (900, sx(0x48, 1, 15, 5)), (1200, sx(0x47, 0, 1))])
+    ws = [(x["track"], x["param"], x["status"]) for x in evs(w, "w48")]
+    print(f"  48 replies {ws}; word 0 {e.kword(w['snap'][0], 0, 0).hex()}")
+    check("names: 48 0 0 2 -> BD's kit word 0 = 0x0200 (as a knob turn: SRC on PADS..DRONE's BELLS)",
+          e.kword(w["snap"][0], 0, 0)[:1] == b"\x02", e.kword(w["snap"][0], 0, 0).hex())
+    check("names: answered 48 1 0 0 0 (written)", ws[:1] == [(0, 0, 0)], ws)
+    a2 = [x for x in evs(w, "v2a") if x["track"] == 0 and x["first"] == 0]
+    check("names: the view's 2A reports P1 = 2", bool(a2) and a2[-1]["vals"][0] >> 7 == 2, a2[-1:])
+    check("names: a short 47 refused, the names kept",
+          e.peek(w["snap"][0], e.sym("ux") + 36, 1)[0] == 12)
+
+
+TESTS = dict(level=t_level, padmode=t_padmode, dsp=t_dsp, juno=t_juno, knob=t_knob, list=t_list, leave=t_leave, gone=t_gone, trk=t_trk, push=t_push,
+             names=t_names)
 
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--host":
         link, log, frame, ans, stop = sys.argv[2:7]
-        host(link, log, frame, ans == "1", float(stop) if stop else None)
+        host(link, log, frame, ans == "1", float(stop) if stop else None, sends=sys.argv[7] if len(sys.argv) > 7 else None)
         return
     if len(sys.argv) < 3:
         sys.exit(__doc__)

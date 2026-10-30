@@ -62,7 +62,7 @@ note = "Full-scale microtiming, in units of 1/384 of a whole note = 1/24 of a 1/
 addr = 0x4009a9bc
 sig = "void(int track, int ctx, int step, int slot)"
 status = "verified"
-note = "Builds and dispatches one trig. Reads the per-step arrays at +0x80 note, +0xc0 velocity, +0x100 length, +0x140 microtiming, each 64 bytes, with -1 meaning \"use the track default\" at +0x2c0/+0x2c1/+0x2c2. Computes the microtiming offset for this trig and for the next one, and the gap between them as (next - this) / 6. Handles both the audio tracks and the slot==-1 case from one body."
+note = "Builds and dispatches one trig. Reads the per-step arrays at +0x80 note, +0xc0 velocity, +0x100 length, +0x140 microtiming, each 64 bytes, with -1 meaning \"use the track default\" at +0x2c0/+0x2c1/+0x2c2. Computes the microtiming offset for this trig and for the next one, and the gap between them as (next - this) / 6. Handles both the audio tracks and the slot==-1 case from one body. 1032 (rytm-emu, 2026-10-20): called by the clock (0x4009b5c0) once per track per step, trig or not, when the track's tick-in-step byte 0x405c8cdd + t is 0, with step = the current-step byte 0x405c8cd0 + t: one step ahead - it schedules that step for the next step boundary ((ticks - lookahead - 1) x 900 000 units after, 0x4009b556..0x4009b5c4 [code]); the step starting at the call is 0x405c8cea + t [measured: 0x04 trig reports of 6-OP FM on BD fall after the 2C of their step]. pattern is 0x405c8d04 (or 0x405c8d06 while switching); the pattern's live data at 0x407dd8e3 + 85760 pattern (track t + 917 t). Also called at STOP (step 0, play no longer 1) [measured]. Entry `lea %sp@(-88),%sp; movel %sp@(96),%d0`: 0026 1032's detour sq_fire_det. 0x4009c0dc calls it too (not hit by play, stop, pause or a sequential switch [measured])."
 
 [data.microtiming_scale_shift]
 addr = 0x4009ace8
@@ -1176,6 +1176,57 @@ sig = "bool(LockPool *, int track, int step, int soundIndex, int value, char fla
 status = "verified"
 note = "Locks are a dense int16 array, not a pool of slots: index track * 2837 + step * 44 + soundIndex, -1 for none, so every step can lock every sound parameter. The flag goes to a per-track byte per parameter at +5632 of the track's 5674 bytes. Posts a change through vtable +16, then 0x400ac5da(pool, track, step). lock_pool_get 0x400ac51c reads the same index."
 
+# ------------------------------------------------ live recording (1030, 0026's chord write-back)
+# Located 2026-10-19 in rytm-emu (rui1027 / rui1030poly, BD on 6-OP FM, CHRO, RECORD + PLAY): breaks and call counts
+# while a pad and a knob were recorded live. tools/emu/pc_emu.py exercises the path.
+
+[fn.live_rec_trig]
+addr = 0x400b45e0
+sig = "void(void *this, int track, int note, int vel, int step, int micro, int len, int d7)"
+status = "verified"
+note = "Stock's live-record writer of one step [measured: one call per recorded pad, a CHRO BD pad at step 7 passed (0, 0x3c, 0x7f, 7, -9, -1, -1), the step already quantised by the event's producer; micro kept unless the record-quantise test 0x400b5b7a(this + 236) says otherwise]. Clamps step to 0..63, then trig_place(block, step, 1), track_note_set, the velocity setter 0x400c0784, micro timing 0x400c0878 (micro + 64), d7 >= 0: trig flag 0x02 and 0x400c090c, an undo/notify record at this + 0x3d564 + 40 track, and len <= 127: 0x400c0604 else 0x400c069e (length default). Its only caller is 0x400a13e2, the UI task's record-event handler (event +8 track, +16 note, +17 vel, +28 step, +30 micro), gated by live_rec_active. Entry `linkw %fp,#-48; moveq #12,%d0`: 0026's detour (1030)."
+
+[fn.track_note_set]
+addr = 0x400c070a
+sig = "void(TrackPattern *, int step, int note)"
+status = "verified"
+note = "Writes the step's NOTE byte (live data + 0x80 + step, step clamped 0..63, refused at or past the track length) and posts the change; the stored copy then reads 0x80 | note [measured: root 62 -> live 0x3e, stored 0xbe]. Called by live_rec_trig with the pad's note (60 = the track default note for BD in CHRO)."
+
+[fn.live_lock_rec]
+addr = 0x400af6f6
+sig = "void(int track, int paramId, int value)"
+status = "verified"
+note = "A knob turned while live recording: when live_rec_active, the track's current step (0x4003532c), a trigless lock trig (trig_place_lock) on a step without a trig, then track_lock_set(block, step, 0x40006ea8(id) = sound index, value, 0x400071a6(id) != 0) at 0x400af7ca [measured: SMPL knobs E..H on 6-OP FM gave sound index 21/22/23/24 with flag 1/1/0/0]."
+
+[fn.live_rec_active]
+addr = 0x40036370
+sig = "bool(void *recState)"
+status = "verified"
+note = "Live recording on, with recState = live_rec_state(). Both live-record paths (0x400a13ae before live_rec_trig, 0x400af70e in live_lock_rec) test it [code]; 0026 tests it before its chord write-back [measured: false without RECORD, true with RECORD + PLAY]."
+
+[fn.live_rec_state]
+addr = 0x40181528
+sig = "void *(void)"
+status = "inferred"
+note = "The object live_rec_active is asked about (named from that use only)."
+
+[fn.pattern_active]
+addr = 0x400af040
+sig = "Pattern *(Project *)"
+status = "verified"
+note = "The working pattern; with pattern_track it gives a TrackPattern (0x400a98ba's lock wrapper: pattern_track(pattern_active(project_singleton()), track) [code]). 0026's chord write-back uses it [measured: BD's block, its +44 the lock pool]."
+
+[fn.lock_mirror_incr]
+addr = 0x4000940c
+sig = "bool(uint8_t *slots, int16_t *live, ?, int soundIndex, int track)"
+status = "verified"
+note = "The incremental update of a pattern's stored lock slots (72 x 66 B) after one lock change, run by the prio-2 task from 0x400ac262 [measured: slots 0x405ce2f6 = bank pattern A01's +0x2091, live 0x407e0774]. type = lock_type_map[k] (0x401c589c for track 12); finds the (type, track) slot while counting occupied slots (type and track both != 0xff; 0x80 0x80 fine continuations count); a new pair costs 1, or 2 with the fine flag (live + 5674 t + 5632 + k), and is refused when used + cost > 71 - the lock then lives only in the live array until a full rebuild drops or keeps it [code; measured: 67 used + 4 new stored, 71 used + 1 refused by 0026's same count]. A lock pool's +0x10 is the live array and +0x20 these slots [measured]."
+
+[data.lock_type_map]
+addr = 0x401c59cc
+status = "verified"
+note = "int32 per sound index 0..41: the stored lock type of a voice track's lock (lock_mirror_incr, the full rebuild 0x40009354). Sound words 21..24 map to types 12..15 [measured in the stored slots]."
+
 [fn.popup_ctor]
 addr = 0x400766e8
 sig = "void(Popup *, std::string *text)"
@@ -1286,3 +1337,316 @@ addr = 0x40005c6e
 sig = "void(const int32_t *frames, const int32_t *extra, int n)"
 status = "verified"
 note = "Fills the Overbridge IN (Rytm -> host) packets: 368-byte blocks in a 16-block ring at 0x80008c00, 7 frames x 12 int32 after a 32-byte header (0x07 0x00 + counter += 7), copying n frames of 12 words from `frames` with 0x40098b54 and queueing each full block on endpoint index 7 (0x40003d24). Called only from the audio interrupt, as ob_in_write(rx_buffer 0x80007440, 0, 32), at 0x4012144c and 0x4011fe08, after the block's fx_generate and 0x4009ef40. So the 12 Overbridge channels are the receive buffer verbatim: MAIN L/R, the voices by slot, AUDIO IN L/R (0x4010e944 stores raw words 8/9 negated into words 10/11) [code; measured on the stream in rytm-emu, 0024 research.md A2]. 0030 points both jsr operands (+2) at fxin_ob."
+
+# ------------------------------------------------ 0026 1032: the sequencer link (rytm-emu rui1031 / rui1032seq, 2026-10-20)
+[fn.seq_clock]
+addr = 0x4009b048
+sig = "interrupt handler (rte)"
+status = "verified"
+note = "The sequencer clock: a software-forced interrupt at level 2 (it clears INTFRCH bit 25 at entry, source 57, icr 2 [code + measured: intc0 icr 57:2]), 203 calls/s at 127 BPM = 96 PPQN, stopped or playing [measured: 610 exits in 3 s]. Saves d0-fp in a 76-byte frame; its only exit 0x4009bf9e `moveml %sp@,%d0-%fp; lea %sp@(76),%sp; rte` (0026 1032's detour sq_end_det)."
+
+[data.seq_play_state]
+addr = 0x405c8c90
+status = "verified"
+note = "Long: 0 stopped, 1 playing, 2 paused [measured: PLAY, PLAY, STOP]. Set to 1 at 0x4009b48a inside the clock."
+
+[data.seq_prev_step]
+addr = 0x405c8cea
+status = "verified"
+note = "13 bytes, track t: the step that starts at the current step boundary (current step byte 0x405c8cd0 + t minus one), written with the step increment at 0x4009b808 / 0x4009b80c; 0 at PLAY (0x4009a40c) [measured]. 0026 1032's 2C step."
+
+[data.seq_next_pattern]
+addr = 0x412f3e91
+status = "verified"
+note = "Big-endian word (odd address): the pattern after the current one - the current one when nothing is queued, the queued pattern after BANK + Tn while playing (A01 + T2 queued: 1, + T5: 4), the new current one after the switch [measured]. Inside the table the next-pattern provider 0x40099e70 walks (0x412f3e7f + 20 row)."
+
+[data.grid_rec_object]
+addr = 0x419f28d8
+status = "verified"
+note = "Pointer to the object whose +360 is GRID REC (RECORD writes 1 / 0 at 0x400362ec) while +353 is set; 0x4003625c(obj) returns +353 ? +360 : 0 and the grid copy/paste/clear handlers test it [measured: the argument of every 0x4003625c call seen, 0x41b6e140 in rytm-emu]. The second word of a static pair at 0x419f28d4 (released by the TU static destructors at 0x4003743e..)."
+
+
+# ---- 1033 (rytm-emu seq-p2, 2026-10-20): the analog pin, the edit functions, SCALE, the pattern dump
+[fn.voice_frame_send]
+addr = 0x4007a538
+sig = "void(const uint16_t *frame)"
+status = "verified"
+note = "The voice boards' frame sender: copies the 492-word control frame into the SPI buffer (0x80004800 + bank, 4 words a step interleaved with 0x8001..) and starts it [code]. Called after the filter (0x4010d090) and amp (0x401098d4) consumers wrote the frame, with 0x800063c0 from every block path (0x40109562 0x4010c254 0x4011fa9e 0x40121464) and with other buffers (0x401beac0 0x40271d50 0x40272130) [code]. Entry `lea %sp@(-20),%sp; moveq #1,%d0`: 0026 1033's detour pin_det [measured: the pin's records and VCA reach the analog model as sent, sq_emu.py pin]. Its copy loop ends at 0x4007a598 (rytm-emu's voice_frame_sent)."
+
+[data.voice_owner_track]
+addr = 0x40290dd8
+status = "verified"
+note = "8 bytes: the track that owns physical voice v now (shared voices: the last one trigged); the amp consumer reads its track's level, velocity and envelope state by it (0x401098fe) [code]; BD's voice 0 -> 0, LT's voice 3 -> 5 as 1033's pin uses it [measured: sq_emu.py pin, seq_e2e p2]."
+
+[data.trig_velocity]
+addr = 0x800067c4
+status = "verified"
+note = "13 x u16 (SRAM), track t: the last trig's velocity << 8 (0x7f00 = 127), latched per trig by the trig paths (0x40120124 0x4012055a 0x401208ec) and read every block by the amp consumer into the VCA words +10 / +26 + 2v (x level x pan x 58000, with the accent; 0x7f000000 when the track's flag 0x8000ea0c is 0) [code]; 0 before a track's first trig, so an empty track's VCA is 0 [measured: frame +10 0x0000, then 0x0cc4 / 0x32a9 at velocity 32 / 127]. 0021 reads it for 0x04 (0020's note). 1033's pin writes 0x7f00 on pinned tracks after the frame went out."
+
+[data.amp_dec_rates]
+addr = 0x401ee36c
+status = "inferred"
+note = "128 x u32: the amp envelope's decay rate per DEC value (the low 20 bits; the record's second word = rate | 0xb0100000 with first word 0x00000080) [code: 0x40109b82..0x40109b96]. 1033's close record uses DEC 40's."
+
+[data.amp_atk_rates]
+addr = 0x401ee76c
+status = "inferred"
+note = "128 x u32: the amp envelope's attack rate per ATK value (trig: 0x4000007f, rate | 0xb0000000; hold: 0x0000007f, rate | 0x30000000) [code: 0x40109ae2..0x40109b2c]; ATK 0's rate 0 (instant) [measured: 1033's records]."
+
+[fn.pattern_copy]
+addr = 0x400abde0
+sig = "bool(pattern *p)"
+status = "verified"
+note = "COPY PATTERN (FUNC + REC outside GRID REC, or the BANK menu): 85 760 B of the working pattern to a heap clipboard [code; measured: gesture tied by --count, SEQUENCER.md 2; 1033's wrapper reports 2D 0A 01, sq_emu.py edits]. Entry linkw + moveml (8 B): 0026 1033's detour ed_pcopy_det."
+
+[fn.pattern_undo]
+addr = 0x400abec0
+sig = "bool(pattern *p, int kind)"
+status = "verified"
+note = "Undoes the last pattern paste (kind 2) / clear (kind 1) if that was the last op: copies the 85 760-byte backup back, returns 1 (stock's popup then says UNDO PASTE / CLEAR), else 0 and the caller pastes / clears [code: 0x400cc3c8 / 0x400cc49c; measured: sq_emu.py edits: 0 before a paste, 1 on the second FUNC + STOP]. 0026 1033's ed_pundo_det."
+
+[fn.pattern_paste]
+addr = 0x400abff6
+sig = "bool(pattern *p, int one)"
+status = "verified"
+note = "PASTE PATTERN into the working pattern (FUNC + STOP), returns 1 when pasted [code; measured: sq_emu.py edits]. 0026 1033's ed_ppaste_det."
+
+[fn.pattern_clear]
+addr = 0x400ac11c
+sig = "bool(pattern *p, int one, int one2)"
+status = "verified"
+note = "CLEAR PATTERN (FUNC + PLAY) [code; measured: sq_emu.py edits]. 0026 1033's ed_pclear_det."
+
+[fn.track_copy]
+addr = 0x400c2efc
+sig = "bool(track_pattern *tp)"
+status = "verified"
+note = "COPY TRACK (GRID REC, FUNC + REC) of the current track [measured: SEQUENCER.md 2, sq_emu.py edits]. 0026 1033's ed_tcopy_det."
+
+[fn.track_undo]
+addr = 0x400c3808
+sig = "bool(track_pattern *tp, int kind)"
+status = "verified"
+note = "As pattern_undo for the current track (kind 2 paste, 1 clear) [code: 0x4003c6d6 / 0x4003c7ba; measured: 0 before a paste]. 0026 1033's ed_tundo_det."
+
+[fn.track_paste]
+addr = 0x400c4754
+sig = "bool(track_pattern *tp, int one)"
+status = "verified"
+note = "PASTE TRACK (GRID REC, FUNC + STOP) [measured]. 0026 1033's ed_tpaste_det."
+
+[fn.track_clear]
+addr = 0x400c494a
+sig = "bool(track_pattern *tp, int one)"
+status = "verified"
+note = "CLEAR TRACK (GRID REC, FUNC + PLAY) [measured]. 0026 1033's ed_tclear_det."
+
+[fn.page_copy]
+addr = 0x400c4620
+sig = "bool(track_pattern *tp)"
+status = "verified"
+note = "COPY PAGE (GRID REC, PAGE held + FUNC + REC) [measured]. The visible page is not located (2D 0A's page arg 0). 0026 1033's ed_gcopy_det."
+
+[fn.page_undo]
+addr = 0x400c35fa
+sig = "bool(track_pattern *tp, int kind)"
+status = "verified"
+note = "As track_undo for the page ops (called before page paste and clear) [code: 0x4003dc20 / 0x4003dc8a; measured: sq_emu.py edits]. 0026 1033's ed_gundo_det."
+
+[fn.page_paste]
+addr = 0x400c3342
+sig = "bool(track_pattern *tp, int one)"
+status = "verified"
+note = "PASTE PAGE (GRID REC, PAGE held + FUNC + STOP) [measured]. 0026 1033's ed_gpaste_det."
+
+[fn.page_clear]
+addr = 0x400c444e
+sig = "bool(track_pattern *tp, int one)"
+status = "inferred"
+note = "CLEAR PAGE (GRID REC, PAGE held + FUNC + PLAY) [code: its handler 0x4003dcea; not run]. 0026 1033's ed_gclear_det."
+
+[fn.trig_copy]
+addr = 0x400c4acc
+sig = "bool(track_pattern *tp, void *held)"
+status = "verified"
+note = "COPY %d TRIG(S) (GRID REC, trig held + FUNC + REC) [measured]. 0026 1033's ed_rcopy_det."
+
+[fn.trig_paste]
+addr = 0x400c396a
+sig = "bool(track_pattern *tp, ...)"
+status = "verified"
+note = "PASTE %d TRIG(S) (GRID REC, trig held + FUNC + STOP) [measured]. 0026 1033's ed_rpaste_det."
+
+[data.pattern_scale_fields]
+addr = 0x407f2793
+status = "verified"
+note = "A01's tail (the working pattern p's at 0x407dd8e3 + 85760 p + 85680): +85683 the master length (BE word), +85685 the change length (BE word; with +85689 == 1 a queued pattern starts at a multiple of it: (master step + 1) % chg [code: 0x4009baae..0x4009bada, 0x4009bfa8]), +85689 the scale mode (1 per track), +85690 the pattern speed index, +85692 the pattern tempo (BE, BPM x 120) [measured: the base A01 reads 0001 0010 .. 01 02 .. 3b88 = 127.0; 1033's 2D 04]. +85691 is read with the track's +0x2c6 by trig_fire (0x4009aca4) [code; meaning not located: swing is not there in the tests]."
+
+[data.pattern_swing_getter]
+addr = 0x400aaf14
+status = "inferred"
+note = "Swing (shown + 50 by the swing menu 0x400676a6): byte +5 of the object (pattern + 44)'s vfunc 40 returns [code]; not located as an address and not measured (the 1.73 TEMPO screen shows BPM only in rytm-emu). 1033 does not report swing: the host keeps its own (seq=swing)."
+
+[data.project_slot_table_ptr]
+addr = 0x419f2888
+status = "inferred"
+note = "1052b (0026 4B LIST): a static shared_ptr-like pair - 0x419f2888 the object, 0x419f288c its control block (vtable 0x401ca824) - set once by the lazy getter 0x4017d17e (the write `move.l %d0,0x419f2888` at 0x4017d1e6) [measured: an emulator data watchpoint (dtboot --watch 419f2888) on a cold boot of rui1052 shows two writes, 0x4000085a (the .bss clear, 0) and 0x4017d1e6 (0x41b81340)]; the getter is reached from the slot loader 0x40034c16 (`lea 0x4017d17e,%a3; jsr %a3@` at 0x40034c5e) and 0x4002c996 / 0x4002ca00 / 0x4002e244. Its object +12 + 24 n is slot n's 24-byte header (byte 0 = 1 a project there, the name at +8): inferred from snapshots that matched the card after SAVE AS, PASTE, CLEAR, INIT, DELETE, RENAME (rytm-emu rui1052); not traced through the getter's code. 0026's pj_table reads it with guards (in DDR, 4-aligned, every flag 0 or 1)."
+
+[fn.project_slot_table_get]
+addr = 0x4017d17e
+status = "inferred"
+note = "1052b: the lazy getter that builds the project slot table object and stores it at 0x419f2888 (data.project_slot_table_ptr) [measured: the watchpoint's writer 0x4017d1e6 is inside it]."
+
+[fn.project_set_active_helper]
+addr = 0x400aecc0
+status = "verified"
+note = "1052c: (obj, slot): obj->vfunc(+40)() and, when true, the active-slot setter 0x400fa694(slot). Called from 9 sites [code]; driven in rytm-emu (pj_emu setters): LOAD PROJECT -> 0x400b405a (also the active slot loaded again), SAVE / SAVE AS / SAVE TO -> 0x400b077a and 0x400b0842 (inside save 0x400b0738), CREATE NEW -> 0x400b3d6c; CLEAR / INIT / FUNC + PLAY / RENAME of the active slot -> none. 0026 reports LOAD only for 0x400b405a's call (1052d: read from the setter's stack, (sp) 0x400aecde and 8(sp) the helper's return address - the helper has no frame [code])."
+
+[fn.kit_save]
+addr = 0x400b119c
+status = "verified"
+note = "1052d: (project, index, flag) - saves the working kit as kit index (clamped 0..127 [code]); a save to another kit makes it the active one [measured: a NO + KIT after SAVE KIT to K002 reloads kit 2]. Callers driven in rytm-emu (pj_emu kits): 0x400cd562 (YES + PLAY MODE), 0x400dd69a (the KIT menu's SAVE KIT); 0x400cc34a, 0x40103b62, 0x40103f46 not driven. 0026 wraps it (4C SAVE)."
+
+[fn.kit_reload_all]
+addr = 0x400b131a
+status = "verified"
+note = "1052d: (project) - reloads every kit; kit_reload_key's branch when its RELOAD item is set to ALL (LEFT / RIGHT on the item) [measured: pj_emu kits, once]. 0026 wraps it (4C RELOAD ALL)."
+
+# ----------------------------------------------------------------- 0031-remote-keys (2026-10-27)
+# analoghealth's (Iced-Cream/analoghealth 3f71979, GPL-2.0-or-later) OS 1.74 addresses (its ar174.inc and
+# mod.json defsym), carried to 1.73. Method, for every entry below [measured, 2026-10-27, both stock images]:
+# - code and image data: translated by the measured 1.73<->1.74 map (rytm-mods re/port-1.73-to-1.74.md, main
+#   branch: every address below 0x400574e4 +0, 0x40057a2e..0x400fc664 +0x6c, 0x401bea90..0x40231cf6 +0x2b0,
+#   0x40271bba..0x402cc928 +0x360) and accepted only when the 48 bytes around the 1.73 address equal the 48
+#   around the 1.74 one, every difference a 4-byte operand that is itself an image address translating by the
+#   map (0 unexplained bytes for each entry);
+# - RAM: unchanged; every literal reference to the address in 1.74 code sits, translated, at a literal
+#   reference to the same address in 1.73, and both images have the same count.
+# analoghealth's own evidence for what each is (its README "How it was checked": a Rytm MKII on 1.74,
+# 22-26 Oct 2026) is external. "verified" below means the 1.73 code was also read here and does what the
+# note says; "inferred" means only the translation above (the role is analoghealth's reading of 1.74).
+
+[fn.button_driver]
+addr = 0x40081d40
+sig = "void(unsigned group, unsigned mask)"
+status = "verified"
+note = "The panel button driver: one group's 8-bit state (11 groups on the Rytm) in, key events and repeats out to the UI queue; it stores the state in panel_key_state (lea 0x418d1340 at 0x40081d4e). Called by the panel receiver (jsr at 0x40082162, the panel's button messages). Entry `lea -76(%sp),%sp; movem.l %d2-%d7/%a2-%fp,(%sp)` (8 B, no branch into 0x40081d42..47 [code]). 1.74: 0x40081dac (analoghealth KEY site). 0031 detours it (core_panel_buttons, the input bridge)."
+
+[fn.panel_encoder_input]
+addr = 0x40081fca
+sig = "void(unsigned encoder, int delta)"
+status = "verified"
+note = "One encoder message from the panel: encoder 0..7 = A..H, 8 = LEVEL, delta in raw counts; the OS adds it to the encoder's count and makes the UI's turn events. Called by the panel receiver (jsr at 0x40082172). 1.74: 0x40082036 (analoghealth ENC_INPUT). 0031's TURN calls it."
+
+[fn.panel_receiver]
+addr = 0x40082084
+sig = "void(unsigned byte)"
+status = "verified"
+note = "The panel UART's byte parser (registered as a callback by `pea 0x40082084` at 0x40100714): a message is a header byte (high nibble kind, low nibble index) and a data byte; it calls button_driver and panel_encoder_input, and posts pad strike / pressure / release events. Entry `lea -28(%sp),%sp; movem.l %d2-%d6/%a2-%a3,(%sp)` (8 B, no branch into it [code]). 1.74: 0x400820f0 (analoghealth PANEL_RX). 0031 detours it (panel_rx: the pad log, and the pad player's busy flag)."
+
+[data.panel_rx_idle]
+addr = 0x40285600
+status = "verified"
+note = "Byte: 1 while panel_receiver waits for a header (between messages); tested at 0x40082092 and cleared at 0x400820a8 when a header arrives [code, read 2026-10-28]. 1.74: 0x40285960 (analoghealth PANEL_IDLE)."
+
+[data.pad_threshold]
+addr = 0x40285624
+status = "inferred"
+note = "u32: the raw pad force at which a strike starts to sound (10 in the stock image and in the emulator, per analoghealth); the pad velocity curve's offset. 1.74: 0x40285984 (analoghealth PAD_THRESHOLD)."
+
+[data.panel_key_table_ptr]
+addr = 0x40285610
+status = "inferred"
+note = "Pointer (0x40285670 in the image) to the panel's slot table: one u32 OS key code per slot, slot = 8 * group + bit, 88 slots; the button driver reads key codes through it. 1.74: 0x40285970 -> 0x402859d0 (analoghealth KEY_TABLE). 0031 looks each remote key's group and bit up in it at run time."
+
+[data.panel_key_state]
+addr = 0x418d1340
+status = "verified"
+note = "RAM, 11 bytes: the panel's button state as the OS last took it, one byte per group (button_driver writes it; is_key_held reads it). 6 literal references in 1.73 and 1.74 alike. analoghealth's client (`watch`) PEEKs it."
+
+[data.ui_event_queue]
+addr = 0x41943f54
+status = "verified"
+note = "RAM: the UI task's event queue, an RTOS queue: queue_send 0x400013b2 (and its ISR twin 0x40001400) stores at buffer +20 index +24, masks the index with +16, increments the count at +4 and posts the semaphore at +8; queue_recv 0x40001444 waits on +4, reads at +28 and decrements +4 [code, read 2026-10-28]. So word [1] is the events waiting and word [4] the mask, capacity - 1, as analoghealth reads them. Measured in rytm-emu (rkeys1, 2026-10-28, dtboot --watch 41943f58 and a DOWN press): every write of +4 is from 0x400013ea (count + 1) or 0x40001492 (count - 1), 40 in 200 M instructions; the mask word reads 0x3ff (1024 places). 12 literal references in both images; the UI loop pends on it at 0x400a4684."
+
+[fn.std_string_ctor]
+addr = 0x401bcd4c
+sig = "void(std::string *this, const char *s, alloc &)"
+status = "inferred"
+note = "std::string(const char *). 1.74: 0x401bcff0 (analoghealth STR_CTOR). 0031's REMOTE KEYS row label."
+
+[fn.view_invalidate]
+addr = 0x40078514
+sig = "void(View *view)"
+status = "inferred"
+note = "View::invalidate. 1.74: 0x40078580 (analoghealth INVALIDATE)."
+
+[fn.bitmap_blit]
+addr = 0x40071674
+sig = "void(Bitmap *dst, const Bitmap *src, int x, int y, int centre)"
+status = "inferred"
+note = "blit. 1.74: 0x400716e0 (analoghealth BLIT). 0031's REMOTE KEYS checkbox."
+
+[data.settings_checkboxes]
+addr = 0x419f0910
+status = "inferred"
+note = "RAM: pointer to Bitmap[2] (0x1c each): the SETTINGS checkbox, empty and ticked. 24 literal references in both images. 1.74: the same (analoghealth CHECKBOXES)."
+
+[fn.mutex_lock]
+addr = 0x40001124
+sig = "void(mutex *m)"
+status = "inferred"
+note = "RTOS mutex lock. 1.74: the same (analoghealth LOCK)."
+
+[fn.mutex_unlock]
+addr = 0x40001246
+sig = "void(mutex *m)"
+status = "inferred"
+note = "RTOS mutex unlock. 1.74: the same (analoghealth UNLOCK)."
+
+[data.heap_mutex]
+addr = 0x418f1350
+status = "inferred"
+note = "RAM: the heap's mutex (8 literal references in both images, all in the allocator near 0x400825dc). analoghealth HEAPMTX."
+
+[data.heap_cb]
+addr = 0x40285830
+status = "inferred"
+note = "The heap's control block (buddy allocator of 16-byte units): +4 the units' base, +0xc the free-list heads per order, +0x10 the highest order. 1.74: 0x40285b90 (analoghealth HEAPCB)."
+
+[fn.sample_mem_free]
+addr = 0x4009cfb6
+sig = "unsigned(void)"
+status = "inferred"
+note = "Free sample memory in bytes. 1.74: 0x4009d022 (analoghealth SMPFREE; 64.00 MB on an empty card in the emulator, per analoghealth)."
+
+[fn.sysex_send]
+addr = 0x400859ac
+sig = "bool(const uint8_t *buf, int len, bool *abort, int port)"
+status = "verified"
+note = "The OS's SysEx sender, bool(buf, len, abort*, port), port 2 = USB: returns 0 at once while 0x419f28a8 is 0; else sends in chunks of at most 144 bytes through 0x4008575e(len, ptr, port), each chunk taking and giving the USB MIDI mutex on its own, until done or *abort [code, read 2026-10-28]. So a multi-chunk reply can be interleaved by a task-level sender that only try-locks the mutex (0026's send(): review M1, fixed in rui1052). rytm-emu fingerprints it as `sysex_send` and stands in for it unless --usb-midi-real. 1.74: 0x40085a18 (analoghealth SYSEX_SEND)."
+
+[data.rtos_current_tcb]
+addr = 0x42f67924
+status = "verified"
+note = "RAM: the running task's TCB pointer; the context switch saves the outgoing task's registers through it (0x40000418) and stores the incoming one (0x4000044a) [code]. 22 literal references in both images."
+
+[data.rtos_idle_tcb]
+addr = 0x419b2324
+status = "verified"
+note = "RAM: the idle task's TCB: `pea 0x419b2324` is task_create's (0x40000de4) first argument at 0x40100a3a, for the task whose body is the spin at 0x40100a12 [code, read 2026-10-28]. 2 literal references, both images. analoghealth IDLE_TCB."
+
+[fn.rtos_idle_wait_pc]
+addr = 0x40100a12
+status = "verified"
+note = "Where the idle task waits: `bra.s .` at 0x40100a12 (it leaves to 0x40100a14 only when the word tested before it is set) [code, read 2026-10-28]. 1.74: 0x40100a7e (analoghealth IDLE_PC). 0031 counts time as idle only while the idle task is switched out from here."
+
+[data.sysex_router_hdr]
+addr = 0x401d7b6e
+status = "verified"
+note = "The 4-byte header the SysEx router compares the message with (`lea 0x401d7b6e,%a3` at 0x40083d98, end 0x401d7b72 at 0x40083dac) [code]. 1.74: 0x401d7e1e (analoghealth SYSEX_A3). 0031's detour there re-emits the lea."
+
+[fn.context_switch_mask]
+addr = 0x40000438
+status = "verified"
+note = "Inside the context-switch exception handler (0x40000410, rte at 0x40000458): `move.l #0xffffdfff,%d0` (6 B), between saving the outgoing task (moveml to its TCB, 0x4000041e) and storing the incoming one (a0) in rtos_current_tcb; d1 and a1 are live, d2..d7 free (restored from the incoming TCB at 0x40000452) [code]. 1.74: the same (analoghealth's task_switch site). 0031 detours it (ts_det, idle time)."

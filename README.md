@@ -3,9 +3,13 @@
 The source of the Analog Rytm MKII OS mods that Sidecar | Expander uses: the patch sources, the symbol map, the
 allocation registry and the build that turns your own stock OS 1.73 `.syx` into a modded one.
 
-This repository holds the source of the Rytm build **`rui1027d`**, released with **Sidecar 0.1.0**.
+This repository holds the source of the **Rytm firmware 0.3.0** (`rytm-sidecar-0.3.0.elemod` with elekloader's
+`core-0.1.elemod`), released with **Sidecar 0.3.0**.
 
-- Release, the browser patcher and install guides: <https://github.com/trigcondition/sidecar-expander/releases/tag/v0.1.0>
+- Release (the two `.elemod` files, `SHA256SUMS`, `LICENSE`, `NOTICE`, the source of elekloader's parts):
+  <https://github.com/trigcondition/sidecar-mods/releases/tag/v0.3.0>; install: `docs/ELEKLOADER.md`
+- The older builds (`rui1027d`, `sfx1021`, for Sidecar 0.1.0 and 0.2.0), the browser patcher and install guides:
+  <https://github.com/trigcondition/sidecar-expander/releases>
 - Documentation: <https://trigcondition.github.io/sidecar-expander/>
 - The Sidecar engine: [sidecar-firmware](https://github.com/trigcondition/sidecar-firmware)
 
@@ -27,7 +31,7 @@ registry are the project.
 | `requirements.txt` | Python packages for the mod 0006 calibration and telemetry tools and mod 0013's timing tool |
 | `registry/` | `allocations.toml` - every claim on cave space and detour sites |
 | `tools/` | build, layout validation, verification, symbol generation, cave scan |
-| `vendor/` | third-party code that is **executed** (elektron-firmware-tool; elekloader for 0027 builds, GPL-2.0-or-later), fetched by `make setup` |
+| `vendor/` | third-party code that is **executed** (elektron-firmware-tool, MIT; elekloader for 0027 builds and the release, GPL-2.0-or-later), fetched by `make setup`; see `NOTICE` |
 | `docs/` | user manual, flashing, hazards |
 | `build/` | artifacts, gitignored |
 
@@ -55,9 +59,24 @@ Build a subset for hardware bisection:
 
     .venv/bin/python tools/build.py --mods 0000-shared 0004-lfo-rnd
 
-## The Sidecar build (`rui1027d`)
+## The release (0.3.0)
 
-The build released with Sidecar 0.1.0 (the browser patcher's default). From a clean checkout, after `make setup`
+The Sidecar mods as one elekloader module, `rytm-sidecar-<VERSION>.elemod`, with elekloader's core 0.1 beside it
+(`VERSION`, `docs/ELEKLOADER.md`). From a clean checkout at tag `v0.3.0`, after `make setup` and with the stock file in
+`stock/`:
+
+    make release          # build/release/0.3.0/: the two .elemod files, LICENSE, NOTICE, TOOLCHAIN.txt, the
+                          # source of elekloader's parts, SHA256SUMS
+    make release-check    # the published files through elekloader's command line and web page code path
+
+With the toolchain `TOOLCHAIN.txt` names, `core-0.1.elemod` has sha256
+`33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825` and `rytm-sidecar-0.3.0.elemod`
+`e93a0b2794a8316dad1d6cfe52151820e153d6f86427d12343a5f947cae0c28a`, the released files; the `.syx` elekloader
+builds from them (version 1.73) has sha256 `893ed9a5fc27ab18687c1ea95d7a07f4ff4b23fde235173ce332e54055a733ab`.
+
+## The Sidecar build `rui1027d` (Sidecar 0.1.0 and 0.2.0)
+
+The patch build released with Sidecar 0.1.0 (the browser patcher's 0.2.0 build). From a clean checkout, after `make setup`
 and with the stock file in `stock/`:
 
     .venv/bin/python tools/symbols.py
@@ -101,7 +120,8 @@ byte-identical to stock, so a mistake can only ever reach MAIN OS.
 
 ## Mods
 
-In the Sidecar build (`rui1027d`); each folder's `mod.toml` and `design.md` say more:
+In the 0.3.0 module and the Sidecar build `rui1027d` (0028 in `rui1027d` only); each folder's `mod.toml` and
+`design.md` say more:
 
 | id | what |
 |---|---|
@@ -116,9 +136,14 @@ In the Sidecar build (`rui1027d`); each folder's `mod.toml` and `design.md` say 
 | 0029 | the AMPLITUDE 2 and SEND FX 1/2 pages |
 | 0030 | FX in: the delay and reverb return over USB, switched by the host |
 
+0031-remote-keys (REMOTE KEYS, a development and test feature) is not in the release and not published here; its
+entries in `registry/allocations.toml` and `re/symbols.toml` are kept as a record, and `tools/layout.py` checks only
+the claims of mods in this tree.
+
 The older stand-alone mods (not part of the Sidecar build, and mutually exclusive
-with 0021). 0002-euclid-accents and 0003-velocity-humanise are not published here
-(see `NOTICE`). Retracted mods and one-off hardware probes are not part of this
+with 0021). 0002-euclid-accents and 0003-velocity-humanise (older experiments, not in
+any Sidecar release) are not published here: 0002's accent icons were made from the
+stock glyph bitmaps. Retracted mods and one-off hardware probes are not part of this
 package; the pool notes in `registry/allocations.toml`
 still record what those probes established.
 

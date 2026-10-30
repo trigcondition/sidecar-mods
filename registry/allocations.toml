@@ -3078,9 +3078,17 @@ note    = "cave20: DAISYSP's ENG and INP value texts and knob looks (222 B as bu
 [[cave]]
 owner   = "0021-ext"
 addr    = 0x40136610
-size    = 190
+size    = 166
 section = ".ext6"
-note    = "cave20 after .ext5: DAISYSP's machine, knob, model and input names (161 B as built 2026-10-08)."
+note    = "cave20 after .ext5: DAISYSP's machine, knob, model and input names (161 B as built 2026-10-08; 165 B 2026-10-31, the claim 190 -> 166 for .extz)."
+
+[[cave]]
+owner   = "0021-ext"
+gate    = "slots"
+addr    = 0x401366b6
+size    = 24
+section = ".extz"
+note    = "rui1031: .ext6's free tail (0x401366b6..0x401366ce): us_zero, out of .us1 (22 B as built)."
 
 [[patch]]
 owner       = "0021-ext"
@@ -3933,7 +3941,8 @@ note        = "machine 45's SRC page: records 416..419, 439, 440, 420, 421 (slot
 # DSP SAMPLE's SMPL page, SD SAMPLE: records 441..448 (MT TEST 441/442, HH TEST
 # 443..448) as copies of stock's sample records 39..46 (words 17..24, ranges,
 # defaults, CCs); word 19 SMP and word 20 FLD (stock's BR) pick a file on the
-# host's card.
+# host's card. 1045: 441 is word 19 SMP (banked, 0026 1045) and TUN uses
+# stock's record 39 itself; 443 is the cu machines' P2 (slots=1).
 
 [[patch]]
 owner       = "0021-ext"
@@ -3941,8 +3950,8 @@ addr        = 0x401c52ac
 size        = 40
 expect_len  = 40
 expect_sha256 = "179fd7a43d09a8a42eee5f66078a3d86ae2e1c81789f8f466fd00278fa6869a5"
-replace_from = 0x401c0104
-note        = "record 441: DSP SAMPLE SD SAMPLE word 17 TUN, a copy of stock record 39"
+replace     = "00000036000000130000000000007fe00000000000000001001bffff0000008b0000003400000600"
+note        = "record 441: DSP SAMPLE SD SAMPLE word 19 SMP since rui1045 (0021 ext_param_record; 0026 1045): stock record 41's fields (index 19, CC / NRPN ids) with the range 0..0x7fe0 and the fine flag (+0x14 = 1): index << 8 | bank << 5, the SAMPLES pool's eight banks, saved locks keeping the bank. Was word 17 TUN, a copy of stock record 39, which TUN now uses itself (byte-identical fields [measured, rytm-emu rui1043: records 39 and 441, +0x00..+0x27])"
 
 [[patch]]
 owner       = "0021-ext"
@@ -3950,8 +3959,8 @@ addr        = 0x401c52d4
 size        = 12
 expect_len  = 12
 expect_sha256 = "50795c1b6b082a81d524927c45c86063c8ee07b07c56326e215c7bfe698db81e"
-replace_from = 0x401c012c
-note        = "names: stock record 39's"
+replace_from = 0x401c0194
+note        = "names: stock record 41's (Sample Slot, Sample, SMP; 1045, was record 39's)"
 
 [[patch]]
 owner       = "0021-ext"
@@ -3973,12 +3982,13 @@ note        = "names: stock record 40's"
 
 [[patch]]
 owner       = "0021-ext"
+gate        = "!slots"
 addr        = 0x401c5314
 size        = 40
 expect_len  = 40
 expect_sha256 = "3e40a56eff159083cf5c856b8fb5915b9cacd8773a72d8977bfc12f69803fb18"
 replace_from = 0x401c016c
-note        = "record 443: DSP SAMPLE SD SAMPLE word 19 SMP (card file), a copy of stock record 41"
+note        = "record 443: DSP SAMPLE SD SAMPLE word 19 SMP (card file), a copy of stock record 41 (unused since SMP is stock's record 41, 2026-10-09; with slots=1 it is MULTISAMPLE's VEL since rui1031, below)"
 
 [[patch]]
 owner       = "0021-ext"
@@ -4511,9 +4521,17 @@ reemit = false
 [[cave]]
 owner   = "0021-ext"
 addr    = 0x4001a4ca
-size    = 330
+size    = 292
 section = ".exte"
-note    = "cave9's unclaimed tail (0x4001a4ca..0x4001a71a): DIGIDRUM's control-name pool and per-engine label table."
+note    = "cave9's unclaimed tail (0x4001a4ca..0x4001a71a): DIGIDRUM's control-name pool and per-engine label table (290 B as built; the claim 330 -> 292 for .extx, rui1031)."
+
+[[cave]]
+owner   = "0021-ext"
+gate    = "slots"
+addr    = 0x4001a5ee
+size    = 38
+section = ".extx"
+note    = "rui1031: .exte's free tail (0x4001a5ee..0x4001a614): us_copy, out of .us1 (32 B as built)."
 
 [[cave]]
 owner   = "0021-ext"
@@ -4663,9 +4681,17 @@ note    = "cave22's unclaimed tail: JUNO's short knob names, machine name, PAT f
 [[cave]]
 owner   = "0021-ext"
 addr    = 0x40012d8e
-size    = 130
+size    = 88
 section = ".extm"
-note    = "cave8's unclaimed tail: JUNO's long knob names."
+note    = "cave8's unclaimed tail: JUNO's long knob names (88 B as built; the claim 130 -> 88 for .exty, rui1031)."
+
+[[cave]]
+owner   = "0021-ext"
+gate    = "slots"
+addr    = 0x40012de6
+size    = 42
+section = ".exty"
+note    = "rui1031: .extm's free tail (0x40012de6..0x40012e10): us_text_in, out of .us1 (36 B as built)."
 
 [[patch]]
 owner       = "0021-ext"
@@ -5638,9 +5664,9 @@ note        = "record 405: the user slots' shared page 2, sample word 24"
 owner   = "0021-ext"
 gate    = "slots"
 addr    = 0x40029060
-size    = 1984
+size    = 2008
 section = ".us1"
-note    = "cave4 (0006-comp-preview's .text; 0021 excludes 0006): the user slots' voice flag, descriptors, value text, page 2 (1940 B as built 2026-10-11, the review fixes). 1026: 1960 -> 1984 (1980 B: unused knobs as record 0), over the first 16 B of 0004-lfo-rnd's .kgate at 0x40029808, which 0021 excludes (0004 is never in a 0021 build); cave4 ends at 0x40029838."
+note    = "cave4 (0006-comp-preview's .text; 0021 excludes 0006): the user slots' voice flag, descriptors, value text, page 2 (1940 B as built 2026-10-11, the review fixes). 1026: 1960 -> 1984 (1980 B: unused knobs as record 0), over the first 16 B of 0004-lfo-rnd's .kgate at 0x40029808, which 0021 excludes (0004 is never in a 0021 build); cave4 ends at 0x40029838. 1045: 1984 -> 2008, all of cave4 (2004 B: us_param_record maps DSP SAMPLE's TUN to stock's record 39 and SMP to 441)."
 
 [[cave]]
 owner   = "0021-ext"
@@ -5665,9 +5691,211 @@ note    = "the end of .us2's former claim (cave9): ext_stepbox {'XSTP', ext_step
 owner   = "0021-ext"
 gate    = "slots"
 addr    = 0x4001a248
-size    = 418
+size    = 404
 section = ".usd"
-note    = "cave9 after .us2, 4-aligned (.us2 ends on one; the name pointer arrays here are 32-bit data and the linker keeps a section's offsets, not its absolute alignment): the user slots' constant data (364 B as built 2026-10-11)."
+note    = "cave9 after .us2, 4-aligned (.us2 ends on one; the name pointer arrays here are 32-bit data and the linker keeps a section's offsets, not its absolute alignment): the user slots' constant data (364 B as built 2026-10-11; 392 B 2026-10-31, the claim 418 -> 404 for .ush)."
+
+[[cave]]
+owner   = "0021-ext"
+gate    = "slots"
+addr    = 0x4001a3dc
+size    = 12
+section = ".ush"
+note    = "rui1031: .usd's former end, 4-aligned: us_cubox {'CHRD', setup, steps} at a fixed address, which 0026-remote-ui fills at its first ev_tick (6-OP FM's chord knobs and MULTISAMPLE's labels); zero pointers at build (0x4001a3e8..0x4001a3ea stay unclaimed)."
+
+# ---- 0021-ext: MULTISAMPLE = machine 52 (CB TEST), rui1031 (rytm-teensy docs/MULTISAMPLE.md, voice flag 0x30) ----
+# Its SRC records: BT IMPROVED's 398..402 (0014 variants=0: machine 34 unlisted; with variants=1 BT IMPROVED lists without knobs),
+# DSP SAMPLE's unused word-19 copy 443 and FUNC. GEN.'s 406/407 (0014 funcgen=0, already required). Fields as 6-OP FM's
+# (machine, sound index 9..16, 0..127, default, CC 16..23, NRPN 1:0..7); names and looks: 0026's cu_tick at run time.
+# Its SMPL page and 6-OP FM's E..H: the user slots' shared page-2 records (us_p2rec), set up by 0026's cu_setup.
+# Name and voice mask: 0026's patches (cu_ms_name), so without 0026 it stays unlisted.
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4029044c
+size        = 4
+expect_len  = 4
+expect_sha256 = "60688bcb2e17a69fe04bd6d302ec52008bcc2f57de91cf43ed2b2deade095fbc"
+from_symbol = "ext_render"
+note        = "engine entry of machine 52 (MULTISAMPLE): ext_render, as machine 44"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4028841c
+size        = 32
+expect_len  = 32
+expect_sha256 = "8f9ed60e1854aa4ce346b24b9d4ee429acebbcf31abfe5d63bfd3b07ecf0607a"
+replace     = "0000018e000001bb0000018f0000019000000191000001920000019600000197"
+note        = "machine 52's SRC page (0x40287cc8 + 36 m, after the title): records 398 443 399 400 401 402 406 407, INST VEL LEV RTRG ATK DEC SUS REL"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c49f0
+size        = 40
+expect_len  = 40
+expect_sha256 = "fac39b0f45fcbf12469cc83c48f1cda57cf483505ee4f3bec9dccb55f3ed451d"
+replace     = "00000034000000090000000000007f0000000000000000000010ffff000000800000000000000600"
+note        = "record 398: MULTISAMPLE slot 0 INST (the instrument list entry), default 0, CC 16, NRPN 1:0"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c5314
+size        = 40
+expect_len  = 40
+expect_sha256 = "3e40a56eff159083cf5c856b8fb5915b9cacd8773a72d8977bfc12f69803fb18"
+replace     = "000000340000000a0000000000007f0000007f00000000000011ffff000000810000000000000600"
+note        = "record 443: MULTISAMPLE slot 1 VEL (velocity sensitivity), default 127 (the SFZ's amp_veltrack whole); DSP SAMPLE's word-19 copy, unused since 2026-10-09 (SMP is record 41), CC 17, NRPN 1:1"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c4a24
+size        = 40
+expect_len  = 40
+expect_sha256 = "c1feb563b05532b88404014cee6a88713280a39a8640a66b7eb9431fbb780d15"
+replace     = "000000340000000b0000000000007f0000006400000000000012ffff000000820000000000000600"
+note        = "record 399: MULTISAMPLE slot 2 LEV (100 = unity), default 100, CC 18, NRPN 1:2"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c4a58
+size        = 40
+expect_len  = 40
+expect_sha256 = "4d2c6a2075c94594e07ca464886931a108ef154c6fe6e7fcba638a1b4e79cc99"
+replace     = "000000340000000c0000000000007f0000000000000000000013ffff000000830000000000000600"
+note        = "record 400: MULTISAMPLE slot 3 RTRG (>= 64: release regions), default 0 (off), CC 19, NRPN 1:3"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c4a8c
+size        = 40
+expect_len  = 40
+expect_sha256 = "bc5f754de26e7d5a065bfd76fe84b4ac53b1693415c4e022ad7e6dc65672a308"
+replace     = "000000340000000d0000000000007f0000004000000000000014ffff000000840000000000000600"
+note        = "record 401: MULTISAMPLE slot 4 ATK (64 = the instrument's), default 64, CC 20, NRPN 1:4"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c4ac0
+size        = 40
+expect_len  = 40
+expect_sha256 = "8561d97815406515f6be8e1a66419363c7f9e0b7bc8efd1e0b1f64d317a64ad6"
+replace     = "000000340000000e0000000000007f0000004000000000000015ffff000000850000000000000600"
+note        = "record 402: MULTISAMPLE slot 5 DEC (64 = the instrument's), default 64, CC 21, NRPN 1:5"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c4b90
+size        = 40
+expect_len  = 40
+expect_sha256 = "49bcf2e75a37dba5e572142e228fd72f9a086c9627ff8d65a4cce4383b0eb586"
+replace     = "000000340000000f0000000000007f0000004000000000000016ffff000000860000000000000600"
+note        = "record 406: MULTISAMPLE slot 6 SUS (64 = the instrument's), default 64, CC 22, NRPN 1:6"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x401c4bc4
+size        = 40
+expect_len  = 40
+expect_sha256 = "2f750a05d36c14e75733dad2ee68bb602eba07a779099c1a1af34c3628730425"
+replace     = "00000034000000100000000000007f0000004000000000000017ffff000000870000000000000600"
+note        = "record 407: MULTISAMPLE slot 7 REL (64 = the instrument's), default 64, CC 23, NRPN 1:7"
+
+# ---- 0021-ext: WAVETABLE = machine 46 (RS TEST), GRANULAR = machine 47 (BT TEST), rui1034 (rytm-teensy docs/WAVETABLE.md 6,
+# docs/GRANULAR.md 5; voice flags 0x28 / 0x38 in us_flag_tab). No free records are left (334..460 are all 0021's), so
+# their SRC pages list MULTISAMPLE's records (398 443 399 400 401 402 406 407); 0026 sets them up for the machine that
+# uses them (cu_setup, cu_prep) and copies machine 52's ids into sound_param_id_for_index's table for 46 / 47. Page 2:
+# the user slots' shared records (us_cubox, as MULTISAMPLE). Names and masks: 0026's patches.
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40290434
+size        = 4
+expect_len  = 4
+expect_sha256 = "3311a598bbdf8107edeebda0c4ceb567c8d22c1d94aba7877617c4a82fd002bd"
+from_symbol = "ext_render"
+note        = "engine entry of machine 46 (WAVETABLE): ext_render, as machine 44"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40290438
+size        = 4
+expect_len  = 4
+expect_sha256 = "0f92a2fa086736160bc58aed68306fd4d8a9693107286a7809d1ecf8fc2c576c"
+from_symbol = "ext_render"
+note        = "engine entry of machine 47 (GRANULAR): ext_render, as machine 44"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40288344
+size        = 32
+expect_len  = 32
+expect_sha256 = "b8244dcb326a394acdcbaa58f5dd0a5e6dfe1cdb0497451dd78da37bc1eb1652"
+replace     = "0000018e000001bb0000018f0000019000000191000001920000019600000197"
+note        = "machine 46's SRC page (0x40287cc8 + 36 m, after the title): MULTISAMPLE's records 398 443 399 400 401 402 406 407, TBL POS WARP AMT UNI SUB CUT RES (0026's set-up)"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40288368
+size        = 32
+expect_len  = 32
+expect_sha256 = "9c19c4cb1b25ffc4fa241b25e78b68de810b514a1a81b48a274a4b35076ea035"
+replace     = "0000018e000001bb0000018f0000019000000191000001920000019600000197"
+note        = "machine 47's SRC page: MULTISAMPLE's records 398 443 399 400 401 402 406 407, SRC POS SPRY SIZE DENS PRND REV WIN (0026's set-up)"
+
+# ---- 0021-ext: LIVE IN = machine 48 (LT TEST), CHOP = machine 49 (MT TEST), rui1051 (rytm-teensy docs/LIVE-IN.md 4,
+# docs/CHOP.md; voice flags 0x78 / 0x18 in us_flag_tab). As 46 / 47: their SRC pages list MULTISAMPLE's records, set up
+# by 0026 for the machine that uses them; page 2 the user slots' shared records (us_cubox). Names and masks: 0026's.
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4029043c
+size        = 4
+expect_len  = 4
+expect_sha256 = "3278f216094c4ad87b49382f904dbb808376dd1e9039ed0a8fbb3e88c39a8bd4"
+from_symbol = "ext_render"
+note        = "engine entry of machine 48 (LIVE IN): ext_render, as machine 44"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40290440
+size        = 4
+expect_len  = 4
+expect_sha256 = "b9562a92f0ff32c6787a026749404fc04e10617b88696d86b2b0cc45cbb9671d"
+from_symbol = "ext_render"
+note        = "engine entry of machine 49 (CHOP): ext_render, as machine 44"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4028838c
+size        = 32
+expect_len  = 32
+expect_sha256 = "673789cd3492720b098bf110c44378026ce28810e9b18d833c73bda489cb32d5"
+replace     = "0000018e000001bb0000018f0000019000000191000001920000019600000197"
+note        = "machine 48's SRC page (0x40287cc8 + 36 m, after the title): MULTISAMPLE's records 398 443 399 400 401 402 406 407, INPT GAIN GATE HOLD MON ATK DEC SUS (0026's set-up)"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x402883b0
+size        = 32
+expect_len  = 32
+expect_sha256 = "cbadf216018d1e8ae9f7837a47db6789f8389105ec51a4fc80f41f1962db99f9"
+replace     = "0000018e000001bb0000018f0000019000000191000001920000019600000197"
+note        = "machine 49's SRC page: MULTISAMPLE's records 398 443 399 400 401 402 406 407, SRC SLC TUNE MRPH SEED NBR VEL LEV (0026's set-up)"
 
 [[cave]]
 owner   = "0021-ext"
@@ -6359,6 +6587,496 @@ entry     = "rui_uart_det"
 rejoin    = 0x400019ec
 elek_size = 8
 
+# 1030: the chord write-back (28 1). rec_trig's entry, `linkw %fp,#-48; moveq #12,%d0` (6 B, nothing pc-relative):
+# stock's live-record writer (trig, note, velocity, micro timing, length of one recorded step), called only from the UI
+# task's record-event handler 0x400a13e2 while live recording [measured, rytm-emu rui1027, 2026-10-19: one call per
+# recorded pad, args (this, track, note, vel, step, micro, len, -1)]. rui_rec_det notes (track, step, tick), re-emits
+# the two instructions and rejoins 0x400b45e6.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400b45e0
+size      = 6
+expect_len = 6
+expect_sha256 = "b38285b04deb2cf1548859b22859fec62957c3e4cdec02f1ae95f1a6ea5c7c9c"
+entry     = "rui_rec_det"
+rejoin    = 0x400b45e6
+
+# 1032: the sequencer link's step ticks. trig_fire's entry, `lea %sp@(-88),%sp; movel %sp@(96),%d0` (8 B, nothing
+# pc-relative): called once per track per step, trig or not, by the sequencer clock 0x4009b048 (a software interrupt,
+# level 2) [measured, rytm-emu rui1031, 2026-10-20: 221 calls = 13 tracks x 17 steps in 2 s of play, all from
+# 0x4009b5c0]. sq_fire_det queues (block, track, step, length, speed) for the host's seq tracks, re-emits the two
+# instructions and rejoins 0x4009a9c4.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x4009a9bc
+size      = 6
+expect_len = 8
+expect_sha256 = "1ab7ef2da235b6c728e15915d47344ba08341b941d655aea58fdec1c289a5ce9"
+entry     = "sq_fire_det"
+rejoin    = 0x4009a9c4
+elek_size = 8
+
+# 1032: the sequencer clock's only exit, `moveml %sp@,%d0-%fp; lea %sp@(76),%sp` then rte at 0x4009bfa6 (no branch
+# targets 0x4009bfa0..0x4009bfa5 [code]): 203 calls/s at 127 BPM, stopped or playing [measured, rytm-emu rui1031:
+# 610 in 3 s]. sq_end_det polls transport and pattern, sends the queued ticks (0021's interrupt rules), re-emits the
+# two instructions and rejoins the rte.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x4009bf9e
+size      = 6
+expect_len = 8
+expect_sha256 = "6f3f2b5774382e7432bc4d2f581f1a4920f081225dc1673069f3ad63193ad38a"
+entry     = "sq_end_det"
+rejoin    = 0x4009bfa6
+elek_size = 8
+
+# 1033: the analog pin (Mod B). The transport entry 0x4007a538, `lea %sp@(-20),%sp; moveq #1,%d0` (6 B, nothing
+# pc-relative): the control frame's sender, called with the voices' frame 0x800063c0 by every block path after the
+# filter and amp consumers wrote it (callers 0x40109562 0x4010c254 0x4011fa9e 0x40121464), and with other buffers
+# (0x401beac0 0x40271d50 0x40272130: left alone) [code]. pin_det rewrites the pinned voices' amp / filter records and
+# VCA (pin_frame), re-emits the two instructions and rejoins 0x4007a53e.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x4007a538
+size      = 6
+expect_len = 6
+expect_sha256 = "21fc5296d3bb8c37be5df97194725fc37d3c0fe9c8f70c942982be7d9a21f185"
+entry     = "pin_det"
+rejoin    = 0x4007a53e
+
+# 1048: POLY CONFIG in the track menu (FUNC + CHRO). TrackMenuView's constructor 0x400f9b38 has one caller, the boot
+# view setup's `jsr 0x400f9b38` at 0x400cb5b8 (`this` in d6) [code]; after it `lea %sp@(24),%sp; tstl %d6` (6 B,
+# nothing pc-relative), then `beqs` on that test. pm_menu_det appends the item (pm_menu_add(d6)), re-emits the two
+# instructions and rejoins the beqs at 0x400cb5c4 (the flags from its own tstl). [measured, rytm-emu rui1048base: the
+# site is reached once in a cold boot, at ~1369 M, with the new view at a7.] Not the constructor's epilogue: 0012's
+# (0x400f9e96) and 0021's (0x400f9e9c) items chain there and stay as they are.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400cb5be
+size      = 6
+expect_len = 6
+expect_sha256 = "4f9f3f7d2951a09d5963da0b60c9ed75a7abbc6cc64510040d3f99b4e7323d9f"
+entry     = "pm_menu_det"
+rejoin    = 0x400cb5c4
+
+# 1033: the edit reports (2D 0A). The stock edit functions' entries, each `linkw %fp,#-N` + its next instruction (8 B,
+# nothing pc-relative; the jmp's 6 B end inside the second, so elek_size 8): pattern copy / paste / clear / undo,
+# track copy / paste / clear / undo, page copy / paste / clear / undo, trig copy / paste [measured: each tied to its
+# gesture by --count, rytm-emu rui1031, 2026-10-20, rytm-teensy docs/SEQUENCER.md 2; page clear 0x400c444e and the
+# undo functions [code: their UI handlers' calls, 0x4003dc20..0x4003dcea, 0x400cc3c8 / 0x400cc49c]]. ed_X_det calls the
+# stock function (ed_X_orig: the displaced 8 B, then a jmp past them), reports (op, result) and returns its d0.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400abde0
+size      = 6
+expect_len = 8
+expect_sha256 = "e3cbc4e99511aa92363dd6445c8317347c6d79b19b3ba0ad383c47582ae9b7ef"
+entry     = "ed_pcopy_det"
+rejoin    = 0x400abde8
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400abff6
+size      = 6
+expect_len = 8
+expect_sha256 = "396273e2f7607164a57ccf662ba374cc18da7a7b43b0a3c596368b1b22d8a9cd"
+entry     = "ed_ppaste_det"
+rejoin    = 0x400abffe
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400ac11c
+size      = 6
+expect_len = 8
+expect_sha256 = "6ffbfd094cbabf315ea611c44f82b101c93b61ce15ca1bf555100e76814ca176"
+entry     = "ed_pclear_det"
+rejoin    = 0x400ac124
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400abec0
+size      = 6
+expect_len = 8
+expect_sha256 = "f5281e2c4696d9a157c3641b9ccef73f76e308a95492a87077b7a420908373ab"
+entry     = "ed_pundo_det"
+rejoin    = 0x400abec8
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c2efc
+size      = 6
+expect_len = 8
+expect_sha256 = "6ffbfd094cbabf315ea611c44f82b101c93b61ce15ca1bf555100e76814ca176"
+entry     = "ed_tcopy_det"
+rejoin    = 0x400c2f04
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c4754
+size      = 6
+expect_len = 8
+expect_sha256 = "60a2837e990eaeb4a8da05816f4f8bf8233a2b6b11d57643bcc4dfd949eda35e"
+entry     = "ed_tpaste_det"
+rejoin    = 0x400c475c
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c494a
+size      = 6
+expect_len = 8
+expect_sha256 = "f3d9a47d9849600bb40bbd0d014639d1031afd4114d68189aef380f81c501670"
+entry     = "ed_tclear_det"
+rejoin    = 0x400c4952
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c3808
+size      = 6
+expect_len = 8
+expect_sha256 = "805a70fa2d4b45e0ebe54917418aeefda635c3c0d8eefeded70dadacdf6042d6"
+entry     = "ed_tundo_det"
+rejoin    = 0x400c3810
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c4620
+size      = 6
+expect_len = 8
+expect_sha256 = "6ffbfd094cbabf315ea611c44f82b101c93b61ce15ca1bf555100e76814ca176"
+entry     = "ed_gcopy_det"
+rejoin    = 0x400c4628
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c3342
+size      = 6
+expect_len = 8
+expect_sha256 = "b70d90eabb5a1d19fdcf7613240e0beda20d632b01042cb7b43d1059f0b0e5c4"
+entry     = "ed_gpaste_det"
+rejoin    = 0x400c334a
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c444e
+size      = 6
+expect_len = 8
+expect_sha256 = "ffde53d71a15b4ca76d035c5d36db846efa2f20dbff56b3c6efc911dcf99f9d7"
+entry     = "ed_gclear_det"
+rejoin    = 0x400c4456
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c35fa
+size      = 6
+expect_len = 8
+expect_sha256 = "ffde53d71a15b4ca76d035c5d36db846efa2f20dbff56b3c6efc911dcf99f9d7"
+entry     = "ed_gundo_det"
+rejoin    = 0x400c3602
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c4acc
+size      = 6
+expect_len = 8
+expect_sha256 = "8354955127e86b459dff4e2b1d9730c802fbdc96e8d5cb0dbd691744c1f10136"
+entry     = "ed_rcopy_det"
+rejoin    = 0x400c4ad4
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400c396a
+size      = 6
+expect_len = 8
+expect_sha256 = "b6e799339ca05c4ac339b1f21edd5acc33317691a71ee199e8a446928e36e402"
+entry     = "ed_rpaste_det"
+rejoin    = 0x400c3972
+elek_size = 8
+
+# 1042: RELOAD / SAVE PATTERN, RELOAD / SAVE TRACK (2D 0A ops 16..19) [measured, rytm-emu: each ran once for its menu item]
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400af5e0
+size      = 6
+expect_len = 8
+expect_sha256 = "7c6d66d691f9f6af7a3a8f3f31d35c8bdaf38f4ed587f0908c1e95894640ffd6"
+entry     = "ed_preload_det"
+rejoin    = 0x400af5e8
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400ae588
+size      = 6
+expect_len = 8
+expect_sha256 = "d43e64e0210fdd98e9dd8476d7cea57c93492ec611d50eddcbf6fd90ea80cef7"
+entry     = "ed_psave_det"
+rejoin    = 0x400ae590
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400af64a
+size      = 6
+expect_len = 8
+expect_sha256 = "74c9188127d3241e9b2f750392fda1550a0be1780b7e06291e415aaa6d20de19"
+entry     = "ed_treload_det"
+rejoin    = 0x400af652
+elek_size = 8
+
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400ae614
+size      = 6
+expect_len = 8
+expect_sha256 = "74c9188127d3241e9b2f750392fda1550a0be1780b7e06291e415aaa6d20de19"
+entry     = "ed_tsave_det"
+rejoin    = 0x400ae61c
+elek_size = 8
+
+# 1031: MULTISAMPLE (machine 52, CB TEST; 0021 gives it ext_render, its records and the voice flag 0x30) listed on every
+# track with 0026's names: without 0026 (its labels, cu_tick / cu_setup) it stays unlisted (mask 0, as stock).
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf1e4
+size        = 2
+expect_len  = 2
+expect_sha256 = "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7"
+replace     = "ffff"
+note        = "machine 52 (MULTISAMPLE): home -1 and every voice, as machine 44"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf144
+size        = 4
+expect_len  = 4
+expect_sha256 = "34b0ed24131c0f9a21f8e81a9bf9df64b2d8a7b08b68940fe47e00f09996c849"
+from_symbol = "cu_ms_name"
+note        = "machine 52 long name: MULTISAMP (MULTISAMPLE does not fit the machine list's box)"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf148
+size        = 4
+expect_len  = 4
+expect_sha256 = "0be64b113c39171af37bbe56fe2da23c7a621de5063d8529744d92dc3d56658d"
+from_symbol = "cu_ms_short"
+note        = "machine 52 short name: MSMP"
+
+# 1034: WAVETABLE (46) and GRANULAR (47) listed on every track with 0026's names (as MULTISAMPLE, above).
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf1d8
+size        = 4
+expect_len  = 4
+expect_sha256 = "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+replace     = "ffffffff"
+note        = "machines 46 (WAVETABLE) and 47 (GRANULAR): home -1 and every voice, as machine 44"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf114
+size        = 4
+expect_len  = 4
+expect_sha256 = "fc64e7eb61bab829bbd288f86005ec951ec3cb51a87ebdb0854b1288e73e7ef3"
+from_symbol = "cu_wt_name"
+note        = "machine 46 long name: WAVETABLE"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf118
+size        = 4
+expect_len  = 4
+expect_sha256 = "9c281f77777a0a5e133605903eddd117984416c2cc9ef85099239a23e8594580"
+from_symbol = "cu_wt_short"
+note        = "machine 46 short name: WTBL"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf11c
+size        = 4
+expect_len  = 4
+expect_sha256 = "444bbe0856d03a22d9b755738a01b3277719aeaf2ebb56b0d259a103cd1688d3"
+from_symbol = "cu_gr_name"
+note        = "machine 47 long name: GRANULAR"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf120
+size        = 4
+expect_len  = 4
+expect_sha256 = "6c586a1e869fee563e5605562d79eb21ee7eb709a729e9219f9f9e4cff5aa261"
+from_symbol = "cu_gr_short"
+note        = "machine 47 short name: GRAN"
+
+# 1051: LIVE IN (48) and CHOP (49) listed on every track with 0026's names (as WAVETABLE / GRANULAR, above).
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf1dc
+size        = 4
+expect_len  = 4
+expect_sha256 = "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+replace     = "ffffffff"
+note        = "machines 48 (LIVE IN) and 49 (CHOP): home -1 and every voice, as machine 44 (0x401bf17c + 2 m)"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf124
+size        = 4
+expect_len  = 4
+expect_sha256 = "e1dafd5b3790588b36dbeb2e929cb0f50f10f50b4fd76aad275981aa383b04b9"
+from_symbol = "cu_li_name"
+note        = "machine 48 long name: LIVE IN"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf128
+size        = 4
+expect_len  = 4
+expect_sha256 = "9a65ee217da6a5efaf2a6f10216102c46ed1910db7beea8cfbfd6af43de5f90a"
+from_symbol = "cu_li_short"
+note        = "machine 48 short name: LVIN"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf12c
+size        = 4
+expect_len  = 4
+expect_sha256 = "feed506a5196c430de5afa0a7d7129c8e05c4bf80c7acd97a13725a6551787c5"
+from_symbol = "cu_cp_name"
+note        = "machine 49 long name: CHOP"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf130
+size        = 4
+expect_len  = 4
+expect_sha256 = "52da3ac87dc426b61a95ff459dd7cd642cf5c6a8a0aeb9b1785daf40624d3fef"
+from_symbol = "cu_cp_short"
+note        = "machine 49 short name: CHOP"
+
+# 1034: set_machine's entry `linkw %fp,#-40; moveml %d2-%d6/%a2-%a4,%sp@` (8 B, nothing pc-relative): cu_setm_det calls
+# cu_prep(machine), which sets MULTISAMPLE's shared SRC records up for WAVETABLE / GRANULAR / MULTISAMPLE before stock
+# writes the machine's defaults from them; re-emits both and rejoins 0x400bd156. 0021's us_prev_thunk calls set_machine
+# at 0x400bd14e too (its call reimplemented), so it lands here as well.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400bd14e
+size      = 6
+expect_len = 8
+expect_sha256 = "89de4ac6292890b327501edd7023049eab1231ae0a0701c1ae14ff9faf4e2367"
+entry     = "cu_setm_det"
+rejoin    = 0x400bd156
+elek_size = 8
+
+# 1052: the project slot reports (4B; mods/0026-remote-ui/design.md "1052"). Four entries of the project manager's slot
+# functions, each in the project job task [measured, rytm-emu rui1051 break-point stacks, the research of 2026-10-26];
+# each stub calls its C half with the slot argument, re-emits the displaced instructions (nothing pc-relative) and
+# rejoins. write-slot (lib, slot): `lea %sp@(-32),%sp; moveq #127,%d1`, its callers told apart by the return address
+# (rename, clear, init, paste, save's own write).
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x40034e98
+size      = 6
+expect_len = 6
+expect_sha256 = "f936bd2835d6631a9c116d6b26dcbad1321461143645f55015a780e4e41bdfed"
+entry     = "pj_write_det"
+rejoin    = 0x40034e9e
+
+# 1052: delete (lib, slot), the delete job's per-slot call: `movel %d2,%sp@-; moveq #-1,%d0; movel %sp@(12),%d2` (8 B).
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x40034a54
+size      = 6
+expect_len = 8
+expect_sha256 = "fc1e1dc6e345215231d3f41399ddc6f9a9a08edcde54adaf8f271484bcdf1ccd"
+entry     = "pj_delete_det"
+rejoin    = 0x40034a5c
+elek_size = 8
+
+# 1052: copy to the clipboard (lib, slot): `linkw %fp,#-28; moveml %d2-%d3/%a2,%sp@` (8 B): the slot a PASTE copies.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x4003502c
+size      = 6
+expect_len = 8
+expect_sha256 = "32be28bb370998248a4148a56101cdc37c9cacaf465e14cc0a4d18d59b3de55d"
+entry     = "pj_copy_det"
+rejoin    = 0x40035034
+elek_size = 8
+
+# 1052: save (project, slot, cb), SAVE / SAVE AS / SAVE TO: `lea %sp@(-48),%sp; moveml %d2-%d4/%a2-%fp,%sp@` (8 B).
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400b0738
+size      = 6
+expect_len = 8
+expect_sha256 = "3637a4a24bbaa1fed7a0d33212cb843b64576c085b1121fa1be80bca77fbc54f"
+entry     = "pj_save_det"
+rejoin    = 0x400b0740
+elek_size = 8
+
+# 1052b: the active-slot setter (slot), its one setter [the research]: `mvsb 0x405c8e4d,%d1` (6 B, an absolute address,
+# nothing pc-relative). Called by a LOAD (the same slot too) and inside save (SAVE AS: with the new slot) [measured,
+# rytm-emu rui1052: one call a LOAD, two a SAVE AS, from 0x400aecde in the job task]. pj_act_det reports LOAD (4B 0A).
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400fa694
+size      = 6
+expect_len = 6
+expect_sha256 = "d1bebd88a3d9c134932c4ec1f898e888fd48481d2a0eb1499d797b0cf4c71614"
+entry     = "pj_act_det"
+rejoin    = 0x400fa69a
+
+# 1052d: the kit reports (4C). kit_save 0x400b119c (project, index, flag): `lea -60(sp),sp; movem.l d2-d7/a2-fp,(sp)`
+# (8 B). YES + KIT (0x400cd562) and SAVE KIT (0x400dd69a) call it [measured, rytm-emu: pj_emu kits' break-point counts].
+# kt_save_det runs it, then reports 4C SAVE <index> <the active kit at its entry>.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400b119c
+size      = 6
+expect_len = 8
+expect_sha256 = "0c6d3f0bfd198ddc78800e6503eccdc6cbc5c442209d882244584eda864e93ca"
+entry     = "kt_save_det"
+rejoin    = 0x400b11a4
+elek_size = 8
+
+# kit_reload 0x400af0d2 (project): `lea -20(sp),sp; movem.l d2-d4/a2-a3,(sp)` (8 B). NO + KIT (0x400cd4ae) and the KIT
+# menu's RELOAD (0x400dd5de) call it [measured]. kt_reload_det: 4C RELOAD <the kit>.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400af0d2
+size      = 6
+expect_len = 8
+expect_sha256 = "a04973fb79ed0896aa768e97902a85f61a10ad9d106955b3fe7a112c76d0e51f"
+entry     = "kt_reload_det"
+rejoin    = 0x400af0da
+elek_size = 8
+
+# The reload of every kit 0x400b131a (project): `lea -28(sp),sp; movem.l d2-d4/a2-a5,(sp)` (8 B), kit_reload_key's
+# branch with its flag set [code]. kt_all_det: 4C RELOAD ALL <the active kit>.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400b131a
+size      = 6
+expect_len = 8
+expect_sha256 = "57ce6a873a72d55110bfba4569069ecc773810ea4134eb9191e9c6c1ccaa0714"
+entry     = "kt_all_det"
+rejoin    = 0x400b1322
+elek_size = 8
+
 # The view factory 0x400ca9b2: AMPLITUDE (key 0x36), DELAY and REVERB views get two pages, as 0004
 # grows the LFO view's (0x400cb02a): count 1 -> 2 and a two-entry source vector.
 [[patch]]
@@ -6562,3 +7280,61 @@ expect_len  = 4
 expect_sha256 = "ae6aa465aa40b2becc3b631febe33d07e412cba8260e35a28a175fc30c00a905"
 from_symbol = "fxin_ob"
 note        = "jsr operand: ob_in_write(rx_buffer, 0, 32), the driver's other path (0x8000e578 != 0; 0024-ob-mix's site)"
+
+# ---------------------------------------------------------------- 0031-remote-keys (2026-10-27)
+# analoghealth's four sites (Iced-Cream/analoghealth mod.json guarded_sites, OS 1.74), carried to 1.73 by the
+# measured port map with each 48-byte window identical apart from translated pointers (re/symbols.toml, the
+# 0031-remote-keys block). analoghealth makes the task-switch and SysEx sites elekloader `jsr` sites; here they
+# are registry detours like every other (a `jmp` into the area that re-emits the displaced instruction and
+# rejoins), so the stock bytes are guarded by `expect` and verify.py checks the re-emit and the rejoin. No
+# other claim touches these bytes (layout.py), core-ar2's eight sites included. Code in elekloader's area.
+
+# The context switch (fn.context_switch_mask): `move.l #0xffffdfff,%d0`, inside the exception handler, every
+# context switch; nothing branches into 0x4000043a..3d [code]. ts_det adds the idle task's time.
+[[detour]]
+owner  = "0031-remote-keys"
+addr   = 0x40000438
+size   = 6
+expect_len = 6
+expect_sha256 = "4c8d8bfc24008917e4a62944865404e5a6c3108d6d3488d8efa5667e5efdaefe"
+entry  = "ts_det"
+rejoin = 0x4000043e
+
+# The SysEx router (fn.sysex_router), past 0022's looper_router at its entry (0x40083d6c..0x40083d71, which
+# rejoins 0x40083d74): `lea 0x401d7b6e,%a3`, reached by every SysEx message 0022 does not take; nothing branches
+# into 0x40083d9a..9d (the loop at 0x40083db6 goes to 0x40083d9e) [code]. sx_det answers F0 00 20 3C 7D 00 ... F7
+# from USB (interfaces 2 and 4) and re-emits the lea.
+[[detour]]
+owner  = "0031-remote-keys"
+addr   = 0x40083d98
+size   = 6
+expect_len = 6
+expect_sha256 = "ad2243fc2b74dc39f5483d16dfd23663e7bf3a0ee65e93406856b15c46209ebd"
+entry  = "sx_det"
+rejoin = 0x40083d9e
+
+# The panel button driver's entry (fn.button_driver), `lea %sp@(-76),%sp; movem.l %d2-%d7/%a2-%fp,%sp@`
+# (8 B, nothing branches into it): core_panel_buttons (analoghealth's input bridge, C) merges the remote keys'
+# bits with the panel's and calls core_stock_buttons, the two instructions and then 0x40081d48.
+[[detour]]
+owner     = "0031-remote-keys"
+addr      = 0x40081d40
+size      = 6
+expect_len = 8
+expect_sha256 = "82f9c301aead4e1a90d91f8f679ba9cb91d05c1ed69dcc1c270dc59485285f1e"
+entry     = "core_panel_buttons"
+rejoin    = 0x40081d48
+elek_size = 8
+
+# The panel receiver's entry (fn.panel_receiver), `lea %sp@(-28),%sp; movem.l %d2-%d6/%a2-%a3,%sp@` (8 B, nothing
+# branches into it): panel_rx logs the byte for CAPTURE and marks the receiver busy for the pad player, then calls
+# rp_stock_parser, the two instructions and then 0x4008208c. The panel UART's interrupt.
+[[detour]]
+owner     = "0031-remote-keys"
+addr      = 0x40082084
+size      = 6
+expect_len = 8
+expect_sha256 = "8f96d172c43d6e9d5f2d435bd2b96f60df07aaf653786f343036ee418a71b004"
+entry     = "panel_rx"
+rejoin    = 0x4008208c
+elek_size = 8

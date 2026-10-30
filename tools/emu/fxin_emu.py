@@ -27,7 +27,7 @@ import wave
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "rytm-emu"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
 FS = 48000
 IPS = 200          # M instructions an emulated second
 SILENT = -100      # dBFS: nothing on a channel (idle channels are digital zero in the emulator)
@@ -127,7 +127,7 @@ class Emu:
         self.card = f"sections/us_{tag}.img"
         self.snap = f"sections/us_{tag}.snap"
         self.clock = json.load(open(os.path.join(EMU, f"sections/us_{tag}.json")))["clock"]
-        self.out = os.path.join(ROOT, "build", "emu", tag)
+        self.out = os.path.join(os.environ.get("RYTM_OUT_ROOT") or os.path.join(ROOT, "build", "emu"), tag)
         os.makedirs(self.out, exist_ok=True)
         self.tmp = tempfile.mkdtemp()
 

@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "rytm-emu"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
 RENDER, STEP, KEYS, LOCK = 0x400a2aaa, 0x40120c38, 0x400a02ca, 0x40002914
 BASE = 7400   # M instructions: us_base.sh's snapshot clock
 FAILS = []
@@ -40,7 +40,7 @@ def at(ms):
 
 
 def run(tag, name, ms, extra):
-    out = os.path.join(ROOT, "build", "emu", tag)
+    out = os.path.join(os.environ.get("RYTM_OUT_ROOT") or os.path.join(ROOT, "build", "emu"), tag)
     os.makedirs(out, exist_ok=True)
     cmd = [os.path.join(EMU, "target/release/dtboot"), f"fw/AR173_us_{tag}.syx", "--load", f"sections/us_{tag}.snap",
            "--card", f"sections/us_{tag}.img", "--instr", f"{ms // 5}M", "--every", "100M", "--usb-host",

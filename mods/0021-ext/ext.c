@@ -56,6 +56,9 @@
 #define DD_MACHINE 42     /* DIGIDRUM: RS FM 2, below */
 #define JUNO_MACHINE 41   /* JUNO: BD FM 2, below */
 #define FM_MACHINE 40     /* 6-OP FM: RS CLASSIC 2, below */
+#define MS_MACHINE 52     /* MULTISAMPLE: CB TEST (rui1031; its labels and texts are 0026's, through us_cubox) */
+#define WT_MACHINE 46     /* WAVETABLE: RS TEST, GRANULAR 47: BT TEST (rui1034; as MULTISAMPLE, through us_cubox) */
+#define WT_MACHINES 4     /* rui1051: 46..49 - and LIVE IN 48: LT TEST, CHOP 49: MT TEST, the same way */
 void dsp_descriptors2(void);
 int dsp_excite(int32_t voice, uint8_t *frame, const int16_t *params, int32_t pitch);
 int32_t ext_vflag(int32_t m);        /* user slots (.us1, below): the voice byte's machine flag */
@@ -308,6 +311,7 @@ typedef int32_t (*fn2)(int32_t, int32_t);
 extern const char dsp_p2_title[];
 extern const int32_t dsp_p2_order[8];
 #define REC_DSPS2 441       /* DSP SAMPLE's SD SAMPLE page: MT/HH TEST's 441..448 */
+#define REC_DSPS_SMP 441    /* 1045: SMP (word 19) banked, DSP SAMPLE's own record (TUN, word 17, is stock's 39) */
 extern const char dsps_p2_title[];
 extern const int32_t dsps_p2_order[8];
 
@@ -372,10 +376,10 @@ EXT4 int32_t ext_param_record(uint32_t index, uint32_t machine) {
     if (machine > 52) return 0;
     return ((const int32_t *)0x413db5fcu)[machine * 8 + index - 9];
   }
-  if (index == 19 && machine == DSPS_MACHINE) return 41;   /* SMP: stock's slot record */
 #if EXT_SLOTS
-  if (index - 17 <= 7) return us_param_record(index, machine);
+  if (index - 17 <= 7) return us_param_record(index, machine);   /* (DSP SAMPLE's TUN 39 and SMP 441 there, 1045) */
 #else
+  if (machine == DSPS_MACHINE && (index == 17 || index == 19)) return index == 19 ? REC_DSPS_SMP : 39;   /* 1045 */
   if (index - 17 <= 7)
     return (machine == EXT_MACHINE ? REC_P2 : machine == DSP_MACHINE ? REC_DSP2
             : machine == DSPS_MACHINE ? REC_DSPS2 : 39) + (int32_t)index - 17;
@@ -686,7 +690,11 @@ const char dsp_p2_title[] EXT8 = "EXCITER";
 /* Names by record (430..437 = words 17..24). */
 const char dsp_n9[] EXT8 = "Exc Tune";
 const char dsp_n10[] EXT8 = "Exc Decay";
+#if EXT_SLOTS   /* rui1050: unused by the host (DAISYSP P11, DSP SAMPLE P6): SEED MOD's slot (EXT_SLOTS 0: c127fe8's bytes) */
+const char dsp_n11[] EXT8 = "Seed";
+#else
 const char dsp_n11[] EXT8 = "Feedback";
+#endif
 const char dsp_n12[] EXT8 = "Output";
 const char dsp_n13[] EXT8 = "Exc Param 4";
 const char dsp_n14[] EXT8 = "Exc Level";
@@ -694,13 +702,17 @@ const char dsp_n15[] EXT8 = "Exc Param 5";
 const char dsp_n16[] EXT8 = "Width";
 const char dsp_s9[] EXT8 = "XTN";
 const char dsp_s10[] EXT8 = "XDC";
+#if EXT_SLOTS
+const char dsp_s11[] EXT8 = "SEED";
+#else
 const char dsp_s11[] EXT8 = "FB";
+#endif
 const char dsp_s12[] EXT8 = "OUT";
 const char dsp_s13[] EXT8 = "XP4";
 const char dsp_s14[] EXT8 = "XLV";
 const char dsp_s15[] EXT8 = "XP5";
 const char dsp_s16[] EXT8 = "WID";
-/* Knob order on the page: OUT FB XLV XTN / XDC XP4 XP5 WID. */
+/* Knob order on the page: OUT SEED XLV XTN / XDC XP4 XP5 WID (rui1050: B was FB, never read by the host). */
 const int32_t dsp_p2_order[8] EXT8 = {433, 432, 435, 430, 431, 434, 436, 437};
 static const char dsp_out_names[2][6] EXT8 = {"VOICE", "MAIN"};
 const char dsps_long[] EXT8 = "DSP SAMPLE";
@@ -714,7 +726,7 @@ EXT7 int32_t dsp_out_text(void *functor, int32_t value, void *str) {
 /* DSP SAMPLE (machine 45, SD TEST): a sample from the host's SD card rings its
    DaisySP resonator directly (no round trip); the analog source is off
    (DISABLE's engine). Reported with 0x20 in the voice byte. SRC: ENG STR BRI DMP
-   MIX (dry/wet) FB (the voice's own output looped back in) TUN LEV, records
+   MIX (dry/wet) SEED (rui1050; was FB, which the host never read: SEED MOD's slot) TUN LEV, records
    416..419 (SD TEST's slots 9..12), 439/440 (MT TEST's, as slots 13/14) and
    420/421 (slots 15/16). Its SMPL page, SD SAMPLE: records 441..448 (MT/HH
    TEST's) as copies of stock's sample records 39..46 (sample words 17..24, the
@@ -723,10 +735,12 @@ EXT7 int32_t dsp_out_text(void *functor, int32_t value, void *str) {
    FLD, unused since the pool list replaced the folder walk (2026-10-09); laid
    out as stock's page: TUN FIN FLD SMP / STA END LOP LEV. */
 static const int16_t dsps_rec[8] EXT8 = {416, 417, 418, 419, 439, 440, 420, 421};
-/* SMP is stock's record 41 (the sample slot, word 19) since 2026-10-09: its
-   knob opens the stock slot list, which 0023 fills with the project's Teensy
-   pool on a DSP SAMPLE track (and FUNC+YES there assigns a TEENSY file). */
-const int32_t dsps_p2_order[8] EXT8 = {441, 442, 444, 41, 445, 446, 447, 448};
+/* SMP was stock's record 41 (the sample slot, word 19) from 2026-10-09 to 1043: its knob opened the stock slot list,
+   which 0023 filled with bank A of the Sidecar's SAMPLES pool (the 14 table). 1045: SMP is record 441 (REC_DSPS_SMP),
+   index << 8 | bank << 5 over the pool's eight banks (fine-flagged, 0..0x7fe0 by registry patch); 0026 gives it the
+   bank list (4A), its value text (the host's 47 names) and 0029's banked step; TUN (word 17) is stock's record 39,
+   whose fields 441 copied. */
+const int32_t dsps_p2_order[8] EXT8 = {39, 442, 444, REC_DSPS_SMP, 445, 446, 447, 448};
 const char dsps_p2_title[] EXT8 = "SD SAMPLE";
 const char dsps_n5[] EXT8 = "Mix";
 const char dsps_s5[] EXT8 = "MIX";
@@ -749,6 +763,7 @@ EXT7 void dsp_descriptors2(void) {
   /* SD SAMPLE: stock's sample-page looks, SMP and FLD as plain numbers */
   for (i = 0; i < 8; ++i) copy_desc(REC_DSPS2 + i, 39 + i);
   copy_desc(REC_DSPS2 + 2, REC_DIAL);
+  copy_desc(REC_DSPS_SMP, REC_DIAL);   /* 1045: SMP a dial (0026 gives it its text, 0029 its step) */
   /* word 19 (SMP: now record 41, on the page above): a plain number; word 20
      (FLD until the pool list replaced the folder walk): MOD, or the diagnostic
      in a diag build (below) */
@@ -1294,10 +1309,14 @@ static const char us_fmt_uempty[] USD = "U%d--";
 static const char us_off[] USD = "OFF";
 static const char us_none[] USD = "---";
 /* The voice byte's machine flag of machines 35..51 (ext_render's machines; 0 for the others). */
-static const uint8_t us_flag_tab[17] USD = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0, 0x00, 0x20,
-                                            0, 0, 0, 0, 0, 0x10};
+/* rui1031: machine 52 MULTISAMPLE 0x30 (rytm-teensy core/machines.h kMultiMachine); rui1034: 46 WAVETABLE 0x28 and
+   47 GRANULAR 0x38 (kWaveMachine, kGranMachine); rui1051: 48 LIVE IN 0x78 and 49 CHOP 0x18 (kLiveMachine, kChopMachine;
+   0x18 was the host's GRAIN placeholder, never sent). */
+static const uint8_t us_flag_tab[18] USD = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0, 0x00, 0x20,
+                                            0x28, 0x38, 0x78, 0x18, 0, 0x10, 0x30};
 
-US1 int32_t ext_vflag(int32_t m) { return (uint32_t)(m - US_FIRST) < 17u ? us_flag_tab[m - US_FIRST] : 0; }
+__attribute__((section(".extw"), noinline)) int32_t ext_vflag(int32_t m) {   /* .extw since rui1031 */
+  return (uint32_t)(m - US_FIRST) < 18u ? us_flag_tab[m - US_FIRST] : 0; }
 /* The voice's sample layer plays: DIGIDRUM, or a user slot whose page 2 is the sample (READY). */
 US1 int32_t ext_layer_kept(int32_t vb) {
   int32_t m = vb & 0x78;
@@ -1306,18 +1325,20 @@ US1 int32_t ext_layer_kept(int32_t vb) {
   return 0;
 }
 
-US1 static void us_copy(void *dst, const void *src, int32_t n) {
+/* us_copy, us_zero, us_text_in: out of .us1 since rui1031 (.us1 holds 6-OP FM's / MULTISAMPLE's page 2), in the free
+   tails of the caves of .exte, .ext6 and .extm (.extx .extz .exty) */
+__attribute__((section(".extx"), noinline)) static void us_copy(void *dst, const void *src, int32_t n) {
   uint8_t *d = dst;
   const uint8_t *s = src;
   while (n-- > 0) *d++ = *s++;
 }
 /* n bytes of zero (n <= 0: nothing). */
-US1 static void us_zero(void *dst, int32_t n) {
+__attribute__((section(".extz"), noinline)) static void us_zero(void *dst, int32_t n) {
   uint8_t *d = dst;
   while (n-- > 0) *d++ = 0;
 }
 /* n bytes of text from a message, NUL-terminated (dst holds n + 1). */
-US1 static void us_text_in(char *dst, const uint8_t *src, int32_t n) {
+__attribute__((section(".exty"), noinline)) static void us_text_in(char *dst, const uint8_t *src, int32_t n) {
   int32_t i;
   for (i = 0; i < n && src[i]; ++i) dst[i] = (char)src[i];
   dst[i] = 0;
@@ -1494,9 +1515,21 @@ US1 static int32_t us_params(int32_t s) {   /* slot s's page 2 is knobs (P9..P16
 /* Page 2's lookups (ext_page_record, ext_page_title, ext_param_record in .ext4 call these): PLAITS,
    DAISYSP and DSP SAMPLE as before, and a user slot whose page 2 is knobs - the eight shared records,
    set up for the slot when its page draws. 0: stock's. */
+/* rui1031: 6-OP FM's chord knobs (SMPL E..H: CHD INV SPR VOI, sample words 21..24) and MULTISAMPLE's page 2 (TUNE FINE
+   STRT LOOP + the chord) are page 2's shared records too, set up by 0026 (elekloader's area): it fills us_cubox (a fixed
+   12 B, magic 'CHRD') with its set-up (records us_p2rec for machine m, idempotent) and its steps (ext_steps' answer for a
+   record of its, 0 else); without it (the pointers 0) both machines keep stock's SMPL page. */
+struct us_cubox { uint32_t magic; void (*volatile setup)(int32_t m); int32_t (*volatile steps)(int32_t r); };
+struct us_cubox us_cubox __attribute__((section(".ush"), aligned(4))) = {0x43485244u, 0, 0};
 US1 int32_t us_page_record(int32_t m, uint32_t k) {
   struct us_cache *c;
+  void (*h)(int32_t);
   int32_t j, s = m - US_FIRST;
+  if ((m == FM_MACHINE || m == MS_MACHINE || (uint32_t)(m - WT_MACHINE) < WT_MACHINES) && (h = us_cubox.setup) != 0) {
+    us.p2_slot = 0;   /* a user slot's page sets its records up again */
+    h(m);
+    return m == FM_MACHINE && k < 4 ? 0 : us_p2rec[k];
+  }
   if (m == EXT_MACHINE) return ext_p2_order[k];
   if (m == DSP_MACHINE) return dsp_p2_order[k];
   if (m == DSPS_MACHINE) return dsps_p2_order[k];
@@ -1521,8 +1554,10 @@ US1 int32_t us_param_record(uint32_t index, uint32_t machine) {   /* a sample wo
   int32_t j = (int32_t)index - 17, s = (int32_t)machine - US_FIRST;
   if (machine == EXT_MACHINE) return REC_P2 + j;
   if (machine == DSP_MACHINE) return REC_DSP2 + j;
-  if (machine == DSPS_MACHINE) return REC_DSPS2 + j;
+  if (machine == DSPS_MACHINE) return j == 0 ? 39 : j == 2 ? REC_DSPS_SMP : REC_DSPS2 + j;   /* 1045: TUN stock's, SMP 441 */
   if ((uint32_t)s < US_SLOTS && us_params(s)) return us_p2rec[j];
+  if (us_cubox.setup && (machine == MS_MACHINE || machine - WT_MACHINE < WT_MACHINES || (machine == FM_MACHINE && j >= 4)))
+    return us_p2rec[j];   /* rui1034: WAVETABLE 46, GRANULAR 47 as MULTISAMPLE; rui1051: LIVE IN 48, CHOP 49 */
   return 39 + j;
 }
 
@@ -2417,7 +2452,8 @@ US6 static int32_t ext_steps_us(int32_t r, int32_t n) {
   const struct us_cache *c;
   const struct us_knob *u;
   s = us_which(r, &k);
-  if (s < 0 || !(c = us.c[s]) || !c->h.gen || !(u = &c->k[k])->p) return 0;
+  if (s < 0) return us_cubox.steps ? us_cubox.steps(r) : 0;   /* 0026's records (rui1031), else continuous */
+  if (!(c = us.c[s]) || !c->h.gen || !(u = &c->k[k])->p) return 0;
   if (u->kind == 2) {   /* enum: equal zones */
     for (e = 0; e < 8 && c->eknob[e] != k; ++e) ;
     return e < 8 && c->ecount[e] > 1 ? 0x100 | c->ecount[e] : 0;

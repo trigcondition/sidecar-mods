@@ -305,8 +305,12 @@ def load_params(root: Path) -> dict:
 
 if __name__ == "__main__":
     root = Path(__file__).resolve().parent.parent
-    problems = validate(load(root / "registry" / "allocations.toml"),
-                        None, load_params(root), load_excludes(root))
+    reg = load(root / "registry" / "allocations.toml")
+    # the claims of mods whose folder is not in this tree (not published: 0002, 0003, 0031) are history, not checked
+    mods = {f.parent.name for f in (root / "mods").glob("*/mod.toml")}
+    enabled = {c["owner"] for t in reg.values() if isinstance(t, list) for c in t
+               if isinstance(c, dict) and "owner" in c and c["owner"] in mods}
+    problems = validate(reg, enabled, load_params(root), load_excludes(root))
     if problems:
         for p in problems:
             print("ERROR:", p)

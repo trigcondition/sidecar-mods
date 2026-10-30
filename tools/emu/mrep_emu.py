@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "rytm-emu"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
 UI = json.load(open(os.path.join(ROOT, "tools", "emu", "us_ui.json")))
 JUNO, PLAITS = 41, 44
 FAILS = []
@@ -53,7 +53,7 @@ class Emu:
         self.card = os.path.join(EMU, f"sections/us_{tag}.img")
         self.snap = f"sections/us_{tag}.snap"
         self.clock = json.load(open(os.path.join(EMU, f"sections/us_{tag}.json")))["clock"]
-        self.out = os.path.join(ROOT, "build", "emu", tag)
+        self.out = os.path.join(os.environ.get("RYTM_OUT_ROOT") or os.path.join(ROOT, "build", "emu"), tag)
         os.makedirs(self.out, exist_ok=True)
         self.tmp = tempfile.mkdtemp()
 
@@ -164,7 +164,7 @@ def t_project(e):
     """JUNO chosen on BD, the power goes (the working state to the card), a cold boot on that card (the project
     load): the snapshot after the port comes up has BD = JUNO (41, 08)."""
     c = os.path.join(e.tmp, "project.img")
-    shutil.copy(e.card, c)
+    subprocess.run(["cp", "-c", e.card, c], check=True)   # an APFS clone, not a 906 MB copy
     keys = UI["list_open"] + ["DOWN"] * UI["downs"]["juno"] + [UI["list_confirm"]]
     ev, last = walk(100, keys)
     e.run("project-before", last + 1100, ev, card=c, extra=["--power-off", f"{e.clock + last + 1000}M"])
