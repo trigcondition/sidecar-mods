@@ -3,7 +3,7 @@
  * (rytm-teensy docs/superpowers/specs/2026-10-16-sidecar-send-fx-storage.md).
  * Every audio block it compares the words the trig loop last wrote to the
  * per-track trig array (trig_sound_array, 0x8000e5b0 + 84 t: after p-locks,
- * before the LFO) with what it last sent, and sends a changed track to the USB
+ * before the LFO), as the message halves below, with what it last sent, and sends a changed track to the USB
  * host as host-link SysEx 0x20 SENDFX (rytm-teensy sim/protocol.py):
  *
  *   F0 7D 52 54 20 <ver 1> <track 0..11> <hi> <lo> F7          sound index 0
@@ -26,6 +26,13 @@
  * next at +52), and a host has configured the port (0x413db254 == 1: else the
  * sender would drop it and the shadow would claim it sent). Otherwise the
  * track stays pending for the next block. At most P_MAXB messages a block.
+ *
+ * A kit switch (a pattern on another kit, while stopped or before a track's next trig) leaves the trig array on the
+ * old kit's sounds until each track trigs: the trig loop copies the kit only then (trig_kit_copied != the trig's
+ * kit). So from an active kit change on, each track reports its words from the active kit itself (live kit k at
+ * 0x412558e3 + 2531 k: sound t's words at + 42 + 152 t + 20, the FX track's at + 1866) until its trig_kit_copied is
+ * the active kit (its first trig has copied it, its p-locks on top). RELOAD KIT / RELOAD ALL / LOAD need none of
+ * this: kit_push (0x4011f89e) copies every track's sound into the trig array itself [code; measured, rytm-emu].
  */
 #include <stdint.h>
 
@@ -38,16 +45,18 @@ typedef void (*send_fn)(int32_t len, const uint8_t *data);
 #define POOL_HEAD      (*(const volatile uint32_t *const volatile *)0x413db390u)
 
 extern const volatile uint16_t trig_sound_array[];   /* 13 x 42 words */
+#define ACTIVE_KIT  (*(const volatile int32_t *)0x800067b8u)
+#define KIT_COPIED  ((const volatile int32_t *)0x8000fc58u)   /* per track: the kit its trig array holds (-1: none) */
+#define LIVE_KITS   ((const volatile uint8_t *)0x412558e3u)   /* live kit k at + 2531 k (all 128 resident) */
 
 #define TW 42                                        /* words a track */
 #define FX 12
 
-/* Written at run time: the shadows (track t < 12: word 0; t = 12: six words),
-   0xffffffff = not sent; the block divider and the round-robin track. */
-static struct { uint32_t sh[12 + 6]; uint16_t rr_div; uint8_t rr_t, next_t; } st = {
-  {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
-   0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
-   0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu}, 1, 0, 0};
+/* Written at run time: the shadows (the message bytes last sent: track t < 12 at 2 t, two; the FX track at 24,
+   twelve) and the tracks to send again (bit t: not sent yet, or the round robin's); the block divider and the
+   round-robin track; the active kit last seen and the tracks that read it (bit t) instead of the trig array. */
+static struct { uint8_t sh[24 + 12]; uint32_t pend, km; int32_t kit; uint8_t rr_div, rr_t, next_t; } st = {
+  {0}, 0x1fff, 0, 0, 1, 0, 0};
 #define sh st.sh
 #define rr_div st.rr_div
 #define rr_t st.rr_t
@@ -68,53 +77,59 @@ static int can_send(void) {
   return 1;
 }
 
-/* The track's words now: one for t < 12, six for the FX track. Returns the count. */
-static int words(int t, uint16_t *w) {
-  const volatile uint16_t *a = trig_sound_array + TW * t;
-  int i;
-  if (t < FX) {
-    w[0] = a[0];
-    return 1;
+/* The track's words now as message bytes (hi, lo each) in b: one word for t < 12, six for the FX track (fxw[0] is 0:
+   sound index 0 too). From the trig array, or after a kit change from the active kit k until the track's trig has
+   copied it. Returns the byte count. */
+static int bytes(int t, uint8_t *b, int32_t k) {
+  const volatile uint8_t *p = (const volatile uint8_t *)(trig_sound_array + TW * t);
+  int i, n = t < FX ? 2 : 12;
+  if (st.km >> t & 1) {
+    if (KIT_COPIED[t] == k)
+      st.km &= ~(1u << t);
+    else
+      p = LIVE_KITS + 2531 * k + 42 + 152 * t + (t < FX ? 20 : 0);
   }
-  for (i = 0; i < 6; i++)
-    w[i] = a[fxw[i]];
-  return 6;
+  for (i = 0; i < n; i += 2) {
+    const volatile uint8_t *q = p + 2 * fxw[i >> 1];
+    b[i] = q[0] & 0x7f;
+    b[i + 1] = q[1] >> 1;
+  }
+  return n;
 }
 
 void sfx_block(void) {
   uint8_t m[20];
-  uint16_t w[6];
   int k, t, i, n, d, sent = 0, maxb;
-  uint32_t *s;
+  uint8_t *s;
+  int32_t kit = ACTIVE_KIT;
+  if (kit != st.kit) {
+    st.kit = kit;
+    st.km = 0x1fff;                           /* every track reads the new kit until its trig */
+  }
   __asm__("moveq #P_RR,%0" : "=d"(k));       /* build params, range-checked in stub */
   if (k && !--rr_div) {
     rr_div = k;
-    s = sh + (rr_t < FX ? rr_t : FX);
-    for (i = (rr_t < FX ? 1 : 6); i > 0; i--)
-      *s++ = 0xffffffffu;                     /* send this track again */
+    st.pend |= 1u << rr_t;                    /* send this track again */
     if (++rr_t > FX) rr_t = 0;
   }
   __asm__("moveq #P_MAXB,%0" : "=d"(maxb));
   t = next_t;
   for (k = 0; k <= FX; k++, t = (t == FX ? 0 : t + 1)) {
-    n = words(t, w);
-    s = sh + (t < FX ? t : FX);
-    d = 0;
+    n = bytes(t, m + 7, kit);
+    s = sh + 2 * t;
+    d = st.pend >> t & 1;
     for (i = 0; i < n; i++)
-      if (s[i] != w[i]) d = 1;
+      if (s[i] != m[7 + i]) d = 1;
     if (!d)
       continue;
     if (sent >= maxb || !can_send())
       break;                                  /* pending: retried next block */
     m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x20; m[5] = 1; m[6] = t;
-    for (i = 0; i < n; i++) {
-      m[7 + 2 * i] = (w[i] >> 8) & 0x7f;
-      m[8 + 2 * i] = (w[i] >> 1) & 0x7f;
-    }
-    m[7 + 2 * n] = 0xf7;
-    USB_MIDI_SEND(8 + 2 * n, m);
+    m[7 + n] = 0xf7;
+    USB_MIDI_SEND(8 + n, m);
     for (i = 0; i < n; i++)
-      s[i] = w[i];
+      s[i] = m[7 + i];
+    st.pend &= ~(1u << t);
     sent++;
   }
   next_t = t;                                 /* round robin over refused sends */
