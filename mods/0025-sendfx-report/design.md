@@ -47,7 +47,7 @@ call, nothing re-enters. No EMAC use (soft-float C); d0/d1/a0/a1 saved around th
   (0021 excludes it too). The driver's other path (0x4011fe08) does not pass here: blocks on that path are not scanned,
   the next block on this path catches up [code; how often the other path runs on hardware is open, as for 0024].
   Measured: 6750 hook calls in 900M instructions = 1500 a second, every block in the emulator.
-- Cave: 1068 B (reporter 616 incl. 76 B state, FX 38..41 storage 452) at 0x402cc920, 0002-euclid-accents' block at
+- Cave: 1098 B (reporter 646 incl. 52 B state, FX 38..41 storage 452) at 0x402cc920, 0002-euclid-accents' block at
   the head of `cave` (verified pool), claim 0x45c = 1116 B up to 0x402ccd7c, where 0021's `.ust` (302 B) takes the
   block's end. 0002 is excluded (0021 excludes it too), so every user-slot build has it free.
 - Cost: 13 tracks x up to 6 compares a block (~150 instructions, ~0.1 % of the CPU) plus the sends.
@@ -141,3 +141,53 @@ rejoin). The cave claim 0x402cc920+0x45c is then unused in that build; 0021's `.
 `tools/emu/sfx_emu.py` counts the hook at the detour site when 0025 is in the area (dtboot counts only inside the OS
 image). Results on `sfxui`: mods/0029-sendfx-ui/design.md section 5. The `sfx_incr` >= 38 branch is now exercised by
 0029's FX-page p-locks (0029 design, "locks").
+
+## Kits: reload and switch (2026-10-30)
+
+Report: after RELOAD KIT the Sidecar kept the old send FX values. Measured in rytm-emu (DTEMU_STRICT=1, the 0.3.0 set,
+tag `sfxr1`; `sfx_emu.py reload`): RELOAD KIT and RELOAD ALL need nothing from 0025. Both end in kit_push
+(0x4011f89e), which copies every track's sound and the FX block into the trig array (0x4011f558 / 0x4011f686 ->
+0x4011da62, memcpy to 0x8000e5b0 + 84 t) [code]; after SAVE KIT, edits on the AMPLITUDE 2 / SEND FX pages and a
+RELOAD (stopped), the next block reports the saved values and no later message (the round robin's included)
+carries an edited one [measured, also on the unchanged 0.3.0 build]. **The reported case is not reproduced in the
+emulator**; on the Rytm side its cause is not known.
+
+The staleness the bug was thought to have is real for a **kit switch**: a pattern on another kit (A01 kit 0 -> A02
+kit 1) sets the active kit (0x4011f82a) without kit_push, and the trig loop copies a track's kit sound only at its
+next trig (trig_kit_copied 0x8000fc58 + 4 t != the trig's kit, 0x4012062e) [code]. Stopped, or for a track with no
+trigs (often the FX track), the trig array keeps the old kit's values, so 0025 kept reporting them [measured on
+0.3.0: `sfx_emu.py kitswitch` fails there].
+
+Fix: on an active-kit change (0x800067b8 != the last seen) every track's bit in `km` is set; a track with its bit
+reads its words from the active live kit (0x412558e3 + 2531 k: sound t at + 42 + 152 t + 20, FX at + 1866) instead
+of the trig array, until its trig_kit_copied equals the active kit (its first trig copied the kit, p-locks on top),
+then the trig array again. Nothing is written that the OS reads. Known limit: a sound lock copies the pool sound and stores -1 in
+trig_kit_copied (0x401205ba, 0x401205e2) [code]. -1 is not the active kit, so a track whose km bit is set stays on the live kit's words until its next plain trig copies
+the kit: consecutive sound locks after the switch keep reporting the kit's value, not the lock's, and p-locks on them
+too; a track whose trigs are all sound locks reports the kit word until the next kit change [inferred from the code,
+not run]. -1 must not count as done: a stale -1 from before the switch (a sound lock played on the old kit) would clear
+the bit at once and expose the old trig array, i.e. the old pool sound, on the new kit. A UI edit while a track reads the kit
+is reported when the bank drain writes the kit word (ms) [inferred].
+
+`copied == k` can be stale (pre-existing, not changed by the fix): A02 played, then A01, then A02 while stopped: each
+track's trig_kit_copied is already A02's kit, so km clears at once and the track reports the trig array, i.e. the
+last trig's p-lock, not the kit's word. A knob edit made on the other kit leaks the same way, and a trig will not copy
+it away (the track counts as copied) [inferred from the code, not run]. FX track: without FX trigs its km bit never
+clears, so anything that writes only the FX trig array goes unreported; scenes and performance were not traced.
+
+To fit the cave (1116 B) the shadows now hold the message bytes (2 a word) and a pending mask replaces the
+0xffffffff "not sent" shadows: a change in a word's bit 0 or 15 alone (not in the message) no longer sends a copy.
+Cave: 1068 -> 1098 B of 1116 (18 B left); elekloader area 56152 -> 56120 B spare.
+
+NO + KIT (the user's key, 2026-10-30): the stock combo is 0x400cd484.., gated by 0x400365f4 (NO held: object +426 and
+key 0x45 down via 0x40081bbc), then `jsr 0x400af0d2` at 0x400cd4ae: kit_reload itself, so 0026's kt_reload_det
+(4C RELOAD) and kit_push (the trig array) run as for the KIT menu's RELOAD [code]. `sfx_emu.py nokit`: from the
+SEND FX 1 page, stopped and playing, short and long NO holds: 4C 02 each time and the saved FX words from the next
+block on, no revert [measured, rytm-emu]. The hardware log (no 4C 02 after NO + KIT) says kit_reload was not entered
+there; why is not known (the combo's gate, or another reload path such as the swap 0x400a81e6, which 0026 does not
+hook and which calls kit_push) [inferred]. The sound-lock limit above is confirmed in code: 0x401205ba copies the
+pool sound, 0x401205e2 stores -1 in trig_kit_copied [code, not run].
+
+`sfx_emu.py kitswitch` also covers (tag `sfxr2`, DTEMU_STRICT=1, `sfx_emu.py all`: 39 checks pass): A01 -> A02 -> A01 stopped
+(kit 0's values again), a switch while playing (A02 queued), BD's trigs after PLAY on A02 (lock 7700, then kit 1's
+4400) and UI edits of FX 38 / 40 (SEND FX 1 knob 3, SEND FX 2 knob 4) after a switch, reported with no revert.

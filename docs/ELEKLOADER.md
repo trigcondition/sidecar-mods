@@ -8,11 +8,11 @@ This is for **OS 1.73 only**. Read the whole page once before you start, the rec
 
 ## What you need
 
-| file | what | sha256 (release 0.3.0) |
+| file | what | sha256 (release 0.3.1) |
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.73.syx` | the stock OS 1.73, from Elektron's support site | `8ad671087ec30433d5407c7380d2396e0915ab931c5d3dd18a78bf284d3d1e52` |
 | `core-0.1.elemod` | elekloader's core-ar2 0.1: the boot copier and hook bus every elekloader mod builds on | `33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825` |
-| `rytm-sidecar-0.3.0.elemod` | the Sidecar mods, all in one module | `e93a0b2794a8316dad1d6cfe52151820e153d6f86427d12343a5f947cae0c28a` |
+| `rytm-sidecar-0.3.1.elemod` | the Sidecar mods, all in one module | `e451fd6001f28d7cb0e9a05d46c712b49d1688c8873714d43f4ec1b786aaae5c` |
 
 The two `.elemod` files are published together in the release, with `SHA256SUMS`, `LICENSE`, `NOTICE`,
 `TOOLCHAIN.txt` and the source of elekloader's parts (`elekloader-8972d70-core-ar2-src.tar.gz`,
@@ -42,7 +42,7 @@ and they call each other at fixed addresses.
 
 1. Open <https://irpina.github.io/elekloader/>.
 2. Choose your stock firmware: `Analog-Rytm_MKII_OS1.73.syx`. The page knows it by its hash.
-3. Add your own mods: `core-0.1.elemod` and `rytm-sidecar-0.3.0.elemod`. The page lists no Rytm core for OS 1.73
+3. Add your own mods: `core-0.1.elemod` and `rytm-sidecar-0.3.1.elemod`. The page lists no Rytm core for OS 1.73
    (its cores for the Rytm are for 1.74), so the core file is one you add, like the module.
 4. Tick `rytm-sidecar`. Ticking it ticks the core it requires. The check should say there are no conflicts.
 5. **Set the version to `1.73`.** The page's default for the Rytm is `2.0a`. **Never flash a build whose version is
@@ -50,7 +50,7 @@ and they call each other at fixed addresses.
    from there is untested: the OS carries "Downgrade not possible" and the bootstrap a VERSION CHECK
    (`docs/FLASHING.md`, "Downgrades"), so either route, USB or the STARTUP menu, may refuse it.
 6. Build, and download the `.syx`. With version 1.73 its sha256 is
-   `893ed9a5fc27ab18687c1ea95d7a07f4ff4b23fde235173ce332e54055a733ab`. That is the file our emulator suites ran
+   `a203db27201aabbdaa285ccb7c40a168075206c0ce91477671fcfae729c3df3c`. That is the file our emulator suites ran
    (rytm-emu, not yet a unit: see "Status" below). If yours differs, do not flash it: see the next section.
 
 ### If your file's sha256 differs
@@ -64,7 +64,7 @@ build with the command line at the pinned commit instead:
     git clone https://github.com/irpina/elekloader && cd elekloader
     git checkout c150ac583a4b7e6d64680d5592f4a40f409193f7
     python3 -m elekloader.patch --stock Analog-Rytm_MKII_OS1.73.syx --mod core-0.1.elemod \
-        --mod rytm-sidecar-0.3.0.elemod --out sidecar.syx --version 1.73
+        --mod rytm-sidecar-0.3.1.elemod --out sidecar.syx --version 1.73
 
 and check that `sidecar.syx` has the sha256 above.
 
@@ -105,7 +105,7 @@ The web page shows the same steps before every download.
   the same bytes the Sidecar mods already keep their own settings in (0013/0021: the sound's spare bytes; 0025: kit
   FX words 38..41). Both would overwrite each other's settings, silently. The module says so in a way elekloader
   enforces: it claims the first two bytes of each of core 0.2's storage hooks (without changing them), so elekloader
-  refuses the build with *"rytm-sidecar 0.3.0 site ... and core 0.2 site ... overlap"*. The format has no way to say
+  refuses the build with *"rytm-sidecar 0.3.1 site ... and core 0.2 site ... overlap"*. The format has no way to say
   "core 0.1 only" directly (`resources.core` is a minimum). If you see that message, you ticked a newer core: untick
   it and tick `core-0.1.elemod`. The guard has limits: it catches core 0.2's own storage hooks, at those addresses,
   under today's elekloader, whose overlap check counts any shared byte. A future 1.73 core that hooked storage
@@ -116,7 +116,7 @@ The web page shows the same steps before every download.
 
 ## Status
 
-0.3.0 has run in the emulator (rytm-emu: every Sidecar suite on exactly the file above), not yet on a unit. The
+0.3.1 has run in the emulator (rytm-emu: every Sidecar suite on exactly the file above), not yet on a unit. The
 emulator enters MAIN OS directly with its own depacker, so it does not run the Rytm bootstrap's depacker on this
 file. Two things are new against the rui1051 image the Sidecar's own unit runs: the MAIN OS lacks 0028-elek-hello
 (a test counter), and the packed stream comes from elekloader's new packer. The new stream uses only what Elektron's own stock 1.73 stream
@@ -126,7 +126,7 @@ work, and the bootstrap (untouched) is the way back if it does not. First hardwa
 
 ## Source and licence
 
-The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of release 0.3.0 is the tag `v0.3.0` of
+The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of release 0.3.1 is the tag `v0.3.1` of
 <https://github.com/trigcondition/sidecar-mods> (the tag is made when the release is published): `make setup` then
 `make release` builds both `.elemod` files from it, byte for byte with the toolchain in `TOOLCHAIN.txt` (GNU
 binutils 2.47 `m68k-elf-as`, Python 3.14; another assembler version may give other bytes). `NOTICE` names the exact

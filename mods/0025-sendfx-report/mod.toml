@@ -24,6 +24,8 @@ per-track SEND FX 1/2 levels (index 0 bits 8..14 / 1..7) and its send-FX knobs.
 Since M1b (2026-10-16) FX words 38..41 are stored: kit storage 0x816..0x81D (FX loader/saver detours) and
 p-lock types 42..45 / 46..49 on the FX track (hi / lo halves; lock loader, full rebuild and incremental save
 detours), dropped harmlessly by stock. Emulator only (rytm-emu, 2026-10-16).
+After an active-kit change (a pattern on another kit) a track reports the active kit's words until its
+next trig copies them into the trig array (2026-10-30, design.md "Kits").
 """
 
 [sources]

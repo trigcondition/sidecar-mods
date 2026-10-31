@@ -6410,7 +6410,7 @@ elek   = true
 # ---------------------------------------------------------------- 0025-sendfx-report
 # 0002-euclid-accents' block at the head of `cave` (verified pool): free in every image
 # without 0002 (0025 excludes it; 0021, in every user-slot build, excludes it too). Code
-# and 76 B of state written at run time (the shadows, the divider, the round-robin track).
+# and 52 B of state written at run time (the shadows, the divider, the round-robin track).
 [[cave]]
 owner = "0025-sendfx-report"
 addr  = 0x402cc920
