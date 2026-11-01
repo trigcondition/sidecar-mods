@@ -288,7 +288,39 @@ def fx_hit(e, name, ch, dry_s):
           f"stem {got:.2f} dB, DAC FX words {ref:.2f} dB")
 
 
-TESTS = {"switch": t_switch, "delay": t_delay, "reverb": t_reverb, "off": t_off, "gone": t_gone}
+def mix_reports(midi):
+    """The Rytm's 50s, in order: [(pans 0..7, route byte), ...]."""
+    out = []
+    for m in re.finditer(r"f07d525450((?:[0-9a-f]{2}){10})f7", bytes(midi).hex()):
+        b = bytes.fromhex(m.group(1))
+        out.append((list(b[:8]), b[8] << 7 | b[9]))
+    return out
+
+
+def t_mix(e):
+    """The mix report (host-link 50): sent with the FX switch off; a pan knob's CC 10 on BD and on MT (a shared voice, its owning
+    track) shows on its stem; the route byte; nothing else moves; a quiet Rytm repeats it about once a second."""
+    bd_at, mt_at = 300, 500
+    e.run("mix", 800, [(bd_at, "din", "B00A14"), (mt_at, "din", "B60A6E")])
+    r = mix_reports(e.midi)
+    print(f"  50 reports: {len(r)}; first {r[:1]}; last {r[-1:]}")
+    check("mix: reports on a connected host", len(r) >= 2)
+    check("mix: centred, every track on main at the start", bool(r) and r[0] == ([64] * 8, 0))
+    check("mix: BD's pan, stem 0, MT's on stem 5, nothing else",
+          bool(r) and r[-1] == ([20, 64, 64, 64, 64, 110, 64, 64], 0), str(r[-1:]))
+    secs = 800 / IPS
+    check("mix: a quiet Rytm once a second, about", secs * 0.6 <= len(r) - 2 <= secs * 2 + 2, f"{len(r)} in {secs:.1f} s")
+    e.run("mixroute", 500, extra=("--poke", "8000ed6c=00000fff", "--poke", "8000ee58=00000fff"))
+    r = mix_reports(e.midi)
+    print(f"  50 reports: {len(r)}; last {r[-1:]}")
+    check("mix: every track off ROUTE TO MAIN: route byte 0xFF", bool(r) and r[-1][1] == 0xFF, str(r[-1:]))
+    e.run("mixroute2", 500, extra=("--poke", "8000ed6c=00000101", "--poke", "8000ee58=00000101"))   # BD, CH
+    r = mix_reports(e.midi)
+    print(f"  50 reports: {len(r)}; last {r[-1:]}")
+    check("mix: BD and CH off main: the bits core/fx/master.cpp reads as stems 0 and 6", bool(r) and r[-1][1] == (1 << 3 | 1 << 4), str(r[-1:]))
+
+
+TESTS = {"switch": t_switch, "delay": t_delay, "reverb": t_reverb, "off": t_off, "gone": t_gone, "mix": t_mix}
 
 
 def main():
