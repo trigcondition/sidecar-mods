@@ -125,7 +125,7 @@ work, and the bootstrap (untouched) is the way back if it does not. First hardwa
 
 ## Source and licence
 
-The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this development snapshot is the branch `dev-0.4.0` of
+The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this development snapshot is the branch `dev` of
 <https://github.com/trigcondition/sidecar-mods> (no release, no tag): `make setup` then
 `make release` builds both `.elemod` files from it, byte for byte with the toolchain in `TOOLCHAIN.txt` (GNU
 binutils 2.47 `m68k-elf-as`, Python 3.14; another assembler version may give other bytes). `NOTICE` names the exact

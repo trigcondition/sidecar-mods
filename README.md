@@ -1,11 +1,12 @@
 # Sidecar | Expander: Rytm mods
 
-> **Development snapshot of 0.4.0: unstable, not a release.** Needs matching builds of both repos; flash at your own risk;
-> keep your 0.3.1 firmware for rollback. Use `main` for a release.
+> **`dev` is the development branch: unstable, not a release.** It carries the 0.4.0 line and needs matching builds of
+> both repos; flash at your own risk; keep your 0.3.1 firmware for rollback. Use `main` for a release. Pull requests go to
+> `dev` (see CONTRIBUTING.md).
 
 ## What's in this snapshot (since 0.3.2)
 
-Rytm side only (0.3.2 had no Rytm change, so this is since the Rytm firmware 0.3.1). Pair it with the `dev-0.4.0` branch of
+Rytm side only (0.3.2 had no Rytm change, so this is since the Rytm firmware 0.3.1). Pair it with the `dev` branch of
 [sidecar-firmware](https://github.com/trigcondition/sidecar-firmware), which lists the Pi side. "Hardware" means run on a
 real Rytm, on a test build from this source (`tools/build_rui.sh`; `make release` packs the same source as one module,
 so its bytes differ); "emulator" means the emulator suites and the flash rehearsal, on that test build. The `make release`
