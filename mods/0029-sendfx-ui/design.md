@@ -308,7 +308,7 @@ last 8 B of `.us2`'s former claim: magic `XSTP` + the function; `.us2` 2782 -> 2
 | knob | mode | N | stored |
 |---|---|---|---|
 | PLAITS ENG (408) | zones | 17 | ceil(128 k / 17), so the host's v x 17 / 128 reads zone k |
-| DIGIDRUM ENG (390) | zones | 11 | as above |
+| DIGIDRUM ENG (390), until mdpage: MD's page has no list on the SRC page (ENGINE and TYPE on SMPL: a U slot's enums) | zones | 11 | as above |
 | DAISYSP / DSP SAMPLE ENG (449 / 416), INP (453), OUT (433), MOD (444, not in a diag build) | zones | 3 / 3 / 11 / 2 / 7 | as above |
 | JUNO / FM PAT (382 / 374) with the project's list (16 / 17) | list | the list's total | the index |
 | JUNO / FM PAT without a list | all 128 | 128 | the value (one per detent) |

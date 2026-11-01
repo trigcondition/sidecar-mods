@@ -1,9 +1,33 @@
 # Sidecar | Expander: Rytm mods
 
+> **Development snapshot of 0.4.0: unstable, not a release.** Needs matching builds of both repos; flash at your own risk;
+> keep your 0.3.1 firmware for rollback. Use `main` for a release.
+
+## What's in this snapshot (since 0.3.2)
+
+Rytm side only (0.3.2 had no Rytm change, so this is since the Rytm firmware 0.3.1). Pair it with the `dev-0.4.0` branch of
+[sidecar-firmware](https://github.com/trigcondition/sidecar-firmware), which lists the Pi side. "Hardware" means run on a
+real Rytm, on a test build from this source (`tools/build_rui.sh`; `make release` packs the same source as one module,
+so its bytes differ); "emulator" means the emulator suites and the flash rehearsal, on that test build. The `make release`
+image has had neither.
+
+- **MD page:** machine 42 is the built-in MD, with its own page and labels from the Sidecar. 0021 now lives in elekloader's area. Hardware.
+- **Preset browser for JUNO and 6-OP FM:** on knob A of SRC. Hardware.
+- **DSP SAMPLE:** SMP's picker on knob A, MIX default 0, the playhead on the page the Sidecar draws. MIX and playhead: hardware. Picker: emulator.
+- **Longer enum lists:** a list knob holds 36 names, 16 before. Emulator.
+- **MIDI machine:** machine 50, out of the Rytm's DIN port or the Sidecar's USB ports. DIN tested in the emulator; USB unverified on hardware.
+- **Arpeggiator:** the settings live in the sound, UP + FLTR opens its page. Hardware OK on FM.
+
+Not in this snapshot: **master FX**.
+
+`make release` builds version 0.4.0 here. The hashes in the README's release section below are 0.3.1's.
+
+## About
+
 The source of the Analog Rytm MKII OS mods that Sidecar | Expander uses: the patch sources, the symbol map, the
 allocation registry and the build that turns your own stock OS 1.73 `.syx` into a modded one.
 
-This repository holds the source of the **Rytm firmware 0.3.1**, released with **Sidecar 0.3.1** (Raspberry Pi 4B and
+This branch is a development snapshot on top of the **Rytm firmware 0.3.1**, released with **Sidecar 0.3.1** (Raspberry Pi 4B and
 Pi 5), a fix release: send FX values now follow a kit switch. It is one elekloader module, `rytm-sidecar-0.3.1.elemod`, used with elekloader's `core-0.1.elemod` on OS 1.73.
 Build the `.syx` from your own stock file on elekloader's page or command line, or in the browser patcher (build
 `rel0-3-1`); both give the same file.

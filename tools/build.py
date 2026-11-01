@@ -355,9 +355,10 @@ def elek_source(mod, dst):
     src = (mod["_dir"] / mod["_sources"]["stub"]).read_text()
     out = []
     for line in src.splitlines():
-        m = re.match(r"^(\s*)(\.text\b.*|\.data\b.*|\.section\s+(\.[\w.]+).*)$", line)
+        m = re.match(r"^(\s*)(\.text\b.*|\.data\b.*|\.(?:push)?section\s+(\.[\w.]+).*)$", line)
         if m and not (m.group(3) or "").startswith(".bss") and not line.strip().startswith(".bss"):
-            line = m.group(1) + '.section .run, "ax"'
+            push = ".pushsection" in line.split(",")[0]
+            line = m.group(1) + ('.pushsection .run, "ax"' if push else '.section .run, "ax"')
         out.append(line)
     dst.write_text("\n".join(out) + "\n")
     objdir = BUILD / "obj"
@@ -605,6 +606,7 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
             raise SystemExit(f"{q['owner']}: {q['from_symbol']} not placed in the area ({target})")
         patches.append({"mod": q["owner"], "addr": q["addr"], "symbol": q["from_symbol"],
                         "expect": q["expect"], "target": target})
+    run_base = {}
     if bundle:
         # each member's labels as rytm-<id>:<label>, as its own elemod would name them (the
         # emulator suites and the per-mod manifests use these): its offset in the bundle's
@@ -625,6 +627,8 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                     a = max(1, x.align)
                     at[x.name] = (at[x.name] + a - 1) // a * a
                     base_of[x.idx] = (x.name, at[x.name])
+                    if x.name == ".run":
+                        run_base[mid] = at[x.name]
             for y in e.symbols:
                 if y.shndx in base_of and y.name and not y.name.startswith(".L") \
                         and y.type not in (elf.STT_SECTION, elf.STT_FILE):
@@ -640,6 +644,17 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                 own = [smap[f"{ELEK_ID}{m}:{n}"] for m in elek_mods if f"{ELEK_ID}{m}:{n}" in smap]
                 if len(own) == 1 and own[0] != v:
                     raise SystemExit(f"bundle symbol {n}: linker 0x{v:08x}, computed 0x{own[0]:08x}")
+    # build/obj/<id>.area.elf: an area mod's own object linked where elekloader placed it, so the emulator suites read
+    # its symbols (also the file-local ones) and disassemble it at the run addresses, as they do a cave mod's ELF
+    for mid in elek_mods:
+        if bundle:
+            obj, at_run = work / "mods" / BUNDLE_ID / "out" / f"{BUNDLE_ID}.work" / f"{mid}.s.o", run_base.get(mid)
+        else:
+            eid = ELEK_ID + mid
+            obj, at_run = work / "mods" / eid / "out" / f"{eid}.work" / "stub.s.o", lay["sections"].get(f"{eid} .run")
+        if at_run is not None:
+            run(["m68k-elf-ld", "--unresolved-symbols=ignore-all", "--no-warn-rwx-segments", f"--section-start=.run={at_run:#x}",
+                 "-e", "0", "-o", BUILD / "obj" / f"{mid}.area.elf", obj])
     print("  elekloader:", " | ".join(l.strip() for l in log.splitlines()
                                       if l.startswith(("linked", "verified", "WROTE"))))
     # what made the bytes: elekloader's builder assembles with the local binutils
@@ -737,6 +752,13 @@ def main():
         if mid not in enabled:
             raise SystemExit(f"--area-elek {mid}: not in the build")
         mods[mid]["area"] = "elek"
+    # 0021's user slots are too big for its caves since the MD page: its slots=1 compile has no fixed-address boxes of its
+    # own (registry patches) and is only linked in the area (mods/0021-ext/design.md, "0021 in the area")
+    if "0021-ext" in enabled and mods["0021-ext"]["_params"].get("slots") and mods["0021-ext"].get("area") != "elek":
+        raise SystemExit("0021-ext with slots=1 lives in elekloader's area: add --area-elek 0021-ext (and 0027-elekloader)")
+    # 0021's us_live runs from 0029's ev_tick: without it no MD set-up and no MD page
+    if "0021-ext" in enabled and mods["0021-ext"]["_params"].get("slots") and "0029-sendfx-ui" not in enabled:
+        raise SystemExit("0021-ext with slots=1 needs 0029-sendfx-ui: its ev_tick runs us_live (machine 42's set-ups and page)")
     excludes = layout.load_excludes(ROOT)
     check_excludes(enabled, excludes)
     check_param_excludes(mods, enabled)

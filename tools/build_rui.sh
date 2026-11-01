@@ -9,9 +9,10 @@ cd "$(dirname "$0")/.."
 tag=${1:?usage: tools/build_rui.sh TAG [extra build.py args]}; shift
 MODS="0014-hidden-machines 0021-ext 0022-looper 0023-teensy-drive 0025-sendfx-report 0027-elekloader 0028-elek-hello 0029-sendfx-ui 0026-remote-ui 0030-fx-in"
 [ -n "$RUI_DEV" ] && MODS="$MODS 0031-remote-keys"   # dev builds only: REMOTE KEYS is out of production (2026-10-29)
+mkdir -p build && echo "$MODS" > "build/rui_$tag.mods"   # (rk_emu.py: does this tag carry 0031)
 PARAMS="--param 0014-hidden-machines:variants=0 --param 0014-hidden-machines:funcgen=0 --param 0014-hidden-machines:test=0
  --param slots=1 --param 0022-looper:keys=0 --param 0022-looper:sfx=1 --param 0022-looper:rui=1 --param 0022-looper:fxin=1
- --area-elek 0022-looper --area-elek 0025-sendfx-report"
+ --area-elek 0021-ext --area-elek 0022-looper --area-elek 0025-sendfx-report"
 mkdir -p build
 .venv/bin/python tools/build.py --tag "$tag" --mods $MODS $PARAMS "$@" > "build/b_$tag.log" 2>&1 || { echo "$tag build FAIL"; tail -15 "build/b_$tag.log"; exit 1; }
 .venv/bin/python tools/verify.py --tag "$tag" > "build/v_$tag.log" 2>&1 || { echo "$tag verify FAIL"; tail -15 "build/v_$tag.log"; exit 1; }

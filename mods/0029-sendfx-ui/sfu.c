@@ -737,7 +737,7 @@ void sfu_tick(void *ctrl) {
      the new 1A while it is open; a committed 1A redraws the views. Timed apart: 0021's work, not 0029's. */
   if (st.init && XBOX[0] == 0x58535450u && XBOX[2]) {
     t0 = TIMER;
-    if (((int32_t (*)(void))XBOX[2])()) *((volatile uint8_t *)ctrl + 0x20) = 1;
+    if (((int32_t (*)(void *))XBOX[2])(ctrl)) *((volatile uint8_t *)ctrl + 0x20) = 1;
     d = TIMER - t0;
     X.lv_sum += d; X.lv_n++;
     if (d > X.lv_max) X.lv_max = d;

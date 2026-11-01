@@ -97,11 +97,13 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 #define PG_INSOUT 3       /* 1047: 30's page 3: the INSERT page opened on its OUT view (UP + AMP; an older host: its SIDECAR page) */
 #define PG_INS 2          /* 1041: 30's page 2: the Sidecar's INSERT page (TRK + FX; rytm-teensy core/ui/remote.cpp kPageIns) */
 #define PG_SEQ 0x10       /* 1036: 30's page 0x10 + track (16..27): the Sidecar's SEQ page of that track (1037: TRK + TRIG) */
+#define PG_ARP 4          /* 7ae: 30's page 4: the ARP page of the selected track (UP + FLTR; an older host: its SIDECAR page) */
 #define PG_POLY 0x20      /* 1048: 30's page 0x20 + track (32..43): the POLY CONFIG page of that track (the track menu's
                              item; an older host reads it as 0, its SIDECAR page) */
 #define K_PLAYMODE 0xb5   /* 1037b: PLAY MODE (the pads' play mode; FUNC + it = the KIT menu) [panel.rs RYTM_KEYS] */
 #define K_TRIG 0x30       /* 1037: TRIG [panel.rs RYTM_KEYS; stock 1.73's TRK + TRIG = TRIG alone, rytm-emu] */
 #define K_AMP  0x34       /* 1047: AMP [panel.rs RYTM_KEYS] */
+#define K_FLTR 0x33       /* 7ae: FLTR [panel.rs RYTM_KEYS] */
 #define K_SRC  0x31       /* 1046: SRC, SMPL [panel.rs RYTM_KEYS] */
 #define K_SMPL 0x32
 #define K_NO   0x45
@@ -158,6 +160,7 @@ static volatile uint8_t host_open, host_close;
 static volatile uint32_t t_commit __attribute__((aligned(4)));    /* TIMER at the last commit */
 static volatile uint32_t pc_seq __attribute__((aligned(4)));      /* 1030: odd while a 28 1 chord is copied, +2 each */
 static volatile uint8_t pc_req[6];                                /* 1030: the chord request (pc_tick takes it) */
+static volatile uint32_t ls_host_presets;   /* 0.4.0: the host's 4A 7F 1: it draws JUNO's / 6-OP FM's preset list; off with the port */
 static volatile uint32_t ls_in_v, ls_in_gen __attribute__((aligned(4)));   /* 1040: the host's 4A <track> <browse> (ls_tick) */
 static uint8_t st_seq, st_valid;     /* MIDI task only: the 38s' seq since the last commit */
 static uint32_t mt_sum, mt_max, mt_calls;   /* MIDI task: TIMER counts inside rui_sysex */
@@ -431,7 +434,7 @@ static void flush(void) {
   uint32_t i, k;
   if (st.pend_hello) {
     uint32_t up = st.ticks < 16383 ? st.ticks : 16383;
-    if (!send3(0x35, (uint8_t)(up >> 7), (uint8_t)(up & 0x7f), 7)) return;   /* caps: 36, 1049's 16 label tables, 1052's 4B */
+    if (!send3(0x35, (uint8_t)(up >> 7), (uint8_t)(up & 0x7f), 15)) return;   /* caps: 36, 1049's 16 label tables, 1052's 4B, 7ae's 45 */
     st.pend_hello = 0;
     st.hellos++;
   }
@@ -535,8 +538,9 @@ static void queue_key(uint32_t code, uint32_t down) {
 static const uint8_t mr_voice[12] = {0, 2, 7, 7, 1, 3, 5, 5, 4, 4, 6, 6};   /* BD SD RS CP BT LT MT HT CH OH CY CB */
 /* 0021's voice flags (ext.c us_flag_tab, machines 35..52; 0x7F: not one of its machines there; 1031: 52 MULTISAMPLE 0x30;
    1034: 46 WAVETABLE 0x28, 47 GRANULAR 0x38; 1051: 48 LIVE IN 0x78, 49 CHOP 0x18) */
+/* 7o: 50 MIDI has no flag (0x00 here, the host goes by the machine byte, 33's first); its reports are 44 / 43 */
 static const uint8_t mr_flag[18] = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0x7f, 0x00, 0x20,
-                                    0x28, 0x38, 0x78, 0x18, 0x7f, 0x10, 0x30};
+                                    0x28, 0x38, 0x78, 0x18, 0x00, 0x10, 0x30};
 static struct {
   uint8_t m[12];       /* the machine the host was last told (or the boot's) */
   uint8_t init, all;   /* all: a snapshot owed */
@@ -578,6 +582,39 @@ static void kit_tick(void) {
   mr.kit = k;
   mr.kit_owed = 0;
   mr.kits++;
+}
+
+/* 7ae, the arpeggiator's code (rytm-teensy core/arp/arp.h, 0021 us_tag_load_c): 10 bits in the active kit's sound, the host's to read.
+   Host -> Rytm 45 01 <track> <lo7> <hi3>: the MIDI task queues it, this (the UI task) writes the live sound and the project copy (power-off
+   keeps that one; every save serializes the live sound [0021 sound-tag-research.md M3]). Rytm -> host the same bytes after a hello or an open, and
+   when the active kit's sound has another code: a kit or pattern change, a load, a paste, a reload all land here, one scan of 12 sounds a tick. */
+#define ARP_KIT(t)  ((volatile uint8_t *)(0x4125597au + 2531u * (ACTIVE_KIT & 127u) + 152u * (uint32_t)(t)))   /* +0x6d, then +0x6e */
+#define ARP_PROJ(t) ((volatile uint8_t *)(0x4076598bu + 162u * (uint32_t)(t)))                                 /* stored slot 46 */
+static struct { uint16_t sent[12]; volatile uint16_t wr[12]; uint8_t wk[12]; uint16_t owed; uint32_t reports, writes; } ar;
+static void arp_tick(void) {
+  uint32_t t;
+  for (t = 0; t < 12; ++t) {
+    volatile uint8_t *w = ARP_KIT(t);
+    uint32_t q = ar.wr[t], c;
+    if (q) {
+      ar.wr[t] = 0;
+      if (ar.wk[t] == (uint8_t)(ACTIVE_KIT & 127u)) {   /* (the kit moved under it: the edit was for the sound the host showed, not this one) */
+        w[0] = (uint8_t)q;
+        w[1] = (uint8_t)((w[1] & 0x3f) | (q >> 8 & 3) << 6);
+        ARP_PROJ(t)[0] = (uint8_t)(q >> 8 & 3);
+        ARP_PROJ(t)[1] = (uint8_t)q;
+        ar.writes++;
+      }
+    }
+    c = (uint32_t)(w[1] >> 6) << 8 | w[0];
+    if (c != ar.sent[t] || (ar.owed >> t & 1)) {
+      uint8_t m[10] = {0xf0, 0x7d, 0x52, 0x54, 0x45, 0x01, (uint8_t)t, (uint8_t)(c & 0x7f), (uint8_t)(c >> 7), 0xf7};
+      if (!send(m, 10)) return;
+      ar.sent[t] = (uint16_t)c;
+      ar.owed &= (uint16_t)~(1u << t);
+      ar.reports++;
+    }
+  }
 }
 
 static int32_t mr_tick(void) {   /* 1: nothing left to send */
@@ -638,9 +675,8 @@ static int32_t mr_tick(void) {   /* 1: nothing left to send */
 #define VT_SAMPLELED 0x40234cfcu
 #define VT_SCALEMENU 0x401d1e74u   /* 1038: ScaleMenuView, stacked on top while FUNC + PAGE's SCALE menu is open [measured] */
 #define VT_SAMPLEPAGE 0x401e3170u  /* 1045: SamplePageView, the SMPL page (its typeinfo "14SamplePageView" [code]) */
-/* 1045: the bank list opened by DSP SAMPLE's SMP on its SMPL page (ls below): its track + 1 while open, else 0 - the
-   view (29 1) is on over that page for as long as the list is (sv_tick) */
-static uint32_t ls_smpl;
+#define DSPS_M 45     /* 1045: DSP SAMPLE (0021), its SMP P11 banked; 7h: on knob A of its SRC page, ENG on SMPL D */
+#define DSPS_P 10
 /* rui1027b: P1..P8 as the page itself shows them, by its own methods (the knob loop's): knob -> record id by the view's
    vtable +0x9c (0x400d3544 on SynthPageView; 0 an unused knob), the value by vtable +0x54 (page_get_value 0x40038462,
    lock -1: the sound's own value, not a p-lock) [code]. The kit word lags a turn by the bank's drain (~0.5..1.3 s while
@@ -655,8 +691,7 @@ typedef int32_t (*pv_get_fn)(void *view, int32_t id, int32_t lock);
 static struct {
   uint8_t on, track, mach, covered;    /* the view (logically: the SRC page of a Sidecar track), its track and machine */
   uint8_t pend29, p_track, p_on, vals_all;   /* a 29 owed (the newest replaces an unsent one); all 16 values owed */
-  uint8_t show, was_show, spage, pad;  /* the host's frame on the glass now / at the last tick; 1045: the SMPL page
-                                          is the screen (1) / there but covered (2), else 0 */
+  uint8_t show, was_show, pad0, pad;   /* the host's frame on the glass now / at the last tick */
   uint32_t base, idle, rx_seen;        /* commits at the view's start (or the last give-back); ticks without a message */
   uint16_t val[16];                    /* the values the host was last told */
   uint32_t starts, ends, s29, s2a, shows, covers;   /* diagnostics */
@@ -772,19 +807,20 @@ static int32_t sv_page(void *ctrl) {
   if (top != sv.top || last != sv.top_vt) { sv.top = top; sv.top_vt = last; sv.top_age = 0; }
   else if (sv.top_age < 0xffff) sv.top_age++;
   sv.nviews = (uint32_t)k;
-  sv.spage = 0;
   if (!found || k == 16 || !n) { sv.view = 0; return 0; }
   if (!after) cov = 1;                 /* SamplerLedView gone: not the plain SRC screen */
   if (unknown && last != VT_SAMPLELED && sv.top_age < UNKNOWN_TICKS) cov = 1;
-  if (!(found & 1)) { sv.view = 0; sv.spage = cov ? 2 : 1; return 0; }   /* 1045: the SMPL page, not the view */
+  if (!(found & 1)) { sv.view = 0; return 0; }   /* the SMPL page, not the view */
   return cov ? 2 : 1;
 }
 
 static uint16_t sv_word(int32_t t, int32_t i) {
   const volatile uint8_t *w = KWORD(t, i);   /* P1..P16 contiguous: 0021's knob word 9 + i at sound + 18 + 2 i */
-  if (i < 8 && sv.view) {              /* the page's own value (8.8, as the kit word) */
+  int32_t knob = i;
+  if (MACHINE_OF(t) == DSPS_M) knob = i == DSPS_P ? 0 : i == 0 ? 8 : i;   /* 7h: knob A is SMP (P11); ENG (P1) on the SMPL page */
+  if (knob < 8 && sv.view) {           /* the page's own value (8.8, as the kit word) */
     const uint32_t *vt = *(const uint32_t *const *)sv.view;
-    int32_t id = ((pv_id_fn)vt[0x9c / 4])(sv.view, i);
+    int32_t id = ((pv_id_fn)vt[0x9c / 4])(sv.view, knob);
     if (id > 0) {
       int32_t v = ((pv_get_fn)vt[0x54 / 4])(sv.view, id, -1);
       if (XBOX[0] == 0x58535450u) {    /* 0021's list knob: 0029's wrapper answers the step index, not the word */
@@ -807,7 +843,6 @@ static uint16_t sv_word(int32_t t, int32_t i) {
 static void sv_tick(void *ctrl, uint32_t r) {
   int32_t t = SEL_TRACK, pg = sv_page(ctrl), on;
   uint8_t m = 0;
-  if (!pg && ls_smpl == (uint32_t)t + 1 && sv.spage) pg = sv.spage;   /* 1045: DSP SAMPLE's list over its SMPL page */
   if (t > 11) pg = 0;
   if (pg) m = MACHINE_OF(t);
   on = pg && mr_vb(t, m) != 0x7f;
@@ -838,6 +873,8 @@ static void sv_tick(void *ctrl, uint32_t r) {
   }
 }
 
+int32_t cu_steps(int32_t r);
+int32_t cu_mi_settling(int32_t t);
 /* behind the 33s: the 29, then the values (nothing waits: what does not go now goes at a later tick) */
 static void sv_flush(void) {
   uint8_t b[9 + 32 + 1];               /* header 9, 16 values, F7 */
@@ -861,9 +898,12 @@ static void sv_flush(void) {
     sv.diag_owed = 0; sv.diag_sent = sv.diag; sv.diag_vt_sent_w = v; sv.diag_tick = st.ticks; sv.d2b++;
   }
   if (!sv.on) return;
+  if (cu_steps(-1 - (int32_t)sv.track)) return;   /* 7o: MIDI being set up: the old machine's words are no CCs (the host feeds a 2A to the machine) */
   for (i = 0; i < 16; ++i) {
     cur[i] = sv_word(sv.track, i);
     if (sv.vals_all || cur[i] != sv.val[i]) { if (i < lo) lo = i; hi = i; }
+    /* ... and the kit's words lag the live ones cu_defs_tick wrote (kit_param_changed's drain: 300-350 ms [measured, us_ui.json]): page 2's are all 0 by then */
+    if (i >= 8 && cur[i] && cu_mi_settling(sv.track)) return;
   }
   if (sv.vals_all) { lo = 0; hi = 15; }
   if (hi < 0) return;
@@ -895,6 +935,7 @@ static void enter(void *ctrl, uint8_t reason, uint8_t page) {
   /* 1026: the LEDs stay stock's until a 34 sent after this open (1032: led_own, unless seq mode had them) */
   mr.all = 1;                          /* 1025: the machines' snapshot after the 30 */
   mr.kit_owed = 1;                     /* 1026: and the kit (3B) after it */
+  ar.owed = 0xfff;                     /* 7ae: and every sound's arpeggiator code */
   *((volatile uint8_t *)ctrl + 0x20) = 1;
 }
 
@@ -949,6 +990,18 @@ static int32_t unpack_rect(const uint8_t *p, int32_t n, int32_t c0, int32_t p0, 
   return 1;
 }
 
+/* 7o: the Rytm's DIN OUT. 0x4008575e(len, data, port) is the OS's port switch: 3 DIN only [code: the OS's note-on calls it, port 1 = GLOBAL's
+   setting; 3 goes to the DIN sender 0x40001dea alone, without the USB mutex; it returns at once while MIDI is not up (0x419f28a8)]. The
+   sender's 4 KB DMA ring masks interrupts while it writes and spins while full: DIN_FREE is that wait's own sum, read only. */
+#define DIN_SEND(n, m, port) ((void (*)(int32_t, const uint8_t *, int32_t))0x4008575eu)((n), (m), (port))
+#define DIN_PENDING (*(const volatile uint32_t *)0x413da678u)
+static int32_t DIN_FREE(void) {
+  uint32_t used = *(const volatile uint32_t *)0x413da670u - *(const volatile uint32_t *)0x413da67cu;
+  used += (uint32_t)*(const volatile uint16_t *)0xfc0454b4u - (uint32_t)*(const volatile uint16_t *)0xfc0454bcu;
+  return 4096 - (int32_t)(used & 4095u);
+}
+static uint32_t din_sent, din_drop;
+
 static int32_t sysex_body(const uint8_t *d, int32_t len) {
   int32_t n = len - 7;               /* bytes between <ver> and F7 */
   const uint8_t *b = d + 6;
@@ -979,6 +1032,7 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
   case 0x3c:
     break;
   case 0x4a:     /* 1040: <track 0..11> <browse 0/1>: the host's file browser over the bank list (YES / NO its own while 1) */
+    if (n == 2 && b[0] == 0x7f && b[1] <= 1) { ls_host_presets = b[1]; break; }
     if (n != 2 || b[0] > 11 || b[1] > 1) { rx_bad++; return 1; }
     ls_in_v = (uint32_t)b[0] << 8 | b[1];
     ls_in_gen++;
@@ -1043,6 +1097,22 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
     ux.nm_msgs++;
     break;
   }
+  case 0x4f: {   /* 7o, the MIDI machine's DIN destination: <status & 7F> <d1> [<d2>]: one channel message on the Rytm's MIDI OUT */
+    uint8_t m[3];
+    int32_t two = (b[0] & 0x60) == 0x40 && n >= 1;   /* C0..DF: 2 bytes */
+    if (n != (two ? 2 : 3) || b[0] > 0x6f) { rx_bad++; return 1; }
+    m[0] = b[0] | 0x80; m[1] = b[1]; m[2] = two ? 0 : b[2];
+    /* the OS's sender would spin on a full ring, in the MIDI task: dropped short of it. Values leave the ring's last 1536 B to notes, note-ons the last
+       512 to note-offs, so a slow or stuck port sheds in that order */
+    if (DIN_FREE() < (int32_t)DIN_PENDING + n + ((b[0] & 0x70) == 0x10 && !two && b[2] ? 512 : (b[0] & 0x70) < 0x20 ? 8 : 1536)) din_drop++;
+    else { DIN_SEND(n, m, 3); din_sent++; }
+    break;
+  }
+  case 0x45:     /* 7ae: <track 0..11> <code & 7F> <code >> 7>: arp_tick writes it */
+    if (n != 3 || b[0] > 11 || b[1] > 0x7f || b[2] > 7) { rx_bad++; return 1; }
+    ar.wk[b[0]] = (uint8_t)(ACTIVE_KIT & 127u);
+    ar.wr[b[0]] = (uint16_t)(0x8000u | b[2] << 7 | b[1]);
+    break;
   case 0x48: {   /* 1036: <track 0..11> <param 0..15> <value 0..127> [<fraction 0..127> [<flags>]]: P(param + 1) of the
                     track's sound set as a knob turn sets it (the UI task: the live copy and the kit, through 0021's
                     writer); 1038: flags bit 0, the bank list's commit: the steps held at its YES get a lock instead */
@@ -2044,18 +2114,12 @@ static void sq_forget(void) {
  * the grid object's 64-bit held-trig bitmap +0x158 / +0x15c [measured, rytm-emu: T1 T2 T4 T7 T9 held -> 0x14b]) make the
  * host's 48 (flags bit 0) a p-lock of P1 on those steps (track_lock_set, fine), not a kit write. Seq mode with a trig
  * held keeps 1032's rule (the turns are the host's anyway: no list).
- * 1045: DSP SAMPLE's SMP (P11, word 19, record 441: index << 8 | bank << 5 like P1 above, the SAMPLES pool's eight
- * banks) opens the same list from its SMPL page, knob D (SMP's place there; knob A on the SRC page stays ENG): when the
- * selected track is a Sidecar DSP SAMPLE, the SMPL page is the screen (SamplePageView, not covered), the page and the
- * splash closed, and a host is there that has drawn (PORT up, a message within the timeout, a commit since boot), the
- * first turn of D is eaten and 4A 1 <track> 1 <P11 hi lo> 0 goes out; the Rytm then turns the SRC view on for that track
- * over the SMPL page (29 1, sv_tick) so the host's list shows, until the list closes (29 0). D's turns go to the host as
- * 32 0 (the list's knob, as A's), the rest as above; the 48 that commits names P11 (48 1 <t> 10 <index> <bank << 4> 1),
- * with trigs held it locks P11 (k 19). A host that draws nothing within a second of the open (an older one) closes the
- * list (why 5) and leaves D stock's (0029's banked step) until the next hello.
+ * 1045, 7h: DSP SAMPLE's SMP (P11, word 19, record 441: index << 8 | bank << 5 like P1 above, the SAMPLES pool's eight
+ * banks) is knob A of its SRC page as the others' P1, so the same turn opens the same list (4A with P11's value, the host's
+ * 32 0, the 48 naming P11; with trigs held it locks P11, k 19). ENG is knob D of its SMPL page; the words did not move.
  * 1049: FUNC + YES on the SRC view of such a track or of a DSP SAMPLE track (the host draws the view, the list closed;
  * the hardware pass 2026-10-23: "FUNC + YES on DSP SAMPLE's SRC page opens nothing", the pool empty so SMP only stepped
- * through empty rows) opens the list on the current entry (4A 1 .. why 0; DSP SAMPLE: P11, knob D) with the host's file
+ * through empty rows) opens the list on the current entry (4A 1 .. why 0; DSP SAMPLE: P11) with the host's file
  * browser at once (4A 3 .. why 6: the host aims it at the first free row of the bank when the entry is OFF). Then as
  * 1040's FUNC + YES in the list: YES on a file sets the row, the list stays; YES commits it (48). The YES is eaten (its
  * release too); stock 1.73 binds nothing to FUNC + YES there. */
@@ -2069,9 +2133,8 @@ static struct {
   uint32_t browse, br_ack, br_tick, br_gen, browses, br_timeouts;   /* 1040: FUNC + YES's file browser (the host's) */
   uint32_t lk_lo, lk_hi, lk_track, lk_tick;   /* the trigs held at the last YES (steps 0..31, 32..63), its track, tick */
   uint32_t opens, closes, turns, keys, drops, locks, why[6];   /* diagnostics */
-  uint8_t p, knob, smpl, pad2;         /* 1045: the list's parameter (0 P1, 10 DSP SAMPLE's P11), the knob that opened
-                                          it (A 0, D 3), opened from DSP SAMPLE's SMPL page */
-  uint32_t tick0, nd_hello, smpls, smpl_nd;   /* its open tick; st.hellos + 1 of a host that drew no list (none: 0) */
+  uint8_t p, knob;                     /* 1045: the list's parameter (0 P1, 10 DSP SAMPLE's P11), the knob that opened it */
+  uint32_t tick0;                      /* its open tick */
   uint32_t srcyes;                     /* 1049: lists opened by FUNC + YES on the SRC view (the browser at once) */
 } ls __attribute__((section(".bss"), aligned(4)));
 #define LS_HELD_HI(o) (*(const volatile uint32_t *)((o) + 0x158u))
@@ -2082,16 +2145,10 @@ static struct {
 #define CU_MS_M 52
 #define CU_CP_M 49    /* 1051: CHOP's SRC is a SAMPLES row too (the bank list, its browser) */
 
-static int32_t ls_banked(uint32_t m) { return m == CU_WT_M || m == CU_GR_M || m == CU_MS_M || m == CU_CP_M; }
-#define DSPS_M 45     /* 1045: DSP SAMPLE (0021), its SMP P11 banked */
-#define DSPS_P 10
-/* 1045: may knob D open the list on this screen (DSP SAMPLE's SMPL page, a drawing host)? */
-static int32_t ls_dsps(void) {
-  int32_t t = SEL_TRACK;
-  if (t > 11 || sv.spage != 1 || MACHINE_OF(t) != DSPS_M || mr_vb(t, DSPS_M) == 0x7f || st.active) return 0;
-  return PORT_STATE == 1 && sv.idle < TIMEOUT_TICKS && commits && ls.nd_hello != st.hellos + 1;
-}
-
+/* 0.4.0: 6-OP FM (40) and JUNO (41) too when the host says it draws their preset list (its 4A 7F 1 at each 29); else, an older
+   host or no frame, their own stepped PAT knob (0029) */
+static int32_t ls_banked(uint32_t m) { return m == CU_WT_M || m == CU_GR_M || m == CU_MS_M || m == CU_CP_M ||
+                                             ((m == 40 || m == 41) && ls_host_presets); }
 static void ls_queue(uint8_t on, uint8_t why) {
   uint16_t v = sv_word(ls.track, ls.p);
   if (ls.qn >= LS_NQ) { ls.drops++; return; }
@@ -2118,7 +2175,6 @@ static void ls_close(uint8_t why) {
   ls.browse = 0;                       /* 1040: the host's browser ends with the list (its 4A 0 tells it) */
   ls.closes++;
   ls.why[why < 6 ? why : 5]++;
-  ls_smpl = 0;                         /* 1045: the view over the SMPL page ends with it */
   st.acc[0] = 0;                       /* turns not yet sent belong to the list that closed */
   ls_queue(0, why);
 }
@@ -2126,14 +2182,10 @@ static void ls_close(uint8_t why) {
 /* ev_enc, the page closed: 1 the list's (the turn eaten) */
 static int32_t ls_enc(int32_t idx, int32_t delta) {
   if (ls.on && idx != ls.knob) { ls_close(3); return 0; }
-  if ((idx != 0 && idx != 3) || st.splash_on) return 0;
+  if (idx != 0 || st.splash_on) return 0;
   if (!ls.on) {
-    if (idx == 0 && sv.on && sv.show && ls_banked(sv.mach)) {
-      ls.track = sv.track; ls.mach = sv.mach; ls.p = 0; ls.smpl = 0;
-    } else if (idx == 3 && ls_dsps()) {   /* 1045: DSP SAMPLE's SMP on its SMPL page */
-      ls.track = SEL_TRACK; ls.mach = DSPS_M; ls.p = DSPS_P; ls.smpl = 1;
-      ls_smpl = (uint32_t)ls.track + 1;
-      ls.smpls++;
+    if (sv.on && sv.show && (ls_banked(sv.mach) || sv.mach == DSPS_M)) {   /* 7h: DSP SAMPLE's knob A is SMP (P11) */
+      ls.track = sv.track; ls.mach = sv.mach; ls.p = sv.mach == DSPS_M ? DSPS_P : 0;
     } else return 0;
     ls.on = 1; ls.knob = (uint8_t)idx; ls.tick0 = st.ticks;
     ls.opens++;
@@ -2198,10 +2250,7 @@ static int32_t ls_release(uint32_t code) {
 static void ls_tick(void) {
   /* 1045: opened on the SMPL page the view comes on a tick after (29 1) and shows at the host's first frame: closed
      when it never showed within a second (an older host: knob D stock's until the next hello), or stopped showing */
-  if (ls.on && ls.smpl && !sv.show && sv.on && !sv.covered && sv.track == ls.track && !st.active &&
-      commits == sv.base && st.ticks - ls.tick0 <= 20) {
-  } else if (ls.on && (!sv.on || !sv.show || sv.track != ls.track || sv.mach != ls.mach || st.active)) {
-    if (ls.smpl && commits == sv.base && st.ticks - ls.tick0 > 20) { ls.nd_hello = st.hellos + 1; ls.smpl_nd++; }
+  if (ls.on && (!sv.on || !sv.show || sv.track != ls.track || sv.mach != ls.mach || st.active)) {
     ls_close(5);
   }
   if (ls_in_gen != ls.br_gen) {        /* 1040: the host's 4A <track> <browse> */
@@ -2213,7 +2262,7 @@ static void ls_tick(void) {
 }
 
 /* 1046, the UI tick after ls_tick: UP + SRC's list, opened once the view shows the host's frame for that track (or,
-   on DSP SAMPLE, the SMPL page with a drawing host: ls_dsps), as the knob's first turn opens it; given up after a
+   as the knob's first turn opens it; given up after a
    second, or when the page, another track or a list came first */
 static void u46_tick(void) {
   int32_t ok;
@@ -2222,8 +2271,8 @@ static void u46_tick(void) {
     u46.src_t = 0;
     return;
   }
-  ok = u46.src_m == DSPS_M ? ls_dsps() : sv.on && sv.show && sv.track == SEL_TRACK && sv.mach == u46.src_m;
-  if (ok && ls_enc(u46.src_m == DSPS_M ? 3 : 0, 0)) { u46.src_t = 0; u46.src_lists++; }
+  ok = sv.on && sv.show && sv.track == SEL_TRACK && sv.mach == u46.src_m;
+  if (ok && ls_enc(0, 0)) { u46.src_t = 0; u46.src_lists++; }
 }
 
 /* 48 with flags bit 0 (the list's commit), in wr_tick: lock P1 on the steps held at the YES (one second at most ago, the
@@ -2408,15 +2457,16 @@ static void tick_body(void *ctrl) {
   /* the hello: the port up for HELLO_TICKS, then again at +1 s and +2 s while the host has said nothing */
   if (PORT_STATE == 1) {
     if (st.port_ticks < 0xffff) st.port_ticks++;
-    if (st.port_ticks == HELLO_TICKS) { st.hello_rx = r; st.hello_n = 1; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; sq_forget(); pm.c_hello = commits; }
+    if (st.port_ticks == HELLO_TICKS) { st.hello_rx = r; st.hello_n = 1; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; sq_forget(); pm.c_hello = commits; }
     else if (st.hello_n && st.hello_n < 3 && st.port_ticks == HELLO_TICKS + 20 * st.hello_n) {
-      if (r == st.hello_rx) { st.hello_n++; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; } else st.hello_n = 3;
+      if (r == st.hello_rx) { st.hello_n++; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; } else st.hello_n = 3;
     }
     if (st.pend_hello && sv.on) { sv.pend29 = 1; sv.p_track = sv.track; sv.p_on = 1; sv.vals_all = 1; }   /* 1027 */
   } else {
     st.port_ticks = 0;
     st.hello_n = 0;
     st.pend_hello = 0;
+    ls_host_presets = 0;               /* 0.4.0: another host may come */
     if (sq.on) sq_forget();            /* 1032 */
   }
   if (splash_req) {
@@ -2481,7 +2531,10 @@ static void tick_body(void *ctrl) {
   trk_tick();                        /* 1044: TRK's LED while the page has the keys */
   flush();
   pc_tick();                         /* 1030: the chord write-back */
-  if (!st.pend_hello && !st.pend_open && mr_tick()) sv_flush();   /* 1025: behind the hello and the 30; 1027 behind those */
+  if (!st.pend_hello && !st.pend_open && mr_tick()) {   /* 1025: behind the hello and the 30; 1027 behind those */
+    sv_flush();
+    arp_tick();
+  }
 }
 
 /* ---- text: the shadow + the committed text slots (+ the local echoes) drawn by the Rytm's own text_draw ---------- */
@@ -2791,6 +2844,16 @@ static int32_t key_body(void *brain, void *ev) {
     else { enter(*(void **)((uint8_t *)brain + 32), R_USER, PG_INSOUT); st.ins_opens++; }
     return 1;
   }
+  /* 7ae, UP + FLTR: the Sidecar's ARP page for the selected track, 30 page 4, as UP + AMP's (again while open: go there). Stock 1.73 leaves
+     UP + FLTR free [rled_emu.py stockupkeys, UPKEYS=FLTR]. UP only, not under a held trig (the lock page's FLTR). */
+  if (code == K_FLTR && UPH() && !HELD(K_TRK) && !(sq.mode && (sq.down[0] & 0xffffu)) && !(st.stock_down[0] & 0xffffu)) {
+    u46.up_used = 1; u46.combos++; k44.up_trig = 1;
+    SET(st.eat, code);
+    st.seq_view = 0;
+    if (st.active) { report_mode(1, R_USER, PG_ARP); flush(); }
+    else enter(*(void **)((uint8_t *)brain + 32), R_USER, PG_ARP);
+    return 1;
+  }
   /* 1037, TRK + TRIG (1036's FUNC + LFO, which is stock's again): the page opens on the Sidecar's SEQ page of the
      selected track (30 page 0x10 + track); with the page open it goes there (the 30 again), and when TRK + TRIG sent it
      there, TRK + TRIG leaves (reason 3, as TRK + YES). Stock 1.73's TRK + TRIG is TRIG alone (TRK alone changes only
@@ -2836,17 +2899,6 @@ static int32_t key_body(void *brain, void *ev) {
     if (ls.on) ls_close(4);
     u46.src_t = 0;
     if (t <= 11 && (ls_banked(m) || m == DSPS_M) && mr_vb(t, m) != 0x7f) { u46.src_t = st.ticks | 1; u46.src_m = m; }
-    if (u46.src_t && m == DSPS_M) {
-      uint32_t e2[8];
-      int32_t i;
-      for (i = 0; i < 8; ++i) e2[i] = ((const uint32_t *)ev)[i];
-      e2[3] = (e2[3] & ~0xffu) | K_SMPL;
-      STOCK_KEY(brain, e2);              /* SMPL down */
-      e2[4] &= ~1u;
-      STOCK_KEY(brain, e2);              /* and up */
-      SET(st.eat, code);
-      return 1;
-    }
     SET(st.stock_down, code);
     return 0;
   }
@@ -2866,8 +2918,8 @@ static int32_t key_body(void *brain, void *ev) {
   if (!st.active && !ls.on && code == K_YES && !st.splash_on && sv.on && sv.show && !sv.covered && ls.qn + 2 <= LS_NQ &&
       (int32_t)sv.track == SEL_TRACK && (ls_banked(sv.mach) || sv.mach == DSPS_M) && !(sq.mode && (sq.down[0] & 0xffffu)) &&
       (BIT(st.stock_down, K_FUNC) || BIT(st.both_down, K_FUNC) || BIT(st.our_down, K_FUNC))) {
-    ls.track = sv.track; ls.mach = sv.mach; ls.p = sv.mach == DSPS_M ? DSPS_P : 0; ls.smpl = 0;
-    ls.on = 1; ls.knob = sv.mach == DSPS_M ? 3 : 0; ls.tick0 = st.ticks;
+    ls.track = sv.track; ls.mach = sv.mach; ls.p = sv.mach == DSPS_M ? DSPS_P : 0;
+    ls.on = 1; ls.knob = 0; ls.tick0 = st.ticks;
     ls.opens++; ls.srcyes++;
     ls_queue(1, 0);
     ls.browse = 1; ls.br_ack = 0; ls.br_tick = st.ticks; ls.br_gen = ls_in_gen; ls.browses++;
@@ -3115,6 +3167,7 @@ typedef int32_t (*cu_printf_fn)(void *str, const char *fmt, ...);
 #define CU_GR 47         /* 1034: GRANULAR (BT TEST; 0021: ext_render, voice flag 0x38) */
 #define CU_LI 48         /* 1051: LIVE IN (LT TEST; 0021: ext_render, voice flag 0x78; rytm-teensy docs/LIVE-IN.md 4) */
 #define CU_CP 49         /* 1051: CHOP (MT TEST; 0021: ext_render, voice flag 0x18; rytm-teensy docs/CHOP.md) */
+#define CU_MI 50         /* 7o: MIDI (HH TEST; 0021: ext_render, reports 44 / 43; rytm-teensy core/midim/midim.h) */
 #define CU_MS 52
 /* steps: 0021's ext_steps answer (0029's stepped knobs: mode << 8 | N; 0 continuous) */
 struct cu_knob { const char *lng, *sht; int16_t look; uint8_t text, def; uint16_t steps; };
@@ -3138,6 +3191,7 @@ const char cu_li_name[] = "LIVE IN";     /* 1051: machine 48's names (registry p
 const char cu_li_short[] = "LVIN";
 const char cu_cp_name[] = "CHOP";        /* 1051: machine 49's names (registry patches) */
 const char cu_cp_short[] = "CHOP";
+const char cu_mi_name[] = "MIDI";        /* 7o: machine 50's names (registry patches) */
 /* 1051: LIVE IN's and CHOP's list texts (rytm-teensy docs/LIVE-IN.md 4, docs/CHOP.md "On the Rytm") */
 static const char cu_inpt[4][4] = {"L", "R", "L+R", "STR"};
 static const char cu_mon[2][5] = {"ALW", "TRIG"};
@@ -3146,6 +3200,7 @@ static const char cu_hold[] = "HOLD";   /* 1051: CHOP's DEC fully up (the host: 
 static const char cu_tape[4][5] = {"SLC", "OFF", "STOP", "SPIN"};
 static const char cu_dir[3][4] = {"SLC", "FWD", "REV"};
 static const char cu_cloop[4][5] = {"SLC", "OFF", "FWD", "PING"};
+static const char cu_dst[4][5] = {"OFF", "DIN", "USBC", "USBA"};   /* 7o, in the host's order (midim.h) */
 static const char cu_fmt_db[] = "%dDB", cu_fmt_pd[] = "+%d", cu_fmt_x[] = "X%d", cu_fmt_pct[] = "%d%%";
 static const char cu_fm_short[] = "6OP";
 static const char cu_fmt_s[] = "%s", cu_fmt_d[] = "%d", cu_fmt_bk[] = "%c%03d", cu_fmt_inv[] = "INV%d", cu_fmt_spr[] = "SPR%d";
@@ -3219,8 +3274,22 @@ static const struct cu_knob cu_cpp2k[8] = {
     {"Tape", "TAPE", CU_DIAL, 22, 0, 0x104},      {"Tape Time", "TTIM", CU_DIAL, 25, 0, 0},
     {"Attack", "ATK", CU_DIAL, 25, 0, 0},         {"Decay", "DEC", CU_DIAL, 26, 0, 0},
     {"Direction", "DIR", CU_DIAL, 23, 0, 0x103},  {"Loop", "LOOP", CU_DIAL, 24, 0, 0x104}};
+/* 7o, MIDI: P1..P8 DST CHAN BANK SBNK PROG PB AT MW, P9..P16 VAL1..4 SEL1..4 (rytm-teensy core/midim/midim.h). Texts: 27 DST (4 zones), 28 CHAN
+   (16 zones, 1..16), 29 PB (0 OFF, then -63..+63), 30 BANK / SBNK (0 OFF, then 0..126), 31 AT / MW (0 OFF, then 0..127 as sent), 32 SEL (0 OFF, then
+   the CC number). PROG: 19 (0 OFF, then the program as a synth's 1..127; sent as n - 1). */
+static const struct cu_knob cu_mik[8] = {
+    {"Destination", "DST", CU_DIAL, 27, 32, 0x104}, {"Channel", "CHAN", CU_DIAL, 28, 0, 0x110},
+    {"Bank", "BANK", CU_DIAL, 30, 0, 0},            {"Sub Bank", "SBNK", CU_DIAL, 30, 0, 0},
+    {"Program", "PROG", CU_DIAL, 19, 0, 0},         {"Pitch Bend", "PB", CU_DIAL, 29, 0, 0},
+    {"Aftertouch", "AT", CU_DIAL, 31, 0, 0},        {"Mod Wheel", "MW", CU_DIAL, 31, 0, 0}};
+static const struct cu_knob cu_mip2k[8] = {
+    {"CC 1 Value", "VAL1", CU_DIAL, 0, 0, 0},       {"CC 2 Value", "VAL2", CU_DIAL, 0, 0, 0},
+    {"CC 3 Value", "VAL3", CU_DIAL, 0, 0, 0},       {"CC 4 Value", "VAL4", CU_DIAL, 0, 0, 0},
+    {"CC 1 Select", "SEL1", CU_DIAL, 32, 0, 0},     {"CC 2 Select", "SEL2", CU_DIAL, 32, 0, 0},
+    {"CC 3 Select", "SEL3", CU_DIAL, 32, 0, 0},     {"CC 4 Select", "SEL4", CU_DIAL, 32, 0, 0}};
 /* dm / dt / dtick (1051): a choice of LIVE IN or CHOP waiting for its page-2 defaults (cu_defs_tick) */
-static struct { uint8_t init, p2m; uint16_t setups; uint32_t texts; uint8_t p1m, dm, dt, pad; uint32_t preps, dtick, defs; } cu
+/* mi_t / mi_tick (7o): the track whose MIDI defaults were just written, its reports held until the words have settled (the live copy glides) */
+static struct { uint8_t init, p2m; uint16_t setups; uint32_t texts; uint8_t p1m, dm, dt, mi_t; uint32_t preps, dtick, defs, mi_tick; } cu
     __attribute__((aligned(4)));
 
 /* machine m's knobs: SRC (p2 0) or page 2 (p2 1); 0: not ours (6-OP FM: page 2 only, MULTISAMPLE's, E..H shown) */
@@ -3230,11 +3299,12 @@ static const struct cu_knob *cu_tab(int32_t m, int32_t p2) {
   if (m == CU_MS) return p2 ? cu_p2k : cu_srck;
   if (m == CU_LI) return p2 ? cu_lip2k : cu_lik;   /* 1051 */
   if (m == CU_CP) return p2 ? cu_cpp2k : cu_cpk;
+  if (m == CU_MI) return p2 ? cu_mip2k : cu_mik;   /* 7o */
   return m == CU_FM && p2 ? cu_p2k : 0;
 }
 static const char *cu_grp(int32_t m) {
   return m == CU_MS ? cu_ms_short : m == CU_WT ? cu_wt_short : m == CU_GR ? cu_gr_short : m == CU_LI ? cu_li_short
-       : m == CU_CP ? cu_cp_short : cu_fm_short;
+       : m == CU_CP ? cu_cp_short : m == CU_MI ? cu_mi_name : cu_fm_short;
 }
 
 /* the value text of our records (functor = the record's descriptor + 20, as 0021's R1 measured) */
@@ -3275,6 +3345,12 @@ int32_t cu_text(void *functor, int32_t value, void *str) {
     case 23: return CU_PRINTF(str, cu_fmt_s, cu_dir[(v * 3) >> 7]);
     case 24: return CU_PRINTF(str, cu_fmt_s, cu_cloop[(v * 4) >> 7]);
     case 25: return v ? CU_PRINTF(str, cu_fmt_d, v) : CU_PRINTF(str, cu_fmt_s, cu_slc);
+    case 27: return CU_PRINTF(str, cu_fmt_s, cu_dst[(v * 4) >> 7]);   /* 7o: MIDI */
+    case 28: return CU_PRINTF(str, cu_fmt_d, ((v * 16) >> 7) + 1);
+    case 29: return v ? CU_PRINTF(str, v > 64 ? cu_fmt_pd : cu_fmt_d, v - 64) : CU_PRINTF(str, cu_fmt_s, cu_off);
+    case 30: return v ? CU_PRINTF(str, cu_fmt_d, v - 1) : CU_PRINTF(str, cu_fmt_s, cu_off);
+    case 31: return v ? CU_PRINTF(str, cu_fmt_d, (v - 1) * 127 / 126) : CU_PRINTF(str, cu_fmt_s, cu_off);
+    case 32: return v ? CU_PRINTF(str, cu_fmt_d, v - 1) : CU_PRINTF(str, cu_fmt_s, cu_off);
     case 26: return v >= 127 ? CU_PRINTF(str, cu_fmt_s, cu_hold) : v ? CU_PRINTF(str, cu_fmt_d, v) : CU_PRINTF(str, cu_fmt_s, cu_slc);
     case 9:
     case 12: {   /* 1036: the host's names (47) for GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST. 1038: the bank
@@ -3319,7 +3395,7 @@ static void cu_src_setup(int32_t m) {
   int32_t j;
   if (!k || m == CU_FM) return;
   for (j = 0; j < 8; ++j)   /* (1051: LIVE IN 48 and CHOP 49 too) */
-    CU_IDS[CU_WT * 8 + j] = CU_IDS[CU_GR * 8 + j] = CU_IDS[CU_LI * 8 + j] = CU_IDS[CU_CP * 8 + j] = CU_IDS[CU_MS * 8 + j];
+    CU_IDS[CU_WT * 8 + j] = CU_IDS[CU_GR * 8 + j] = CU_IDS[CU_LI * 8 + j] = CU_IDS[CU_CP * 8 + j] = CU_IDS[CU_MI * 8 + j] = CU_IDS[CU_MS * 8 + j];
   if (cu.p1m == m && CU_REC(cu_src[0])[12] == (uint32_t)k[0].sht && CU_REC(cu_src[7])[12] == (uint32_t)k[7].sht &&
       CU_REC(cu_src[0])[0] == (uint32_t)m)
     return;
@@ -3356,7 +3432,7 @@ void cu_prep(int32_t m, int32_t t) {
      words would stutter, tape-stop, reverse and loop every hit. Noted here, written by cu_defs_tick once the choice stays
      (the machine list closed: its cursor's previews call set_machine too) */
   /* (only a choice made in the machine list: a kit / sound / project load that calls set_machine keeps its own words) */
-  if ((m == CU_LI || m == CU_CP) && (uint32_t)t < 12u && sv.top_vt == 0x401e5bf4u) {
+  if ((m == CU_LI || m == CU_CP || m == CU_MI) && (uint32_t)t < 12u && sv.top_vt == 0x401e5bf4u) {
     cu.dm = (uint8_t)m; cu.dt = (uint8_t)t; cu.dtick = st.ticks;
   }
 }
@@ -3364,7 +3440,18 @@ void cu_prep(int32_t m, int32_t t) {
 /* 0021's ext_steps for a record no user slot owns: ours stepped (mode << 8 | N), 0 continuous */
 int32_t cu_steps(int32_t r) {
   int32_t t = SEL_TRACK, m, i;
-  const struct cu_knob *k = cu_tab(cu.p1m, 0);
+  const struct cu_knob *k;
+  if (r < -12) {   /* 7o, 0021's us_step, the UI task: track -13 - r chose its machine in the SOUND menu, which has no list view for cu_prep to see */
+    t = -13 - r;
+    m = MACHINE_OF(t);
+    if ((uint32_t)t < 12u && (m == CU_LI || m == CU_CP || m == CU_MI)) { cu.dm = (uint8_t)m; cu.dt = (uint8_t)t; cu.dtick = st.ticks; }
+    return 0;
+  }
+  if (r < 0) {   /* 7o, ext_render (the audio interrupt, reads only): track -1 - r on MIDI is being set up: chosen, or its defaults not settled */
+    if (cu.dm == CU_MI && cu.dt == -1 - r) return 1;
+    return cu.mi_t == -r && st.ticks - cu.mi_tick < 4;
+  }
+  k = cu_tab(cu.p1m, 0);
   if (r == CU_DSPS_SMP) return CU_BANKED;   /* 1045 */
   for (i = 0; i < 8; ++i)
     if (cu_src[i] == r) return k ? k[i].steps : 0;
@@ -3375,6 +3462,8 @@ int32_t cu_steps(int32_t r) {
   if (i == 8 || (m == CU_FM && i < 4)) return 0;   /* 6-OP FM: E..H only */
   return k[i].steps;
 }
+
+int32_t cu_mi_settling(int32_t t) { return cu.mi_t == t + 1 && st.ticks - cu.mi_tick < 16; }
 
 static void cu_tick(void) {
   uint32_t *d = CU_DESC(CU_DSPS_SMP);
@@ -3431,9 +3520,9 @@ static void wr_tick(void) {
     uint8_t status = 0, fl = ux.wq_flags[ux.wq_t % WQ_N];
     int32_t lk = -1;
     if (rec <= 0) status = 2;
-    else if (k < 8 && (m == CU_WT || m == CU_GR || m == CU_MS || m == CU_LI || m == CU_CP) &&
+    else if (k < 8 && (m == CU_WT || m == CU_GR || m == CU_MS || m == CU_LI || m == CU_CP || m == CU_MI) &&
              CU_REC(cu_src[0])[0] != (uint32_t)m) status = 1;   /* (1051: LIVE IN and CHOP share the SRC records too) */
-    else if (k >= 8 && (m == CU_LI || m == CU_CP) && cu.p2m != (uint32_t)m) status = 1;   /* 1051: their page 2 too */
+    else if (k >= 8 && (m == CU_LI || m == CU_CP || m == CU_MI) && cu.p2m != (uint32_t)m) status = 1;   /* 1051: their page 2 too */
     else if ((k == 0 || (k == DSPS_P && m == DSPS_M)) && (fl & 1) && (lk = ls_lock(t, v, 9 + k)) >= 0) {   /* 1038: the
                                                                      list's YES with trigs held: locks (1045: P11 too) */
       status = lk ? 3 : 4;
@@ -3468,6 +3557,7 @@ static void cu_defs_tick(void) {
     US_COMMIT(US_BANK(), t, rec, v);
   }
   cu.defs++;
+  if (m == CU_MI) { cu.mi_t = (uint8_t)(t + 1); cu.mi_tick = st.ticks; }   /* 7o: before dm clears: no gap in the hold */
   cu.dm = 0;
 }
 

@@ -488,8 +488,8 @@ def t_splash(e):
     r = e.run("spl-on", 2500, play, script=["--splash", "60"], counts=(TILE_FN,))
     h = evs(r, "hello")
     s1 = spl(e, r["snap"])
-    check("splash: hello (35) once with the Rytm's uptime (> 20 s, the base's boot) and caps 7 (36; 1049: 16 label tables; "
-          "1052: the 4B project reports)", len(h) == 1 and h[0]["up"] > 400 and h[0]["caps"] == 7, h)
+    check("splash: hello (35) once with the Rytm's uptime (> 20 s, the base's boot) and caps 15 (36; 1049: 16 label tables; "
+          "1052: the 4B project reports; 7ae: 45)", len(h) == 1 and h[0]["up"] > 400 and h[0]["caps"] == 15, h)
     frame = open(os.path.join(e.out, "spl-on.frame"), "rb").read()
     check("splash: on, the panel shows the host's splash frame byte for byte", s1["splash_on"] == 1 and r["oled"] == frame,
           f"{s1}, {sum(a != b for a, b in zip(r['oled'] or b'', frame))} bytes differ")

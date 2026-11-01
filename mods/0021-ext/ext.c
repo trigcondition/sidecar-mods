@@ -36,6 +36,7 @@
 #define RING_FILL     (*(volatile uint32_t *)0x413db258u)
 #define STATE0(v)     (*(volatile int32_t *)(0x8000fef8u + 32u * (v)))
 #define OWNER(v)      (((const uint8_t *)0x40290dd8u)[v])
+#define US_ARP_KIT(k, t) ((const volatile uint8_t *)(0x4125597au + 2531u * (k) + 152u * (t)))   /* 7ae: kit k, track t: +0x6d, then +0x6e */
 #define VELOCITY(t)   (((const uint8_t *)0x800067c4u)[2u * (t)])
 
 #define TEXT __attribute__((section(".text")))
@@ -58,11 +59,12 @@
 #define FM_MACHINE 40     /* 6-OP FM: RS CLASSIC 2, below */
 #define MS_MACHINE 52     /* MULTISAMPLE: CB TEST (rui1031; its labels and texts are 0026's, through us_cubox) */
 #define WT_MACHINE 46     /* WAVETABLE: RS TEST, GRANULAR 47: BT TEST (rui1034; as MULTISAMPLE, through us_cubox) */
-#define WT_MACHINES 4     /* rui1051: 46..49 - and LIVE IN 48: LT TEST, CHOP 49: MT TEST, the same way */
+#define WT_MACHINES 5     /* rui1051: 46..49 - and LIVE IN 48: LT TEST, CHOP 49: MT TEST, the same way; 7o: MIDI 50: HH TEST */
 void dsp_descriptors2(void);
 int dsp_excite(int32_t voice, uint8_t *frame, const int16_t *params, int32_t pitch);
 int32_t ext_vflag(int32_t m);        /* user slots (.us1, below): the voice byte's machine flag */
-int32_t ext_layer_kept(int32_t vb);  /* the voice's sample layer plays */
+int32_t ext_midi_hold(int32_t t);    /* 7o: 0026 is still setting track t's MIDI sound up */
+int32_t ext_layer_kept(int32_t vb, int32_t voice);  /* the voice's sample layer plays */
 #define MACHINE_OF(t) (((const uint8_t *)0x8000ea00u)[t])
 const char dsp_long[] EXT6 = "DAISYSP";
 const char dsp_short[] EXT6 = "DSP";
@@ -283,7 +285,9 @@ EXT2 void ext_descriptors(void) {
   for (i = 2; i < 7; ++i) copy_desc(REC_P2 + i, REC_DIAL);
   copy_desc(REC_P2 + 7, REC_LEVEL);     /* VOL */
   dsp_descriptors();
+#if !EXT_SLOTS
   dd_descriptors();
+#endif
   jn_descriptors();
   ext_desc_done = 1;
 }
@@ -433,7 +437,7 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
      sample on the host's card): the Rytm's sample layer stays silent - except
      under UT NOISE (ex 2), which plays through it, and on DIGIDRUM. */
 #if EXT_SLOTS
-  if (ex != 2 && !ext_layer_kept(vb)) {   /* DIGIDRUM, and a user slot with the sample page: it plays */
+  if (ex != 2 && !ext_layer_kept(vb, voice)) {   /* an old DIGIDRUM sound, a user slot with the sample page: it plays */
 #else
   if (ex != 2 && (vb & 0x78) != 0x40) {   /* DIGIDRUM: its sample plays under the drum */
 #endif
@@ -455,13 +459,41 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
   }
   if (x->hold) --x->hold;
   if (!x->pend_params || (!x->pend_trig && x->hold)) return;
+#if EXT_SLOTS
+  {   /* md_store is rewriting this track's sound: no report, a trig's included, with half the words or the old tag */
+    extern volatile uint8_t md_wr;
+    if (md_wr == OWNER(voice) + 1) return;
+  }
+  /* 7o: MIDI being chosen: its words are not the sound's yet (a report would send them as programs and CCs): no report, and a trig is dropped */
+  if ((vb & 0x80) && ext_midi_hold(OWNER(voice))) {
+    x->pend_trig = 0;
+    x->pend_params = 0;
+    return;
+  }
+#endif
+#if EXT_SLOTS
+  if (x->pend_trig) {   /* 7ae: 0026 reports a sound's arpeggiator code at its UI tick; a new kit's first trig is sooner. So: the code of the kit this
+                           track plays (0x42ade134 + 56 t, the trig's own copy; not a sound lock's), just before the trig, when it has not said it */
+    extern volatile uint16_t us_ar[12];
+    uint32_t t = OWNER(voice);
+    if (t < 12) {
+      const volatile uint8_t *w = US_ARP_KIT(*(const volatile uint8_t *)(0x42ade134u + 56u * t) & 127u, t);
+      uint32_t c = (uint32_t)(w[1] >> 6) << 8 | w[0];
+      if (c != us_ar[t]) {
+        uint8_t a[10] = {0xf0, 0x7d, 0x52, 0x54, 0x45, 0x01, (uint8_t)t, (uint8_t)(c & 0x7f), (uint8_t)(c >> 7), 0xf7};
+        if (!ext_try_send(a, 10)) return;   /* (it and the trig together, the next block) */
+        us_ar[t] = (uint16_t)c;
+      }
+    }
+  }
+#endif
   uint8_t m[44];   /* the trig message is 43 bytes (41 and the sound tag) */
   int n = 0;
   m[n++] = 0xf0; m[n++] = 0x7d; m[n++] = 0x52; m[n++] = 0x54;
   if (x->pend_trig) {
-    m[n++] = 0x04; m[n++] = vb; m[n++] = x->note; m[n++] = x->vel;
+    m[n++] = vb & 0x80 ? 0x44 : 0x04; m[n++] = vb & 0x7f; m[n++] = x->note; m[n++] = x->vel;   /* 7o: bit 7, MIDI: 44 / 43 */
   } else {
-    m[n++] = 0x03; m[n++] = vb;
+    m[n++] = vb & 0x80 ? 0x43 : 0x03; m[n++] = vb & 0x7f;
   }
   for (i = 0; i < NP; ++i) {
     m[n++] = (uint8_t)(x->pend_p[i] >> 7) & 0x7f;
@@ -523,8 +555,14 @@ static const uint8_t dd_label[DD_MODELS][7] EXTE = {
     {0, 1, 22, 16, 16, 16, 16},
     {0, 1, 23, 10, 7, 16, 16},
     {0, 1, 24, 23, 11, 25, 16}};
+#if EXT_SLOTS
+/* Machine 42 is MD in the list; a sound not yet made MD keeps this page, DIGIDRUM's, as in 0.3.0 (md_tick) */
+const char dd_long[] EXTE = "MD";
+const char dd_short[] EXTE = "MD";
+#else
 const char dd_long[] EXTE = "DIGIDRUM";
 const char dd_short[] EXTE = "DDRM";
+#endif
 static const char dd_eng[] EXTE = "ENG";
 
 /* Knobs 2..8 named as engine i's controls 1..7 (long and short name alike). */
@@ -556,6 +594,17 @@ EXTD void dd_descriptors(void) {
   r[10] = r[12] = (uint32_t)dd_eng;
   DESC(REC_DD)[8] = (uint32_t)dd_engine_text;
   dd_name_knobs(0);
+#if EXT_SLOTS
+  /* over MD's labels (md_tick): the records' min, max and default as us_init kept them, all eight knobs in the SRC row */
+  for (k = 0; k < 8; ++k) {
+    extern uint32_t md_rec[8][3];
+    r = (uint32_t *)REC_ADDR(REC_DD + k);
+    r[2] = md_rec[k][0];
+    r[3] = md_rec[k][1];
+    r[4] = md_rec[k][2];
+    ((uint32_t *)(0x40287ccc + 36 * DD_MACHINE))[k] = REC_DD + k;
+  }
+#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -740,7 +789,11 @@ static const int16_t dsps_rec[8] EXT8 = {416, 417, 418, 419, 439, 440, 420, 421}
    index << 8 | bank << 5 over the pool's eight banks (fine-flagged, 0..0x7fe0 by registry patch); 0026 gives it the
    bank list (4A), its value text (the host's 47 names) and 0029's banked step; TUN (word 17) is stock's record 39,
    whose fields 441 copied. */
+#if EXT_SLOTS   /* 7h: SMP on SRC knob A, as every sample machine's picker, ENG (record 416) in its place here; the words stay */
+const int32_t dsps_p2_order[8] EXT8 = {39, 442, 444, 416, 445, 446, 447, 448};
+#else
 const int32_t dsps_p2_order[8] EXT8 = {39, 442, 444, REC_DSPS_SMP, 445, 446, 447, 448};
+#endif
 const char dsps_p2_title[] EXT8 = "SD SAMPLE";
 const char dsps_n5[] EXT8 = "Mix";
 const char dsps_s5[] EXT8 = "MIX";
@@ -764,6 +817,11 @@ EXT7 void dsp_descriptors2(void) {
   for (i = 0; i < 8; ++i) copy_desc(REC_DSPS2 + i, 39 + i);
   copy_desc(REC_DSPS2 + 2, REC_DIAL);
   copy_desc(REC_DSPS_SMP, REC_DIAL);   /* 1045: SMP a dial (0026 gives it its text, 0029 its step) */
+#if EXT_SLOTS
+  ((uint32_t *)(0x40287ccc + 36 * DSPS_MACHINE))[0] = REC_DSPS_SMP;   /* 7h: SRC knob A (the registry's row had ENG there) */
+  ((uint32_t *)REC_ADDR(dsps_rec[4]))[4] = 0;   /* MIX's default 0 (was 64): a sample player, the resonator an option; a fresh
+                                                   choice takes it, a saved sound keeps its word */
+#endif
   /* word 19 (SMP: now record 41, on the page above): a plain number; word 20
      (FLD until the pool list replaced the folder walk): MOD, or the diagnostic
      in a diag build (below) */
@@ -897,7 +955,9 @@ struct jn_mailbox {
 };
 typedef uint32_t __attribute__((may_alias)) jn_u32;
 #define JN_BARRIER() __asm__ __volatile__("" ::: "memory")   /* the compiler keeps the order (one core) */
-struct jn_mailbox jn_mailbox EXTN = {0x4a554e4fu, us_sysex, 0, 0, 0, 0, 0, {0}, 0, 0, {0}, {{0}}, 0};
+/* In elekloader's area with the rest of 0021 (mdpage, 2026-10-30): magic and hook stay at 0x40027a04 for 0022's router, as
+   registry patches (the first two words here are unused); only 0021 reads the rest. */
+struct jn_mailbox jn_mailbox __attribute__((section(".usr"), aligned(4)));
 
 EXTU int jn_sysex(const uint8_t *d, int32_t len) {
   struct jn_mailbox *q = &jn_mailbox;
@@ -1215,6 +1275,9 @@ EXTX void mod_desc(void) {
 #define US_FIRST 35            /* U1 = machine 35 .. U5 = 39 */
 #define US_REC 334             /* U(s+1)'s knob k (0..7) is record 334 + 8 s + k */
 #define US_SLOTS 5
+#define MD_S 7                 /* MD in the slots' tables: machine 42, records 390..397, the 1A cache us.c[7] */
+#define MD_ASK 0x40            /* 19 / 1A / 1B slot bytes 0x40..0x42: MD's labels for ENGINE 0..2 */
+#define MD_TAG 0x224du         /* the sound tag of a converted MD sound (MD-BUILTIN.md 2): 03 / 04 report it, stored slot 47 */
 #define US_SEL_TRACK (*(volatile uint8_t *)0x41318982u)
 #define US_NEW ((void *(*)(uint32_t))0x400829d4u)
 #define US_SLEEP ((void (*)(uint32_t))0x40098c18u)
@@ -1228,17 +1291,19 @@ EXTX void mod_desc(void) {
 /* [measured, research R3: SMPL word 17 at kit + 16 a track, the setter's index 17] */
 #define US_INDEX(k) (9 + (k))
 
+#define US_ENUM_MAX 36     /* names a list knob holds (16 until 0.4.0, rmp_format.h RMP_ENUM_MAX) */
+#define US_ASK_NAMES36 1   /* a slot's 19 what 0, arg: this Rytm caches 36 names; an older one sends 0, and the host serves it 16 (um.cpp) */
 /* What 1A says about a slot, and a knob (by P: k[p - 1]; p 0 = no such knob). */
 struct us_knob { uint8_t p, look, kind, role, min, max, def, ne; char lng[13]; char sht[5]; uint8_t pad[2]; };
 struct us_head { uint8_t gen, state, flags, nk; char name[11], sht[5], title[14]; uint16_t fp; };   /* fp: 1A part 0's */
-/* A slot's cache (from the firmware's allocator in the UI task, 1524 B - the allocator rounds it to
-   2048, 10 KB for the five; it does not clear it, us_init does): the committed 1A and up to eight enum
+/* A slot's cache (from the firmware's allocator in the UI task, 2804 B - the allocator rounds it to
+   4096, 24 KB for the six; it does not clear it, us_init does): the committed 1A and up to eight enum
    lists (1B list k: P(k+1)'s names; a ninth is dropped and not asked for). */
 struct us_cache {
   struct us_head h;
   struct us_knob k[16];
   uint8_t eknob[8], ecount[8];   /* which P index each enum list is for (0xff free), its count */
-  char en[8][16][8];
+  char en[8][US_ENUM_MAX][8];
 };
 /* 1A parts of one slot and generation, assembled in the MIDI task; got 0xff: complete, the UI task
    commits it (until then another part 0 is dropped: the Rytm asks again). */
@@ -1248,7 +1313,7 @@ struct us_stage { uint8_t slot, gen, nparts, got; struct us_head h; struct us_kn
    on by 2 with each 1C; the UI copies slot, mask and values when wseq is even and not yet taken
    (rseq), and uses the copy only when wseq did not move meanwhile (else the next tick copies again):
    a seqlock, so a 1C's values are never applied under another 1C's slot. */
-struct us_wb { uint8_t slot, wseq, rseq, pslot; uint16_t mask; uint8_t v[16]; uint8_t pgen, pad; uint32_t ptime; };
+struct us_wb { uint8_t slot, wseq, rseq, pslot; uint16_t mask; uint8_t v[16]; uint8_t pgen, pv; uint32_t ptime; };
 /* pslot, ptime (UI task, but us_loaded - also from the audio interrupt - clears pslot): the track was given slot pslot (1..5) by the user (the
    machine list's YES, the SOUND menu's MACHINE, the slot menu's assign) at audio block ptime (US_NOW); its
    defaults go in at the first UI tick that sees the slot's 1A current, if within US_PEND_WINDOW of the
@@ -1256,7 +1321,7 @@ struct us_wb { uint8_t slot, wseq, rseq, pslot; uint16_t mask; uint8_t v[16]; ui
    for a slot menu assign, the slot's cache generation when the answer came - the defaults wait for another one;
    0 for the machine list and the SOUND menu (us_pend). */
 struct us_ram {
-  struct us_cache *c[US_SLOTS];
+  struct us_cache *c[8];                 /* 0..4 U1..U5, 7 MD (MD_S: machine 42 = 35 + 7, records 334 + 8 x 7); 5, 6 none */
   struct us_stage *st;
   struct us_wb *wb;                      /* 12, one a track */
   uint8_t tgen[US_SLOTS], tinst, seen;   /* the Teensy's generations from 1D (seen: one arrived) */
@@ -1271,16 +1336,23 @@ struct us_ram {
 };
 struct us_ram us USR __attribute__((aligned(4)));   /* pointers: 4-aligned (the cave starts so) */
 /* Offsets the emulator tests read (tools/emu/us_emu.py: sym("us") + sym("us_off_...")), absolute symbols. */
-_Static_assert(__builtin_offsetof(struct us_ram, tgen) == 28 && __builtin_offsetof(struct us_ram, layer) == 41 &&
-               __builtin_offsetof(struct us_ram, ch) == 51 && __builtin_offsetof(struct us_ram, wb) == 24 &&
+_Static_assert(__builtin_offsetof(struct us_ram, tgen) == 40 && __builtin_offsetof(struct us_ram, layer) == 53 &&
+               __builtin_offsetof(struct us_ram, ch) == 63 && __builtin_offsetof(struct us_ram, wb) == 36 &&
                __builtin_offsetof(struct us_wb, pslot) == 3 && __builtin_offsetof(struct us_wb, pgen) == 22 && sizeof(struct us_wb) == 28 &&
                __builtin_offsetof(struct us_cache, en) == 500,
                "us_ram's layout: update the offsets below");
-__asm__(".globl us_off_tgen\n.set us_off_tgen, 28\n.globl us_off_layer\n.set us_off_layer, 41\n"
-        ".globl us_off_ch\n.set us_off_ch, 51\n.globl us_off_wb\n.set us_off_wb, 24\n"
+__asm__(".globl us_off_tgen\n.set us_off_tgen, 40\n.globl us_off_layer\n.set us_off_layer, 53\n"
+        ".globl us_off_ch\n.set us_off_ch, 63\n.globl us_off_wb\n.set us_off_wb, 36\n"
         ".globl us_wb_pslot\n.set us_wb_pslot, 3\n.globl us_wb_pgen\n.set us_wb_pgen, 22\n.globl us_wb_size\n.set us_wb_size, 28\n"
         ".globl us_off_en\n.set us_off_en, 500\n");
 /* The machine list's names (0x401befa4 + 8 m points here): rewritten in the UI task, whole names. */
+/* MD's state (md_tick). mode: the page the records show, 0 none yet, 1 DIGIDRUM's, 2 MD's. (A track's us_wb.pv, byte stores
+   as us_loaded's in the audio interrupt: its machine 42 came from the list's cursor, so its words are no old DIGIDRUM
+   sound: a YES sets them up fresh.) */
+struct md_ram { uint16_t key; uint8_t gap, lgap, mode; };
+USR uint32_t md_rec[8][3];   /* records 390..397's min, max, default as the registry made them (dd_descriptors) */
+USR struct md_ram md __attribute__((aligned(2)));
+USR volatile uint8_t md_wr;   /* track + 1 whose sound md_store is rewriting: ext_render holds its reports */
 char us_l1[12] USR = "USER 1";
 char us_l2[12] USR = "USER 2";
 char us_l3[12] USR = "USER 3";
@@ -1292,7 +1364,7 @@ char us_s3[5] USR = "U3";
 char us_s4[5] USR = "U4";
 char us_s5[5] USR = "U5";
 static char *const us_lnames[US_SLOTS] USD __attribute__((aligned(4))) = {us_l1, us_l2, us_l3, us_l4, us_l5};
-static char *const us_snames[US_SLOTS] USD __attribute__((aligned(4))) = {us_s1, us_s2, us_s3, us_s4, us_s5};
+static char *const us_snames[8] USD __attribute__((aligned(4))) = {us_s1, us_s2, us_s3, us_s4, us_s5, 0, 0, (char *)dd_short};
 /* Page 2's shared records (R2: read nowhere else by number): P9..P16 of whichever slot's page draws. */
 static const int16_t us_p2rec[8] USD = {438, 457, 458, 459, 460, 403, 404, 405};
 static const int16_t us_look_rec[4] USD = {REC_DIAL, REC_BIPOLAR, REC_LEVEL, REC_DIAL};   /* dial centred fader list */
@@ -1312,15 +1384,18 @@ static const char us_none[] USD = "---";
 /* rui1031: machine 52 MULTISAMPLE 0x30 (rytm-teensy core/machines.h kMultiMachine); rui1034: 46 WAVETABLE 0x28 and
    47 GRANULAR 0x38 (kWaveMachine, kGranMachine); rui1051: 48 LIVE IN 0x78 and 49 CHOP 0x18 (kLiveMachine, kChopMachine;
    0x18 was the host's GRAIN placeholder, never sent). */
+/* 7o: 50 MIDI, 0x80: not a flag on the wire (all 16 values of 0x78 are taken): ext_render reports it as 44 / 43, not 04 / 03 */
 static const uint8_t us_flag_tab[18] USD = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0, 0x00, 0x20,
-                                            0x28, 0x38, 0x78, 0x18, 0, 0x10, 0x30};
+                                            0x28, 0x38, 0x78, 0x18, 0x80, 0x10, 0x30};
 
 __attribute__((section(".extw"), noinline)) int32_t ext_vflag(int32_t m) {   /* .extw since rui1031 */
   return (uint32_t)(m - US_FIRST) < 18u ? us_flag_tab[m - US_FIRST] : 0; }
-/* The voice's sample layer plays: DIGIDRUM, or a user slot whose page 2 is the sample (READY). */
-US1 int32_t ext_layer_kept(int32_t vb) {
+/* The voice's sample layer plays: a user slot whose page 2 is the sample (READY), and machine 42 unless the sound is MD
+   (MD-BUILTIN.md: MD has none; an old DIGIDRUM sound's sample plays under the drum, as in 0.3.0). */
+extern volatile uint16_t us_tag[13];
+US1 int32_t ext_layer_kept(int32_t vb, int32_t voice) {
   int32_t m = vb & 0x78;
-  if (m == 0x40) return 1;
+  if (m == 0x40) return us_tag[OWNER(voice)] != MD_TAG;
   if (m >= 0x50 && m <= 0x70) return us.layer[(m - 0x50) >> 3];
   return 0;
 }
@@ -1352,11 +1427,15 @@ US1 static int32_t us_which(int32_t r, int32_t *knob) {
     *knob = (r - US_REC) & 7;
     return (r - US_REC) >> 3;
   }
+  if (r >= REC_DD && r < REC_DD + 8) {   /* MD's P1..P8 */
+    *knob = r - REC_DD;
+    return MD_S;
+  }
   for (i = 0; i < 8; ++i)
     if (us_p2rec[i] == r) {
       *knob = 8 + i;
       m = MACHINE_OF(US_SEL_TRACK > 11 ? 0 : US_SEL_TRACK) - US_FIRST;
-      return (uint32_t)m < US_SLOTS ? m : -1;
+      return (uint32_t)m < US_SLOTS || m == MD_S ? m : -1;
     }
   return -1;
 }
@@ -1520,12 +1599,18 @@ US1 static int32_t us_params(int32_t s) {   /* slot s's page 2 is knobs (P9..P16
    12 B, magic 'CHRD') with its set-up (records us_p2rec for machine m, idempotent) and its steps (ext_steps' answer for a
    record of its, 0 else); without it (the pointers 0) both machines keep stock's SMPL page. */
 struct us_cubox { uint32_t magic; void (*volatile setup)(int32_t m); int32_t (*volatile steps)(int32_t r); };
-struct us_cubox us_cubox __attribute__((section(".ush"), aligned(4))) = {0x43485244u, 0, 0};
+#define US_CUBOX (*(struct us_cubox *)0x4001a3dcu)   /* registry patches at the fixed address: magic, zero pointers */
+static int32_t md_old(void);   /* the selected track's sound is not MD (no tag): DIGIDRUM's page (md_tick) */
+/* 7o: us_cubox's steps with a negative record -1 - t: track t's reports held (the audio interrupt: 0026 only reads there) */
+US1 int32_t ext_midi_hold(int32_t t) {
+  int32_t (*h)(int32_t) = US_CUBOX.steps;
+  return h ? h(-1 - t) : 0;
+}
 US1 int32_t us_page_record(int32_t m, uint32_t k) {
   struct us_cache *c;
   void (*h)(int32_t);
   int32_t j, s = m - US_FIRST;
-  if ((m == FM_MACHINE || m == MS_MACHINE || (uint32_t)(m - WT_MACHINE) < WT_MACHINES) && (h = us_cubox.setup) != 0) {
+  if ((m == FM_MACHINE || m == MS_MACHINE || (uint32_t)(m - WT_MACHINE) < WT_MACHINES) && (h = US_CUBOX.setup) != 0) {
     us.p2_slot = 0;   /* a user slot's page sets its records up again */
     h(m);
     return m == FM_MACHINE && k < 4 ? 0 : us_p2rec[k];
@@ -1533,13 +1618,14 @@ US1 int32_t us_page_record(int32_t m, uint32_t k) {
   if (m == EXT_MACHINE) return ext_p2_order[k];
   if (m == DSP_MACHINE) return dsp_p2_order[k];
   if (m == DSPS_MACHINE) return dsps_p2_order[k];
-  if ((uint32_t)s >= US_SLOTS || !us_params(s)) return 0;
+  if (s == MD_S ? !us.c[s] || md_old() : (uint32_t)s >= US_SLOTS || !us_params(s)) return 0;   /* (an old sound: stock's SMPL page) */
   c = us.c[s];
   if (us.p2_slot != s + 1 || us.p2_gen != c->h.gen) {
     for (j = 0; j < 8; ++j) us_record(us_p2rec[j], s, 8 + j, US_INVOKER(40 + j));
     us.p2_slot = (uint8_t)(s + 1);
     us.p2_gen = c->h.gen;
   }
+  if (s == MD_S && !c->h.gen) return k < 3 ? us_p2rec[k] : -1;   /* no Sidecar yet: ENGINE, TYPE, LEV as P9..P11 */
   return c->k[8 + k].p && c->k[8 + k].lng[0] ? us_p2rec[k] : -1;   /* -1: unused (ext_page_record: record 0) */
 }
 US1 int32_t us_page_title(int32_t m) {
@@ -1547,6 +1633,7 @@ US1 int32_t us_page_title(int32_t m) {
   if (m == EXT_MACHINE) return (int32_t)ext_p2_title;
   if (m == DSP_MACHINE) return (int32_t)dsp_p2_title;
   if (m == DSPS_MACHINE) return (int32_t)dsps_p2_title;
+  if (s == MD_S) return md_old() ? 0 : (int32_t)(us_params(s) && us.c[s]->h.title[0] ? us.c[s]->h.title : dd_long);
   if ((uint32_t)s >= US_SLOTS || !us_params(s)) return 0;
   return (int32_t)(us.c[s]->h.title[0] ? us.c[s]->h.title : us.c[s]->h.name);
 }
@@ -1555,8 +1642,8 @@ US1 int32_t us_param_record(uint32_t index, uint32_t machine) {   /* a sample wo
   if (machine == EXT_MACHINE) return REC_P2 + j;
   if (machine == DSP_MACHINE) return REC_DSP2 + j;
   if (machine == DSPS_MACHINE) return j == 0 ? 39 : j == 2 ? REC_DSPS_SMP : REC_DSPS2 + j;   /* 1045: TUN stock's, SMP 441 */
-  if ((uint32_t)s < US_SLOTS && us_params(s)) return us_p2rec[j];
-  if (us_cubox.setup && (machine == MS_MACHINE || machine - WT_MACHINE < WT_MACHINES || (machine == FM_MACHINE && j >= 4)))
+  if (((uint32_t)s < US_SLOTS && us_params(s)) || (machine == DD_MACHINE && !md_old())) return us_p2rec[j];
+  if (US_CUBOX.setup && (machine == MS_MACHINE || machine - WT_MACHINE < WT_MACHINES || (machine == FM_MACHINE && j >= 4)))
     return us_p2rec[j];   /* rui1034: WAVETABLE 46, GRANULAR 47 as MULTISAMPLE; rui1051: LIVE IN 48, CHOP 49 */
   return 39 + j;
 }
@@ -1564,8 +1651,9 @@ US1 int32_t us_param_record(uint32_t index, uint32_t machine) {   /* a sample wo
 /* ---- the Teensy's messages (MIDI task, from 0022's router through the 'JUNO' mailbox) ---- */
 US2 static void us_meta_in(const uint8_t *d, int32_t len) {   /* 1A */
   struct us_stage *st = us.st;
-  int32_t s = d[6] - 1, gen = d[7], part = d[8], i;
-  if (!st || (uint32_t)s >= US_SLOTS || st->got == 0xff) return;   /* no buffer yet, or a commit pending */
+  int32_t s = d[6] - 1, gen = d[7], part = d[8], i, md = (uint32_t)(d[6] - MD_ASK) < 3u;
+  if (md) s = MD_S;   /* the built-in's labels (MD-BUILTIN.md 3): 0x40 + ENGINE; no slot state, no fingerprint */
+  if (!st || (!md && (uint32_t)s >= US_SLOTS) || st->got == 0xff) return;   /* no buffer yet, or a commit pending */
   if (part == 0x7f) return;                                         /* unchanged: the cache is current */
   if (part == 0) {
     if (len < 41 || d[12] < 1 || d[12] > 5) return;
@@ -1575,6 +1663,7 @@ US2 static void us_meta_in(const uint8_t *d, int32_t len) {   /* 1A */
     us_text_in(st->h.sht, d + 23, 4);
     us_text_in(st->h.title, d + 27, 13);
     st->h.fp = len >= 43 ? (uint16_t)((d[40] & 0x7f) << 7 | (d[41] & 0x7f)) : 0;   /* an older Teensy: untagged */
+    if (md) st->h.fp = (uint16_t)(d[6] - MD_ASK);   /* MD's cache keeps the ENGINE here: a built-in has no fp, none is ever stored */
     for (i = 0; i < 16; ++i) st->k[i].p = 0;
   } else {
     if (st->slot != s + 1 || st->gen != gen || !(st->got & 1) || part >= st->nparts) return;
@@ -1585,7 +1674,7 @@ US2 static void us_meta_in(const uint8_t *d, int32_t len) {   /* 1A */
       if (e[0] < 1 || e[0] > 16) continue;
       q = &st->k[e[0] - 1];
       q->p = e[0]; q->look = e[1]; q->kind = e[2]; q->role = e[3];
-      q->min = e[4]; q->max = e[5] < e[4] ? e[4] : e[5]; q->def = e[6]; q->ne = e[7] > 16 ? 16 : e[7];
+      q->min = e[4]; q->max = e[5] < e[4] ? e[4] : e[5]; q->def = e[6]; q->ne = e[7] > US_ENUM_MAX ? US_ENUM_MAX : e[7];
       us_text_in(q->lng, e + 8, 12);
       us_text_in(q->sht, e + 20, 4);
     }
@@ -1599,7 +1688,7 @@ US2 static void us_list_in(const uint8_t *d, int32_t len) {   /* 1B */
   uint8_t key;
   if (len < 12) return;
   if (lst < 16) {   /* P(lst+1)'s enum names: into the slot's cache, for its current generation */
-    struct us_cache *c = (uint32_t)s < US_SLOTS ? us.c[s] : 0;
+    struct us_cache *c = (uint32_t)s < US_SLOTS ? us.c[s] : (uint32_t)(d[6] - MD_ASK) < 3u ? us.c[MD_S] : 0;
     if (!c || c->h.gen != gen) return;
     for (e = 0; e < 8 && c->eknob[e] != lst; ++e) ;
     if (e == 8) {
@@ -1609,12 +1698,12 @@ US2 static void us_list_in(const uint8_t *d, int32_t len) {   /* 1B */
     }
     if (d[9]) {   /* a list starts: names not (yet) sent read --- */
       us_zero(c->en[e], sizeof c->en[e]);
-      c->ecount[e] = d[10] > 16 ? 16 : d[10];
+      c->ecount[e] = d[10] > US_ENUM_MAX ? US_ENUM_MAX : d[10];
       c->eknob[e] = (uint8_t)lst;
     }
     for (p = 11; p + 14 <= len - 1; p += 14) {
       char *n;
-      if (d[p] > 15) continue;
+      if (d[p] >= US_ENUM_MAX) continue;
       n = c->en[e][d[p]];
       for (j = 0; j < 7 && d[p + 1 + j]; ++j) n[j] = (char)d[p + 1 + j];
       n[j] = 0;
@@ -1736,7 +1825,9 @@ US2 static void us_init(void) {
   wb = (struct us_wb *)US_NEW(12 * sizeof(struct us_wb));
   if (wb) us_zero(wb, 12 * sizeof(struct us_wb));
   us.wb = wb;
-  for (s = 0; s < US_SLOTS; ++s) {
+  for (s = 0; s < 8; ++s)
+    for (e = 0; e < 3; ++e) md_rec[s][e] = (uint32_t)REC_ADDR(REC_DD + s)[2 + e];
+  for (s = 0; s <= MD_S; s = s == US_SLOTS - 1 ? MD_S : s + 1) {   /* U1..U5, MD */
     struct us_cache *c = (struct us_cache *)US_NEW(sizeof(struct us_cache));
     if (c) {
       us_zero(c, sizeof(struct us_cache));
@@ -1750,19 +1841,23 @@ US2 static void us_init(void) {
 US2 static void us_commit(void) {
   struct us_stage *st = us.st;
   int32_t s = st->slot - 1, e;
-  struct us_cache *c = (uint32_t)s < US_SLOTS ? us.c[s] : 0;
+  struct us_cache *c = (uint32_t)s < US_SLOTS || s == MD_S ? us.c[s] : 0;
   if (c) {
+    int32_t keep = s == MD_S && c->h.gen && c->h.fp == st->h.fp;   /* MD, the same ENGINE: its two name lists stay */
     us_copy(&c->h, &st->h, sizeof c->h);
     us_copy(c->k, st->k, sizeof c->k);
     /* this order matters - h (its generation) first, the lists' knobs reset after: us_list_in (MIDI task) re-checks
        h.gen after writing a list, so one written before the reset is freed by it, one under way after h sees the new
        generation and frees itself */
-    for (e = 0; e < 8; ++e) c->eknob[e] = 0xff;
-    us.layer[s] = c->h.state == 1 && !(c->h.flags & 1);
-    us_names(s);
-    us_slot_records(s);
+    if (!keep)
+      for (e = 0; e < 8; ++e) c->eknob[e] = 0xff;
+    if (s != MD_S) {
+      us.layer[s] = c->h.state == 1 && !(c->h.flags & 1);
+      us_names(s);
+      us.wait[s] = 0;
+    }
+    if (s != MD_S || md.mode == 2) us_slot_records(s);   /* (MD's labels only over MD's page, not DIGIDRUM's) */
     if (us.p2_slot == s + 1) us.p2_slot = 0;   /* page 2 set up again at its next draw */
-    us.wait[s] = 0;
   }
   st->got = 0;
 }
@@ -1777,7 +1872,7 @@ US2 void us_fetch(int32_t s) {
   for (k = 0; k < 50; ++k) {
     if (st->got == 0xff) us_commit();
     if (c->h.gen == us.tgen[s]) return;
-    if (k == 0 || k == 25) us_ask(s + 1, c->h.gen, 0, 0);
+    if (k == 0 || k == 25) us_ask(s + 1, c->h.gen, 0, US_ASK_NAMES36);
     US_SLEEP(10000);
   }
 }
@@ -1835,7 +1930,7 @@ US2 void us_tick(void) {
     int32_t have = c ? c->h.gen : 0;
     if (us.wait[s]) continue;
     if (!us.seen || us.tgen[s] != have) {
-      if (us_ask(s + 1, have, 0, 0)) {
+      if (us_ask(s + 1, have, 0, US_ASK_NAMES36)) {
         us.wait[s] = 200;
         us.gap = 10;
       }
@@ -1893,10 +1988,13 @@ US2 void us_tick(void) {
 #define US_TAG_OFF 0x5a
 #define US_TAG_PROJ(t)   ((volatile uint8_t *)(0x4076598du + 162u * (t)))
 USR volatile uint16_t us_tag[13];   /* track t: the tag of the sound its last trig copied (us_tag_copy) */
+USR volatile uint16_t us_ar[12];    /* 7ae: track t: the arpeggiator code ext_render last said before a trig */
 /* sound_load (a2 live, a3 the stored record; after its memset, before the 42 slots are read) */
 UST void us_tag_load_c(volatile uint8_t *live, volatile uint8_t *st) {
   uint32_t tag = (uint32_t)st[0x7a] << 8 | st[0x7b];
-  if ((uint32_t)st[0x7c] - US_FIRST >= US_SLOTS)
+  if (st[0x7c] == DD_MACHINE) {   /* MD: only its own tag; anything else is an old DIGIDRUM sound, converted at the next tick */
+    if (tag != MD_TAG) tag = 0;
+  } else if ((uint32_t)st[0x7c] - US_FIRST >= US_SLOTS)
     tag = 0;
   else if (!tag && (st[0x6e] | st[0x6f])) {   /* tagged the old way (index 0): migrate */
     tag = ((uint32_t)st[0x6e] << 8 | st[0x6f]) & 0x3fff;
@@ -1906,12 +2004,22 @@ UST void us_tag_load_c(volatile uint8_t *live, volatile uint8_t *st) {
     st[0x7b] = (uint8_t)tag;
   }
   if (tag > 0x3fff) tag = 0;
-  live[0x6e] = (uint8_t)(tag >> 8);
+  /* 7ae: the arpeggiator's code (rytm-teensy core/arp/arp.h), 10 bits, opaque here: every sound, whatever its machine. Stored slot 46
+     (+0x78/+0x79), live +0x6d and the two bits above the tag (the last spare bits of a live sound). An old sound's slot is 0, OFF;
+     stock zeroes it at its next save. */
+  {
+    uint32_t ar = (uint32_t)st[0x78] << 8 | st[0x79];
+    if (ar > 0x3ff) ar = 0;
+    live[0x6d] = (uint8_t)ar;
+    live[0x6e] = (uint8_t)(tag >> 8 | ar >> 8 << 6);
+  }
   live[0x6f] = (uint8_t)tag;
 }
 /* sound_save (a2 the stored record, a3 live; after its memset of slots 0..47) */
 UST void us_tag_save_c(volatile uint8_t *st, const volatile uint8_t *live) {
-  if ((uint32_t)live[0x68] - US_FIRST < US_SLOTS) {
+  st[0x78] = live[0x6e] >> 6;   /* 7ae: us_tag_load_c */
+  st[0x79] = live[0x6d];
+  if ((uint32_t)live[0x68] - US_FIRST < US_SLOTS || live[0x68] == DD_MACHINE) {
     st[0x7a] = live[0x6e] & 0x3f;
     st[0x7b] = live[0x6f];
   }
@@ -1919,7 +2027,7 @@ UST void us_tag_save_c(volatile uint8_t *st, const volatile uint8_t *live) {
 /* 0x4011f558 copies sound a2 into track d2's live array (the trig loop: kit sound or sound lock; kit loads) */
 UST void us_tag_copy_c(const volatile uint8_t *snd, uint32_t t) {
   if (t < 13)
-    us_tag[t] = (uint32_t)snd[0x68] - US_FIRST < US_SLOTS ? (uint16_t)((snd[0x6e] << 8 | snd[0x6f]) & 0x3fff) : 0;
+    us_tag[t] = (uint32_t)snd[0x68] - US_FIRST < US_SLOTS || snd[0x68] == DD_MACHINE ? (uint16_t)((snd[0x6e] << 8 | snd[0x6f]) & 0x3fff) : 0;
 }
 /* The three detours' stubs: the displaced instructions re-emitted verbatim after the call. */
 __asm__(
@@ -1950,6 +2058,13 @@ __asm__(
 "	move.l	%d2,-(%sp)\n"
 "	pea	20(%a2)\n"
 "	jmp	0x4011f590\n"
+"	.globl	us_snd_init\n"
+"us_snd_init:\n"                          /* 0x400122e6 in sound_init_defaults (a2 the sound): lea 0x40007028,%a4 */
+"	clr.b	109(%a2)\n"                  /* 7ae: a fresh sound's spare bytes are the allocator's: no code, no tag */
+"	clr.b	110(%a2)\n"
+"	clr.b	111(%a2)\n"
+"	lea	0x40007028,%a4\n"
+"	jmp	0x400122ec\n"
 "	.popsection\n");
 /* IPL 7 on (sr: the old SR) and back: ColdFire has no ori to SR, so through a register */
 #define US_MASK(sr) \
@@ -1979,7 +2094,7 @@ US8 static void us_untag(int32_t t, int32_t s) {
   volatile uint8_t *w;
   US_MASK(sr);
   if ((w = us_kit_sound(t, s, us.lgen)) != 0) {
-    w[US_TAG_OFF] = 0;
+    w[US_TAG_OFF] &= 0xc0;            /* (7ae: the two bits above the tag are the arpeggiator's) */
     w[US_TAG_OFF + 1] = 0;
     us_tag[t] = 0;
     US_TAG_PROJ(t)[0] = 0;
@@ -2042,7 +2157,7 @@ US6 static void us_defaults(int32_t t, int32_t s, uint8_t g) {
      copy. */
   US_MASK(sr);
   if ((w = us_kit_sound(t, s, g)) != 0) {
-    w[US_TAG_OFF] = (uint8_t)(fp >> 8);
+    w[US_TAG_OFF] = (uint8_t)((w[US_TAG_OFF] & 0xc0) | fp >> 8);
     w[US_TAG_OFF + 1] = (uint8_t)fp;
     us_tag[t] = fp;
     US_TAG_PROJ(t)[0] = (uint8_t)(fp >> 8);
@@ -2057,7 +2172,7 @@ US8 static void us_pend(int32_t t) {
   struct us_wb *w = us.wb;
   if ((uint32_t)t >= 12) return;
   s = MACHINE_OF(t) - US_FIRST;
-  if ((uint32_t)s >= US_SLOTS || !w) return;
+  if (((uint32_t)s >= US_SLOTS && s != MD_S) || !w) return;   /* MD: md_tick's fresh set-up */
   w += t;
   w->pslot = (uint8_t)(s + 1);
   w->pgen = 0;
@@ -2070,18 +2185,42 @@ US8 static void us_choose(int32_t t) {
   int32_t s = (t < 12 && t >= 0) ? MACHINE_OF(t) - US_FIRST : -1;
   us_pend(t);
   if ((uint32_t)s < US_SLOTS) us_untag(t, s);
+  if (s == MD_S && us.wb) us.wb[t].pv = 0;   /* (the note did its work) */
 }
 /* The machine list closes (UI task): after a preview in this list, YES chose its machine. */
 US3 void us_confirm(int32_t yes) {
   int32_t t = us.ch - 1;
   us.ch = 0;
-  if (yes && (uint32_t)t < 12) us_choose(t);
+  if (yes && (uint32_t)t < 12) {
+    us_choose(t);
+    return;
+  }
+  if (!yes) {   /* NO put the machine back */
+    if (us.wb)
+      for (t = 0; t < 12; ++t) us.wb[t].pv = 0;
+    return;
+  }
+  /* YES with no cursor move: on 42, a sound not MD yet is the user's confirmation: converted (pslot 9), or, when the
+     machine came from a preview the list was left in by GLOBAL or the TRACK menu, set up fresh (us_pend: pslot 8) */
+  t = US_SEL_TRACK;
+  if (t > 11 || MACHINE_OF(t) != DD_MACHINE || !us.wb) return;
+  if (us.wb[t].pv) {
+    us_choose(t);
+    return;
+  }
+  us.wb[t].pslot = MD_S + 2;
 }
 /* 0x400bed62 set track t's machine (UI task; ret: its caller): the machine list's cursor previews (noted for
    the list's YES), the SOUND menu's MACHINE item chooses. */
 US5 void us_step(int32_t t, uint32_t ret) {
-  if (ret == 0x400d40dau) us.ch = (uint8_t)(t + 1);
-  else if (ret == 0x400ef67eu) us_choose(t);
+  if (ret == 0x400d40dau) {
+    us.ch = (uint8_t)(t + 1);
+    if ((uint32_t)t < 12 && us.wb) us.wb[t].pv = MACHINE_OF(t) == DD_MACHINE;
+  } else if (ret == 0x400ef67eu) {
+    int32_t (*h)(int32_t) = US_CUBOX.steps;
+    us_choose(t);
+    if (h) h(-13 - t);   /* 7o: 0026 is told too: a choice here has no list for it to see */
+  }
 }
 /* 0x4011f6bc ran: a kit or a project was loaded (RELOAD KIT, LOAD KIT, a pattern's other kit, LOAD PROJECT;
    not SAVE KIT, a machine choice or a knob [measured, R12]). The tracks waiting for a choice's defaults keep
@@ -2097,6 +2236,7 @@ US5 void us_loaded(void) {
     for (t = 12; t; --t, ++w) {
       __asm__("" : "+d"(t));   /* a down-counter, shorter than an end pointer */
       w->pslot = 0;
+      w->pv = 0;
     }
 }
 /* Every UI tick (us_tick): page 2's shared records set up for the selected track's slot (us_param_record,
@@ -2136,7 +2276,7 @@ US6 void us_tick3(void) {
     struct us_wb *w = &u->wb[t];
     const struct us_cache *c;
     uint8_t p = *(volatile uint8_t *)&w->pslot;
-    if (!p) continue;
+    if (!p || p > US_SLOTS) continue;   /* (MD's: md_tick) */
     s = p - 1;
     c = u->c[s];
     if (US_NOW() - w->ptime >= US_PEND_WINDOW || MACHINE_OF(t) != US_FIRST + s) {
@@ -2426,8 +2566,8 @@ __asm__(
  * 0029 finds it through ext_stepbox (.usm, a fixed 8 B claim at the end of .us2's cave): magic 'XSTP', the
  * function. UI task only (0029's wrappers); reads the caches without writing them.
  * ------------------------------------------------------------------------- */
-static const uint16_t ext_step_tab[7][2] USD = {
-    {REC_P1, 0x100 | EXT_MODELS}, {REC_DD, 0x100 | DD_MODELS},   /* PLAITS / DIGIDRUM ENG */
+static const uint16_t ext_step_tab[6][2] USD = {
+    {REC_P1, 0x100 | EXT_MODELS},                                 /* PLAITS ENG */
     {REC_DSP, 0x103}, {416, 0x103}, {REC_DSP + 4, 0x10b},         /* DAISYSP / DSP SAMPLE ENG, INP */
     {REC_DSP2 + 3, 0x102}, {REC_DSPS2 + 3, 0x107}};               /* OUT (VOICE / MAIN), MOD (not in diag) */
 static int32_t ext_steps_us(int32_t r, int32_t n);
@@ -2435,10 +2575,11 @@ US3 int32_t ext_steps(int32_t r) {
   struct jn_mailbox *q = &jn_mailbox;
   int32_t k, n;
   uint32_t diag;
-  for (k = 0; k < 7; ++k)
+  if (r == REC_DD) return md.mode == 1 ? 0x100 | DD_MODELS : 0;   /* DIGIDRUM's ENG on an old sound; MD's P1 is a dial */
+  for (k = 0; k < 6; ++k)
     if (ext_step_tab[k][0] == r) {
       __asm__("movel #P_DIAG,%0" : "=d"(diag));
-      return k == 6 && diag ? 0 : ext_step_tab[k][1];
+      return k == 5 && diag ? 0 : ext_step_tab[k][1];
     }
   n = q->valid && q->total ? q->total : 0;
   if (r == REC_JN || r == REC_FM)   /* JUNO / FM PAT: the project's list, else all 128 */
@@ -2452,7 +2593,7 @@ US6 static int32_t ext_steps_us(int32_t r, int32_t n) {
   const struct us_cache *c;
   const struct us_knob *u;
   s = us_which(r, &k);
-  if (s < 0) return us_cubox.steps ? us_cubox.steps(r) : 0;   /* 0026's records (rui1031), else continuous */
+  if (s < 0) return US_CUBOX.steps ? US_CUBOX.steps(r) : 0;   /* 0026's records (rui1031), else continuous */
   if (!(c = us.c[s]) || !c->h.gen || !(u = &c->k[k])->p) return 0;
   if (u->kind == 2) {   /* enum: equal zones */
     for (e = 0; e < 8 && c->eknob[e] != k; ++e) ;
@@ -2474,7 +2615,7 @@ __attribute__((section(".ext4"), noinline)) static void us_live_ask(struct us_ra
     struct us_cache *c = u->c[s];
     int32_t have = c ? c->h.gen : 0;
     if (u->wait[s]) --u->wait[s];
-    else if (u->seen && u->tgen[s] != have && us_ask(s + 1, have, 0, 0)) u->wait[s] = 50;
+    else if (u->seen && u->tgen[s] != have && us_ask(s + 1, have, 0, US_ASK_NAMES36)) u->wait[s] = 50;
   }
 }
 /* ---- 25 SLOT PRINTS (slot-resolve, 2026-10-19; rytm-teensy sim/protocol.py slot_prints): which plugin
@@ -2496,7 +2637,7 @@ __attribute__((section(".ext4"), noinline)) static void us_live_ask(struct us_ra
 #define SP_MAX     16
 struct sp_ram { uint32_t load, sum; uint8_t left, seq, rep, pad; };   /* rep >= SP_REPEAT: send */
 USR struct sp_ram sp __attribute__((aligned(4)));
-_Static_assert(__builtin_offsetof(struct us_ram, lgen) == 52 && __builtin_offsetof(struct sp_ram, left) == 8 &&
+_Static_assert(__builtin_offsetof(struct us_ram, lgen) == 64 && __builtin_offsetof(struct sp_ram, left) == 8 &&
                __builtin_offsetof(struct sp_ram, seq) == 9 && __builtin_offsetof(struct sp_ram, rep) == 10,
                "sp_tick's offsets (asm, below)");
 /* In assembly: gcc's take was 686 B, the cave's tail 548. As C:
@@ -2618,7 +2759,7 @@ __asm__(
 "	lea	-96(%sp),%sp\n"
 "	movem.l	%d2-%d3/%a2-%a3,80(%sp)\n"
 "	lea	sp,%a2\n"                 /* load 0, sum 4, left 8, seq 9, rep 10 */
-"	mvz.b	us+52,%d0\n"              /* h = us.lgen */
+"	mvz.b	us+64,%d0\n"              /* h = us.lgen */
 "	lea	0x407c89d3,%a0\n"         /* PROJECT_NAME */
 "	moveq	#16,%d2\n"
 "1:	mvz.b	(%a0)+,%d1\n"
@@ -2736,9 +2877,178 @@ __asm__(
 "	rts\n"
 "	.popsection\n");
 void sp_tick(void);
-US4 int32_t us_live(void) {
+/* ---------------------------------------------------------------------------
+ * MD (backlog 7k; the Sidecar's docs/MD-BUILTIN.md): machine 42, the combined mdkit drum machine, built in on the host.
+ * P1..P8 the TYPE's controls (SRC), P9 ENGINE, P10 TYPE, P11 LEV (SMPL; P12..P16 unused). The labels are the host's
+ * (19 / 1A / 1B on slots 0x40 + ENGINE into the slots' cache code as "slot" MD_S), the defaults below compiled in, as a
+ * set-up needs no Sidecar.
+ * The tag word (sound slot 47 / live +0x6e) is the marker: 0x224D = this sound is in MD's layout; the reports then carry
+ * it, else tag 0 and the host plays DIGIDRUM's layout through the same mapping as md_setup's.
+ * A sound becomes MD only by the user's action (the owner's decision 2026-10-31: a pattern's p-locks stay on their knobs,
+ * so a conversion can change how a pattern sounds): a list's YES or the SOUND menu's step onto 42 from another machine sets
+ * FM BD up fresh; YES with no cursor move on an old sound converts it. No load or scan converts: an untagged sound
+ * keeps playing, and showing DIGIDRUM's page, as in 0.3.0.
+ * The second marker: slot 47 is lost by a save on 0.3.x or stock, or a transfer. The fractions of P15 and P16 (sample words,
+ * saved by everyone, unused by MD, ignored by the host) hold MD_FR15 / 16: marker and no tag = the tag back at the next tick.
+ * ------------------------------------------------------------------------- */
+/* MD-BUILTIN.md section 4, generated from plugins/mdkit (md-defaults) */
+static const uint8_t md_defaults[30][8] USD = {
+    {0, 64, 32, 127, 35, 14, 64, 24}, {27, 60, 14, 79, 0, 5, 127, 29}, {25, 50, 127, 111, 5, 4, 79, 0},
+    {50, 40, 127, 24, 115, 36, 87, 8}, {67, 10, 8, 15, 38, 25, 59, 0}, {54, 61, 92, 56, 17, 112, 42, 0},
+    {26, 54, 26, 47, 0, 86, 93, 75}, {64, 72, 96, 92, 45, 32, 64, 0},
+    {64, 35, 100, 0, 127, 100, 0, 0}, {64, 64, 10, 40, 90, 80, 80, 0}, {20, 20, 127, 127, 127, 80, 90, 64},
+    {0, 64, 127, 0, 0, 0, 0, 0}, {90, 0, 72, 96, 64, 0, 0, 0}, {90, 48, 64, 64, 64, 64, 0, 0},
+    {64, 70, 96, 32, 127, 127, 64, 127}, {64, 70, 90, 32, 127, 127, 64, 127}, {64, 70, 100, 30, 127, 127, 60, 127},
+    {64, 64, 0, 0, 0, 0, 0, 0}, {35, 7, 0, 64, 127, 0, 100, 90}, {70, 25, 50, 30, 64, 32, 0, 0},
+    {50, 100, 7, 127, 40, 64, 0, 90}, {50, 0, 50, 0, 0, 0, 0, 0}, {100, 50, 127, 127, 0, 0, 0, 0},
+    {0, 8, 0, 127, 0, 0, 0, 0}, {50, 60, 8, 127, 0, 0, 0, 0}, {127, 0, 0, 127, 0, 127, 0, 0},
+    {32, 32, 0, 0, 64, 64, 64, 64}, {64, 32, 64, 0, 64, 0, 0, 0}, {64, 32, 32, 100, 0, 0, 0, 0},
+    {60, 65, 41, 62, 91, 44, 56, 58}};
+/* DIGIDRUM's zone z -> {set, P9 ENGINE, P10 TYPE, how many controls (P2..) stay} */
+static const uint8_t md_map[DD_MODELS][4] USD = {
+    {0, 0, 0, 7}, {1, 0, 16, 7}, {2, 0, 32, 7}, {3, 0, 48, 7}, {4, 0, 64, 7}, {5, 0, 80, 7}, {6, 0, 96, 7}, {7, 0, 112, 7},
+    {21, 86, 40, 3}, {22, 86, 50, 3}, {27, 86, 99, 6}};
+#define US_TAG_READ(w) ((uint32_t)((w)[US_TAG_OFF] << 8 | (w)[US_TAG_OFF + 1]) & 0x3fff)
+#define MD_FR15 0x4d       /* the fraction bytes of P15, P16: "MD", a second marker beside the tag */
+#define MD_FR16 0x44
+#define MD_MARKED(w) ((w)[18 + 28] == 0 && (w)[19 + 28] == MD_FR15 && (w)[18 + 30] == 0 && (w)[19 + 30] == MD_FR16)
+static int32_t md_old(void) {
+  volatile uint8_t *w = US_TAG_KIT(US_KIT(), US_SEL_TRACK > 11 ? 0 : US_SEL_TRACK);
+  return US_TAG_READ(w) != MD_TAG;
+}
+/* The tag into track t's kit sound and project copy, with the mask on and w the kit sound */
+static void md_tag_store(volatile uint8_t *w, int32_t t) {
+  w[US_TAG_OFF] = (uint8_t)((w[US_TAG_OFF] & 0xc0) | MD_TAG >> 8);
+  w[US_TAG_OFF + 1] = MD_TAG & 0xff;
+  US_TAG_PROJ(t)[0] = MD_TAG >> 8;
+  US_TAG_PROJ(t)[1] = MD_TAG & 0xff;
+}
+/* Track t's sixteen words, the marker and the tag, as us_defaults: while no load moved the generation from g and the
+   track, live and in the applied kit, plays MD. ext_render holds the track's reports until the live words and the
+   report's tag are all in. 1: done. */
+US6 static int32_t md_store(int32_t t, const uint8_t *v, uint8_t g) {
+  uint32_t sr;
+  volatile uint8_t *w;
+  int32_t i;
+  md_wr = (uint8_t)(t + 1);
+  US_MASK(sr);
+  if ((w = us_kit_sound(t, MD_S, g)) != 0) {
+    for (i = 0; i < 16; ++i) {
+      w[18 + 2 * i] = v[i];
+      w[19 + 2 * i] = i == 14 ? MD_FR15 : i == 15 ? MD_FR16 : 0;
+    }
+    md_tag_store(w, t);
+  }
+  US_UNMASK(sr);
+  if (w) {
+    for (i = 0; i < 16; ++i)
+      us_set(t, US_INDEX(i), i < 8 ? REC_DD + i : us_p2rec[i - 8], v[i] << 8 | (i == 14 ? MD_FR15 : i == 15 ? MD_FR16 : 0));
+    US_MASK(sr);
+    if ((w = us_kit_sound(t, MD_S, g)) != 0) us_tag[t] = MD_TAG;
+    US_UNMASK(sr);
+  }
+  md_wr = 0;
+  return w != 0;
+}
+/* The sound of track t in MD's words: an old DIGIDRUM sound (w its kit sound) by its ENG zone, or (w 0) FM BD fresh. */
+US6 static int32_t md_setup(int32_t t, const volatile uint8_t *w, uint8_t g) {
+  uint8_t v[16];
+  const uint8_t *m;
+  int32_t i, z = 0;
+  us_zero(v, 16);
+  if (w) {
+    z = ((w[18] & 0x7f) * DD_MODELS) >> 7;
+    m = md_map[z];
+  } else {
+    m = md_map[0];
+  }
+  us_copy(v, md_defaults[m[0]], 8);
+  if (w)
+    for (i = 0; i < m[3]; ++i) v[i] = w[20 + 2 * i] & 0x7f;
+  v[8] = m[1];
+  v[9] = m[2];
+  v[10] = 100;
+  return md_store(t, v, g);
+}
+/* UI task, 20 Hz (us_live): the set-ups the user confirmed (kept pending until they ran), a lost tag back from the
+   marker, then the page: the selected track's records as DIGIDRUM's or MD's, by its sound's tag, and on MD's the labels
+   (MD-BUILTIN.md 3): 19 on a change of its ENGINE or TYPE value, again every 2 s (a host that came up later; the answer
+   "unchanged" costs 10 B), then the two lists its 1A lacks. A track the list's cursor is previewing is left alone: a
+   list left by GLOBAL or the TRACK menu keeps its note on that track only. */
+US6 static void md_tick(struct us_ram *u) {
+  struct md_ram *q = &md;
+  struct us_wb *b = u->wb;
+  struct us_cache *c = u->c[MD_S];
+  volatile uint8_t *w;
+  uint32_t sr;
+  uint8_t g = *(volatile uint8_t *)&u->lgen;
+  int32_t t, e, v, k, key;
+  if (!b || !c) return;
+  for (t = 0; t < 12; ++t, ++b) {
+    uint8_t p = b->pslot;
+    w = US_TAG_KIT(US_KIT(), t);
+    if (MACHINE_OF(t) != DD_MACHINE) {
+      if (p > US_SLOTS) b->pslot = 0;   /* it left 42 before its set-up ran */
+      continue;
+    }
+    if (w[0x54] != DD_MACHINE || u->ch == t + 1) continue;
+    if (US_TAG_READ(w) != MD_TAG && MD_MARKED(w)) {
+      US_MASK(sr);
+      if ((w = us_kit_sound(t, MD_S, g)) != 0) {
+        md_tag_store(w, t);
+        us_tag[t] = MD_TAG;
+      }
+      US_UNMASK(sr);
+      w = US_TAG_KIT(US_KIT(), t);
+    }
+    if (p > US_SLOTS && (p == MD_S + 2 && US_TAG_READ(w) == MD_TAG ? 1 : md_setup(t, p == MD_S + 2 ? w : 0, g))) b->pslot = 0;
+  }
+  t = US_SEL_TRACK;
+  if (t > 11) t = 0;
+  w = US_TAG_KIT(US_KIT(), t);
+  if (MACHINE_OF(t) != DD_MACHINE || u->ch == t + 1) return;
+  if (US_TAG_READ(w) != MD_TAG) {
+    if (q->mode != 1) {
+      q->mode = 1;
+      u->p2_slot = 0;
+      dd_descriptors();
+    }
+    return;
+  }
+  if (q->mode != 2) {
+    q->mode = 2;
+    us_slot_records(MD_S);
+    q->key = 0;
+  }
+  v = w[36] & 0x7f;                            /* P10 */
+  e = ((w[34] & 0x7f) * 3) >> 7;               /* P9's zone */
+  key = e << 8 | v | 0x8000;
+  if (key != q->key) {
+    q->key = (uint16_t)key;
+    q->gap = 0;
+  }
+  if (q->gap) --q->gap;
+  else if (us_ask(MD_ASK + e, c->h.gen, 0, v)) q->gap = 40;
+  if (q->lgap) --q->lgap;
+  else if (c->h.gen && c->h.fp == (uint32_t)e && c->h.state == 1)
+    for (k = 8; k < 10; ++k)
+      if (c->k[k].ne && !us_has_enum(c, k)) {
+        if (us_ask(MD_ASK + e, c->h.gen, 1, k)) q->lgap = 4;
+        break;
+      }
+}
+/* The machine list is among the views (MachineListView, 0026's walk of ctrl's list [measured, rui1026]) */
+US4 static int32_t md_list_open(const uint8_t *ctrl) {
+  const uint32_t *n = *(const uint32_t *const *)(ctrl + 28);
+  int32_t k;
+  for (k = 0; k < 32 && (const uint8_t *)n != ctrl + 20; ++k, n = (const uint32_t *)n[0])
+    if (n[2] && *(const uint32_t *)n[2] == 0x401e5bf4u) return 1;
+  return 0;
+}
+US4 int32_t us_live(void *ctrl) {
   struct us_ram *u = &us;
   int32_t r = 0;
+  if (u->ch && !md_list_open(ctrl)) u->ch = 0;   /* left by GLOBAL or the TRACK menu: no close ran; the preview stays, as stock's */
   if (!u->ch) sp_tick();   /* 25 SLOT PRINTS (.us7, above); not while the machine list previews a machine (us_step) */
   if (!u->done) return 0;
   if (u->st && u->st->got == 0xff) {
@@ -2746,8 +3056,8 @@ US4 int32_t us_live(void) {
     r = 1;
   }
   us_live_ask(u);
+  md_tick(u);
   return r;
 }
-struct ext_stepbox { uint32_t magic; int32_t (*steps)(int32_t); int32_t (*live)(void); };
-const struct ext_stepbox ext_stepbox __attribute__((section(".usm"), aligned(4))) = {0x58535450u, ext_steps, us_live};
+/* ext_stepbox (0x4001a23c: 'XSTP', ext_steps, us_live): registry patches at the fixed address, the two pointers ptr sites */
 #endif   /* EXT_SLOTS */

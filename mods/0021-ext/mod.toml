@@ -53,6 +53,10 @@ silent on the Teensy and shows !NAME. Needs 0014 with funcgen=0 and test=0;
 excludes 0002, 0003, 0004, 0006, 0009, 0013 and 0020 (caves, hooks, sound index 0).
 Tested in rytm-emu and with the real Teensy over the bridge; never on a Rytm
 (design.md, "User slots").
+
+With slots=1 the mod links into elekloader's DDR area (--area-elek 0021-ext, needs 0027), its
+fixed-address boxes staying as registry patches (design.md, "0021 in the area"). Machine 42 is MD
+there (design.md, "MD"); DIGIDRUM stays only in the slots=0 image.
 """
 
 [sources]
@@ -74,4 +78,5 @@ slots = 0
 shared = false
 symbols = []
 # the Sidecar's messages (user slots, names) reach it only through 0022's SysEx router; elekloader's `requires` (with what build.py finds in the bytes; tools/build.py cross_refs)
-mods = ["0022-looper"]
+# 0029: its ev_tick runs us_live, so md_tick (MD's set-ups, its page) and the live slot refresh (build.py refuses slots=1 without it)
+mods = ["0022-looper", "0029-sendfx-ui"]

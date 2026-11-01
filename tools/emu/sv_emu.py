@@ -370,14 +370,14 @@ def t_dsp(e):
     print(f"  machine {s['mach']}; last 2A {a[-1]['vals'] if a else None}; words {[v >> 7 for v in want]}")
     check("dsp: BD is DSP SAMPLE (45) and its last 2A (all 16) equals the knob words 0..15", s["mach"] == 45 and
           bool(a) and a[-1]["n"] == 16 and a[-1]["vals"] == want, (a[-1] if a else None, want))
-    # ENG (knob A) is a 3-zone list knob (0029 steps it; the page's value is the step): turned, the 2A carries the
-    # stored value (the zone's lowest, as the word settles to), not the step index
-    r2 = e.run("dsp-eng", 2500, [(300, "turn", "0:+8", 6, 50)], snap=r["snap"])
-    a = [x for x in evs(r2, "v2a") if x["first"] == 0 and x["n"] == 1]
+    # ENG (SMPL knob D since 7h) is a 3-zone list knob (0029 steps it; the page's value is the step): turned, the settled kit
+    # word is a stop, and the 2A on the view's return carries the word; SMP is knob A: its turn reports P11, not P1
+    r2 = e.run("dsp-eng", 2800, [(300, "press", "SMPL"), (600, "turn", "3:+8", 6, 50), (1600, "press", "SRC")], snap=r["snap"])
     w = e.kword(r2["snap"][0], 0, 0)
-    print(f"  ENG 2As {[x['vals'][0] >> 7 for x in a]}; word {w.hex()}")
-    check("dsp: ENG turned: 2A 0 0 1 with the stored value, the last one the settled kit word",
-          bool(a) and a[-1]["vals"][0] == ((w[0] & 0x7f) << 7 | w[1] >> 1) and w[0] != 80, (a, w.hex()))
+    a = [x for x in evs(r2, "v2a")]
+    print(f"  ENG word {w.hex()}; 2As {[(x['first'], x['n']) for x in a]}")
+    check("dsp: ENG, SMPL knob D, steps to a stop; the 2A carries it as P1", w[0] in (43, 86) and bool(a) and a[-1]["n"] == 16 and
+          a[-1]["vals"][0] >> 7 == w[0], (a[-1:], w.hex()))
 
 
 def sx(cmd, *body):

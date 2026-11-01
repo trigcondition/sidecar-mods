@@ -30,8 +30,8 @@ ST_PAT = 0x405c8f38               # pc_emu.py: bank pattern i's stored copy at +
 DIALOGS = ["YES@2600M", "NO@3000M", "NO@3400M", "NO@3800M"]   # us_base.sh's cold-boot answers
 B_REC_P1 = 0x401bf918 + 0x34 * 398          # the shared SRC record P1 (398): +0x0c max, +0x14 the fine flag
 REC_FINE = B_REC_P1 + 0x14
-DOWNS = dict(wt=25, gr=26, ms=30, ds=24)   # us_ui.json: DSP SAMPLE 24, WAVETABLE 25, GRANULAR 26, (1051: LIVE IN 27, CHOP 28,) DAISYSP 29, MULTISAMP last
-MACH = dict(wt=46, gr=47, ms=52, ds=45)
+DOWNS = dict(wt=25, gr=26, ms=31, ds=24, fm=20, jn=21)   # us_ui.json: DSP SAMPLE 24, WAVETABLE 25, GRANULAR 26, (1051: LIVE IN 27, CHOP 28, 7o: MIDI 29,) DAISYSP 30, MULTISAMP last
+MACH = dict(wt=46, gr=47, ms=52, ds=45, fm=40, jn=41)
 
 
 class Emu(S.Emu):
@@ -669,7 +669,7 @@ def smp(e, snap, t=0):
 
 
 def t_dspknob(e):
-    """DSP SAMPLE (BD), its SMPL page, SMP (knob D) with no host frame: the word C005 (0x0540) set by 48 0 10 5 <C>,
+    """DSP SAMPLE (BD), its SMPL page, SMP (knob A) with no host frame: the word C005 (0x0540) set by 48 0 10 5 <C>,
     answered 0; turned up / down one detent (3 x 8 counts, as t_knob) it steps the index and keeps bank C (0x0640 /
     0x0440), never opens stock's
     SAMPLE SLOT list (SampleListView); its 2A P11 carries the 14 bits. The records: SMP 441 (index 19, max 0x7fe0, fine
@@ -679,7 +679,7 @@ def t_dspknob(e):
     check("dspknob: 48 0 10 5 <C> -> word 19 = 0x0540, answered 0", smp(e, r["snap"][0]) == 0x0540 and
           [x["status"] for x in evs(r, "w48")] == [0], (hex(smp(e, r["snap"][0])), evs(r, "w48")))
     for d, want in (("+8", 0x0640), ("-8", 0x0440)):
-        r = e.run(f"dspknob{d}", 3500, [(600, "press", "SMPL"), (1200, "turn", f"3:{d}", 3, 100)], snap=sn,
+        r = e.run(f"dspknob{d}", 3500, [(1200, "turn", f"0:{d}", 3, 100)], snap=sn,
                   sends=[(300, w48s(5, 2))])
         w = smp(e, r["snap"][0])
         b2 = [x["vt"] for x in evs(r, "v2b")]
@@ -697,15 +697,13 @@ def t_dspknob(e):
 
 
 def t_dsplist(e):
-    """The list on DSP SAMPLE: SMP (knob D on the SMPL page, the host drawing): the first turn opens it (4A 0 1 <P11 =
-    5 . C> 0, the word unmoved) and the Rytm turns the view on for the list (29 1 0: the host's frame over the SMPL page
-    while it is open); further turns of D reach the host as 32 0 (the list's knob), RIGHT as 31; YES closes it (why 1)
-    and the view ends (29 0 0); the host's 48 0 10 9 <B> 1 (no trig held) writes the kit: 0x0920, answered 0. NO closes
-    with why 2, nothing written; knob A (ENG) closes it (why 3) and edits ENG; knob A on the SRC view opens nothing (ENG
-    stays the engine chooser)."""
+    """The list on DSP SAMPLE (7h): SMP, knob A of the SRC page, the host drawing: the first turn opens it (4A 0 1 <P11 =
+    5 . C> 0, the word unmoved); further turns reach the host as 32 0, RIGHT as 31; YES closes it (why 1); the host's
+    48 0 10 9 <B> 1 (no trig held) writes the kit: 0x0920, answered 0. NO closes with why 2, nothing written; another knob
+    closes it (why 3); ENG never moves."""
     sn = machine(e, "ds", True)
     v0 = 5 << 7 | 0x20
-    ev = [(500, "press", "SMPL"), (1200, "turn", "3:+8", 1, 50), (1500, "turn", "3:+8", 3, 100), (1900, "press", "RIGHT", 100),
+    ev = [(1200, "turn", "0:+8", 1, 50), (1500, "turn", "0:+8", 3, 100), (1900, "press", "RIGHT", 100),
           (2300, "press", "YES", 100)]
     r = e.run("dsplist", 3600, ev, snap=sn, answer=True, sends=[(300, w48s(5, 2)), (2800, w48s(9, 1, 1))])
     ls_, k, en = lsev(r), [(x["code"], x["down"]) for x in evs(r, "key")], evs(r, "enc")
@@ -713,29 +711,24 @@ def t_dsplist(e):
     w = smp(e, r["snap"][0])
     print(f"  4A {ls_}; 29 {v29}; keys {k}; turns {[(x['enc'], x['delta']) for x in en]}; word {w:#06x}; 48 {evs(r, 'w48')}")
     check("dsplist: opened by SMP (4A on, P11 = 5 . C, why 0), closed by YES (why 1)", ls_ == [(1, v0, 0), (0, v0, 1)], ls_)
-    check("dsplist: the view on for the list over the SMPL page (29 1 after the SMPL page's 29 0), off after it",
-          v29[-3:] == [(0, 0), (0, 1), (0, 0)], v29)
+    check("dsplist: no 29 around it: the SRC view stays on", (0, 0) not in v29, v29)
     check("dsplist: the turns after the opening one reach the host on encoder 0", bool(en) and
           all(x["enc"] == 0 for x in en) and sum(x["delta"] for x in en) > 0, en)
     check("dsplist: RIGHT down / up reaches the host, YES never as a 31", k == [(0x41, 1), (0x41, 0)], k)
     check("dsplist: the host's 48 0 10 9 <B> 1 wrote the kit: 0x0920, answered 0",
           w == 0x0920 and [x["status"] for x in evs(r, "w48")][-1:] == [0], (hex(w), evs(r, "w48")))
     a = [x["vals"][P_SMP - x["first"]] for x in evs(r, "v2a") if x["first"] <= P_SMP < x["first"] + x["n"]]
-    check("dsplist: the view's 2A carries P11's 14 bits (5 . C; the 48 after the close needs none: the host wrote it)",
-          a[-1:] == [5 << 7 | 0x20], a)
-    r = e.run("dsplist-no", 2600, [(500, "press", "SMPL"), (1200, "turn", "3:+8", 1, 50), (1600, "press", "NO")],
+    check("dsplist: the view's 2A carries P11's 14 bits, the host's write in the end (9 . B)", a[-1:] == [9 << 7 | 0x10], a)
+    r = e.run("dsplist-no", 2600, [(1200, "turn", "0:+8", 1, 50), (1600, "press", "NO")],
               snap=sn, answer=True, sends=[(300, w48s(5, 2))])
     check("dsplist: NO closes it (why 2), the word unchanged (0x0540)", lsev(r)[-1:] == [(0, v0, 2)] and
           smp(e, r["snap"][0]) == 0x0540, (lsev(r), hex(smp(e, r["snap"][0]))))
     e0 = e.kword(sn[0], 0, 0)
-    r = e.run("dsplist-knob", 3000, [(500, "press", "SMPL"), (1200, "turn", "3:+8", 1, 50), (1600, "turn", "0:+8", 6, 50)],
+    r = e.run("dsplist-knob", 3000, [(1200, "turn", "0:+8", 1, 50), (1600, "turn", "1:+8", 6, 50)],
               snap=sn, answer=True, sends=[(300, w48s(5, 2))])
-    check("dsplist: knob A closes it (why 3) and goes to stock (TUN, word 17 on this page)", lsev(r)[-1:] == [(0, v0, 3)],
-          lsev(r))
-    r = e.run("dsplist-src", 2500, [(1000, "turn", "0:+8", 6, 50)], snap=sn, answer=True, sends=[(300, w48s(5, 2))])
-    check("dsplist: on the SRC view knob A (ENG) opens no list and edits ENG", not lsev(r) and e.kword(r["snap"][0], 0, 0) != e0,
-          (lsev(r), e0.hex(), e.kword(r["snap"][0], 0, 0).hex()))
-    r = e.run("dsplist-nohost", 2600, [(500, "press", "SMPL"), (1200, "turn", "3:+8", 3, 100)], snap=machine(e, "ds"),
+    check("dsplist: knob B closes it (why 3) and goes to stock; ENG (word 0) unmoved", lsev(r)[-1:] == [(0, v0, 3)] and
+          e.kword(r["snap"][0], 0, 0) == e0, (lsev(r), e0.hex()))
+    r = e.run("dsplist-nohost", 2600, [(1200, "turn", "0:+8", 3, 100)], snap=machine(e, "ds"),
               host=False, sends=[(300, w48s(5, 2))])
     check("dsplist: no host: no list", not lsev(r), lsev(r))
 
@@ -744,7 +737,7 @@ def t_dspbrowse(e):
     """FUNC + YES on DSP SAMPLE's open list -> 4A 0 3 <P11> 0 (the host's file browser for the row), as on GRANULAR."""
     sn = machine(e, "ds", True)
     v0 = 5 << 7 | 0x20
-    ev = [(500, "press", "SMPL"), (1200, "turn", "3:+8", 1, 50), (1500, "press", "FUNC", 150), (1550, "press", "YES", 50),
+    ev = [(1200, "turn", "0:+8", 1, 50), (1500, "press", "FUNC", 150), (1550, "press", "YES", 50),
           (1900, "press", "DOWN", 50), (2600, "press", "YES", 50)]
     # (the host's clock runs ~0.2 s behind the emulator's here: its 4A 0 0 well before the YES)
     r = e.run("dspbrowse", 3400, ev, snap=sn, answer=True, sends=[(300, w48s(5, 2)), (1700, sx(0x4A, 0, 1)),
@@ -761,7 +754,7 @@ def t_dsptext(e):
     host naming row 5 of bank C "C005"); bank C's names (47 list 0, bank byte 2) name it (the screen differs); index 0
     reads OFF; an old bank-A word 0x0500 reads A005."""
     sn = machine(e, "ds")
-    run = lambda n, v, b, *nm: e.run(f"dsptext-{n}", 1800, [(500, "press", "SMPL")], snap=sn,   # noqa: E731
+    run = lambda n, v, b, *nm: e.run(f"dsptext-{n}", 1800, [], snap=sn,   # noqa: E731
                                      sends=[(150 + 20 * i, m) for i, m in enumerate(nm)] + [(300, w48s(v, b))])
     n5, c5 = run("n5", 5, 2), run("c5", 5, 2, names47(0, 1, 127, 2, 5, ["C005"]))
     v5 = run("v5", 5, 2, names47(0, 1, 127, 2, 0, ["OFF", "ONE", "TWO", "THREE", "FOUR", "VOX C5"]))
@@ -778,7 +771,7 @@ def t_dsplock(e):
     lock path through 0029) from 5 . C: step 1's live lock keeps bank C (fraction 0x40), the word still 0x0540; the stored
     copy has SMP's slot then its fine slot (80 80); power off, cold boot on that card: the lock is back at 16 bits."""
     sn = machine(e, "ds")
-    ev = [(500, "press", "SMPL"), (800, "press", "RECORD"), (1500, "press", "T1", 1900), (1800, "turn", "3:+8", 9, 100),
+    ev = [(800, "press", "RECORD"), (1500, "press", "T1", 1900), (1800, "turn", "0:+8", 9, 100),
           (3600, "press", "RECORD")]
     r = e.run("dsplock", 4500, ev, snap=sn, sends=[(300, w48s(5, 2))])
     s = r["snap"]
@@ -843,8 +836,8 @@ def t_dsplistlock(e):
     """GRID REC, T1 and T3 held, DSP SAMPLE's list opened by SMP on the SMPL page and YES pressed while they are held: the
     host's 48 0 10 9 <C> 1 locks P11 on steps 1 and 3 (answered 4) at 0x0940 (fine), the kit word stays 0x0540."""
     sn = machine(e, "ds", True)
-    ev = [(400, "press", "SMPL"), (700, "press", "RECORD"), (900, "press", "T1", 1500), (950, "press", "T3", 1450),
-          (1200, "turn", "3:+8", 1, 50), (1500, "turn", "3:+8", 2, 100), (1900, "press", "YES"), (2800, "press", "RECORD")]
+    ev = [(700, "press", "RECORD"), (900, "press", "T1", 1500), (950, "press", "T3", 1450),
+          (1200, "turn", "0:+8", 1, 50), (1500, "turn", "0:+8", 2, 100), (1900, "press", "YES"), (2800, "press", "RECORD")]
     r = e.run("dsplistlock", 3500, ev, snap=sn, answer=True, sends=[(300, w48s(5, 2)), (2050, w48s(9, 2, 1))])
     s = r["snap"][0]
     l1, l3, l2, w = e.live_lock(s, 0, k=19), e.live_lock(s, 2, k=19), e.live_lock(s, 1, k=19), smp(e, s)
@@ -855,18 +848,42 @@ def t_dsplistlock(e):
           l1 == 0x0940 and l3 == 0x0940 and l2 == 0xffff and w == 0x0540, (hex(l1), hex(l2), hex(l3), hex(w)))
 
 
-def t_dspoldhost(e):
-    """A host that draws no list (answers no 29 with a frame: an older one): SMP's first turn opens the list (4A), no
-    frame comes within a second, the list closes (why 5: the view ended) and SMP is the stock knob (0029's banked step)
-    until the next hello: a later turn steps the word, no second 4A."""
-    sn = machine(e, "ds", True)   # (a host that has drawn: commits since boot)
-    ev = [(500, "press", "SMPL"), (1000, "turn", "3:+8", 1, 50), (2600, "turn", "3:+8", 3, 100)]
-    r = e.run("dspoldhost", 4000, ev, snap=sn, answer=False, sends=[(300, w48s(5, 2))])
-    w = smp(e, r["snap"][0])
-    print(f"  4A {lsev(r)}; word {w:#06x}")
-    check("dspoldhost: opened once, closed by the view's end (why 5) a second later", lsev(r) == [(1, 5 << 7 | 0x20, 0),
-          (0, 5 << 7 | 0x20, 5)], lsev(r))
-    check("dspoldhost: then SMP steps as the stock knob, bank C kept (0x0640)", w == 0x0640, hex(w))
+def t_preset(e):
+    """0.4.0: JUNO's and 6-OP FM's PAT as the bank list, the host drawing: knob A's first turn opens it (4A 0 1 <P1> 0) with
+    PAT unmoved, YES closes it (why 1), the host's 48 0 0 <row> 0 1 sets PAT, answered 0; NO closes with why 2, PAT unchanged;
+    FUNC + YES on the page: the list with the card's presets (on 3, why 6); no frame from the host: no list (0029's stepped
+    knob stays); trigs held: PAT locked on those steps, the kit's word unchanged."""
+    for key in ("jn", "fm"):
+        sn = machine(e, key, True)
+        w0 = e.kword(sn[0], 0, 0)
+        cap = (300, sx(0x4A, 0x7F, 1))   # the host's "I draw the preset list"
+        r = e.run(key + "-preset-old", 2600, [(1200, "turn", "0:+8", 3, 100)], snap=sn, answer=True)
+        check(f"preset {key}: an older host (its frame, no 4A 7F): no list, the plain PAT knob", not lsev(r) and e.kword(r["snap"][0], 0, 0) != w0,
+              (lsev(r), e.kword(r["snap"][0], 0, 0).hex()))
+        r = e.run(key + "-preset", 3000, [(1200, "turn", "0:+8", 1, 50), (1500, "turn", "0:+8", 3, 100), (1900, "press", "YES", 100)],
+                  snap=sn, answer=True, sends=[cap, (2300, sx(0x48, 0, 0, 7, 0, 1))])
+        ls_, w, en = lsev(r), e.kword(r["snap"][0], 0, 0), evs(r, "enc")
+        print(f"  {key}: 4A {ls_}; word {w.hex()} (was {w0.hex()}); 48 {evs(r, 'w48')}; turns {[(x['enc'], x['delta']) for x in en]}")
+        check(f"preset {key}: opened by knob A, closed by YES", [x[0] for x in ls_] == [1, 0] and ls_[-1][2] == 1, ls_)
+        check(f"preset {key}: the turns reach the host", bool(en) and all(x["enc"] == 0 for x in en), en)
+        check(f"preset {key}: the host's 48 set PAT 7, answered 0", [x["status"] for x in evs(r, "w48")][-1:] == [0] and w[0] == 7, (w.hex(), evs(r, "w48")))
+        r = e.run(key + "-preset-no", 2600, [(1200, "turn", "0:+8", 1, 50), (1600, "press", "NO")], snap=sn, answer=True, sends=[cap])
+        check(f"preset {key}: NO closes it (why 2), PAT unchanged", lsev(r)[-1:] and lsev(r)[-1][2] == 2 and e.kword(r["snap"][0], 0, 0) == w0,
+              (lsev(r), e.kword(r["snap"][0], 0, 0).hex()))
+        r = e.run(key + "-preset-add", 2600, [(1200, "press", "FUNC", 500), (1400, "press", "YES", 100)], snap=sn, answer=True, sends=[cap])
+        print(f"  {key}: FUNC + YES {lsev(r)}")
+        check(f"preset {key}: FUNC + YES: the list and its files (on 1, on 3 why 6)", [(x[0], x[2]) for x in lsev(r)][:2] == [(1, 0), (3, 6)], lsev(r))
+        r = e.run(key + "-preset-nohost", 2600, [(1200, "turn", "0:+8", 3, 100)], snap=machine(e, key), host=False)
+        check(f"preset {key}: no host: no list, the knob steps PAT", not lsev(r) and e.kword(r["snap"][0], 0, 0) != e.kword(machine(e, key)[0], 0, 0),
+              (lsev(r), e.kword(r["snap"][0], 0, 0).hex()))
+        ev = [(700, "press", "RECORD"), (900, "press", "T1", 1500), (950, "press", "T3", 1450),
+              (1200, "turn", "0:+8", 1, 50), (1500, "turn", "0:+8", 2, 100), (1900, "press", "YES"), (2800, "press", "RECORD")]
+        r = e.run(key + "-preset-lock", 3500, ev, snap=sn, answer=True, sends=[cap, (2050, sx(0x48, 0, 0, 9, 0, 1))])
+        s = r["snap"][0]
+        l1, l2, l3, w = e.live_lock(s, 0, k=9), e.live_lock(s, 1, k=9), e.live_lock(s, 2, k=9), e.kword(s, 0, 0)
+        print(f"  {key}: locks {l1:#06x} {l2:#06x} {l3:#06x}; word {w.hex()}; 48 {evs(r, 'w48')}")
+        check(f"preset {key}: trigs held: PAT 9 locked on steps 1 and 3, the kit's word kept", l1 >> 8 == 9 and l3 >> 8 == 9 and l2 == 0xffff and w == w0 and
+              [x["status"] for x in evs(r, "w48")][-1:] == [4], (hex(l1), hex(l2), hex(l3), w.hex()))
 
 
 def t_dspnrpn(e):
@@ -884,7 +901,7 @@ def t_dspnrpn(e):
         keys = UI["list_open"] + ["DOWN"] * DOWNS["ds"] + [UI["list_confirm"]]
         D = e.run(f"dspnrpn-ds-{mode}", 500 + 300 * len(keys) + 1500, [(500 + 300 * i, "press", x) for i, x in enumerate(keys)],
                   snap=W)["snap"]
-        r = e.run(f"dspnrpn-{mode}", 3000, [(500, "press", "SMPL"), (1000, "turn", "3:+8", 3, 100)], snap=D,
+        r = e.run(f"dspnrpn-{mode}", 3000, [(1000, "turn", "0:+8", 3, 100)], snap=D,
                   sends=[(300, w48s(5, 2))], midi_out=True)
         out[mode] = r["midi"]
         print(f"  {mode}: DIN {r['midi'][-24:].hex(' ')}")
@@ -897,8 +914,8 @@ def t_dspnrpn(e):
 def t_upsrc(e):
     """1046, UP + SRC: the selected track's source list in one press. GRANULAR (the host draws): from FLTR, UP + SRC ->
     the SRC page (stock's: SRC reaches it), and the list opens on knob A once the view shows the host's frame (4A 0 1
-    <P1 = 5 . F> 0, the word unmoved); knob A's turns then go to the host (32 0). DSP SAMPLE: stock gets SMPL instead,
-    the list opens on knob D (4A with P11 = 5 . C, the view on over the SMPL page: 29 1). No drawing host: no list (the
+    <P1 = 5 . F> 0, the word unmoved); knob A's turns then go to the host (32 0). DSP SAMPLE the same (7h), 4A with P11 =
+    5 . C. No drawing host: no list (the
     SRC page as SRC alone). A held trig: UP + SRC is not taken (seq mode's lock key; here GRID REC on a stock track:
     stock's SRC)."""
     v0 = 5 << 7 | 0x50
@@ -918,13 +935,32 @@ def t_upsrc(e):
               sends=[(300, w48s(5, 2))])
     v29 = [(x["track"], x["on"]) for x in evs(r, "v29")]
     print(f"  ds: 4A {lsev(r)}; 29 {v29}")
-    check("upsrc: DSP SAMPLE, UP + SRC -> the SMPL page and the list on SMP (4A on, P11 = 5 . C), the view on for it",
-          lsev(r)[:1] == [(1, 5 << 7 | 0x20, 0)] and (0, 1) in v29, (lsev(r), v29))
+    check("upsrc: DSP SAMPLE, UP + SRC -> the list on SMP (4A on, P11 = 5 . C), the view on",
+          lsev(r)[:1] == [(1, 5 << 7 | 0x20, 0)], (lsev(r), v29))
     r = e.run("upsrc-trig", 2500, [(500, "press", "FLTR"), (700, "press", "RECORD"), (800, "press", "T1", 600),
                                    (900, "press", "UP", 300), (1000, "press", "SRC")], snap=sn, answer=True,
               sends=[(300, w48(5, 5))])
     check("upsrc: a trig held (GRID REC, a stock track: SRC its lock page): UP + SRC is stock's SRC, no list",
           not lsev(r), lsev(r))
+
+
+def t_latehost(e):
+    """A Sidecar that arrives long after the Rytm's boot (a cable moved, no host until now) with a SRC page already up, on WAVETABLE:
+    the Rytm's hello, its 29 0 1, the host's frame, the panel shows it, knob A opens the list. The same after a USB drop."""
+    keys = UI["list_open"] + ["DOWN"] * DOWNS["wt"] + [UI["list_confirm"]]
+    ev = [(500 + 300 * i, "press", k) for i, k in enumerate(keys)]
+    a = e.run("late-nohost", 500 + 300 * len(keys) + 1500, ev, host=False)
+    r = e.run("late", 4000, [(2500, "turn", "0:+8", 1, 50)], snap=a["snap"], answer=True)
+    v29 = [(x["track"], x["on"]) for x in evs(r, "v29")]
+    print(f"  29 {v29}; 4A {lsev(r)}; show {e.sv(r['snap'][0]).get('show')}")
+    check("latehost: 29 0 1 after the hello", (0, 1) in v29, v29)
+    check("latehost: knob A opens the list", bool(lsev(r)) and lsev(r)[0][0] == 1, lsev(r))
+    base = e.base[1] if False else a["snap"][1]
+    t0, t1 = base + 1000 / 5, base + 3000 / 5
+    d = e.run("late-drop", 7000, [(6000, "turn", "0:+8", 1, 50)], snap=a["snap"], answer=True, extra=["--usb-host-gone", f"{t0:g}M:{t1:g}M"])
+    v29 = [(x["track"], x["on"]) for x in evs(d, "v29")]
+    print(f"  drop: 29 {v29}; 4A {lsev(d)}")
+    check("latehost: a drop: 29 again, knob A opens the list", v29.count((0, 1)) >= 2 and bool(lsev(d)), (v29, lsev(d)))
 
 
 # 1048: POLY CONFIG, the track menu's last item (FUNC + CHRO; TRIGS SETUP, PAD SCALE, RELOAD TRACK, SAVE TRACK, U1..U5,
@@ -998,11 +1034,11 @@ def t_polymenu(e):
     check("polymenu: no host: the screen is not the menu's alone (the popup over it)", d["oled"] != ref["oled"])
 
 
-TESTS = dict(knob=t_knob, range=t_range, text=t_text, lock=t_lock, list=t_list, browse=t_browse, listlock=t_listlock, upt=t_upt,
+TESTS = dict(preset=t_preset, knob=t_knob, range=t_range, text=t_text, lock=t_lock, list=t_list, browse=t_browse, listlock=t_listlock, upt=t_upt,
              nrpn=t_nrpn, scale=t_scale, popups=t_popups, banka=t_banka, tbldef=t_tbldef,
              dspknob=t_dspknob, dsplist=t_dsplist, dspbrowse=t_dspbrowse, dsptext=t_dsptext, dsplock=t_dsplock,
-             dspold=t_dspold, dsplistlock=t_dsplistlock, dspoldhost=t_dspoldhost,
-             dspnrpn=t_dspnrpn, upsrc=t_upsrc, polymenu=t_polymenu)
+             dspold=t_dspold, dsplistlock=t_dsplistlock,
+             dspnrpn=t_dspnrpn, upsrc=t_upsrc, latehost=t_latehost, polymenu=t_polymenu)
 
 
 def main():

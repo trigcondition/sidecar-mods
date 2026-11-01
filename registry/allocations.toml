@@ -4492,6 +4492,7 @@ size   = 6
 expect_len = 6
 expect_sha256 = "beb3a5a3849eae6631f6963fe9adda8dd61a9173df7420bdb7eb71b2cfaeda61"
 entry  = "ext_page_record"
+elek_size = 8   # the 6-byte jmp ends mid-instruction in the area build; the whole function is replaced
 rejoin = "none"
 reemit = false
 
@@ -4512,6 +4513,7 @@ size   = 6
 expect_len = 6
 expect_sha256 = "f47a3a411a8269fecbd015d079b69036a084b4245fdf2a5bc2a0d4e1a8d2f09f"
 entry  = "ext_param_record"
+elek_size = 8   # the 6-byte jmp ends mid-instruction in the area build; the whole function is replaced
 rejoin = "none"
 reemit = false
 
@@ -4814,6 +4816,7 @@ note        = "record 389: JUNO slot 7 LEN, the gate (127 = the Rytm's note leng
 # patch's sliders into the sound's knobs (15).
 [[cave]]
 owner   = "0021-ext"
+gate    = "!slots"
 addr    = 0x40027a04
 size    = 1308
 section = ".extn"
@@ -5682,26 +5685,10 @@ note    = "cave9 (0013-voice-dac's; 0021 excludes 0013): the user slots' 1A..1D 
 [[cave]]
 owner   = "0021-ext"
 gate    = "slots"
-addr    = 0x4001a23c
-size    = 12
-section = ".usm"
-note    = "the end of .us2's former claim (cave9): ext_stepbox {'XSTP', ext_steps, us_live} at a fixed address for 0029-sendfx-ui (sfx-enum-knobs, 2026-10-18)."
-
-[[cave]]
-owner   = "0021-ext"
-gate    = "slots"
 addr    = 0x4001a248
 size    = 404
 section = ".usd"
 note    = "cave9 after .us2, 4-aligned (.us2 ends on one; the name pointer arrays here are 32-bit data and the linker keeps a section's offsets, not its absolute alignment): the user slots' constant data (364 B as built 2026-10-11; 392 B 2026-10-31, the claim 418 -> 404 for .ush)."
-
-[[cave]]
-owner   = "0021-ext"
-gate    = "slots"
-addr    = 0x4001a3dc
-size    = 12
-section = ".ush"
-note    = "rui1031: .usd's former end, 4-aligned: us_cubox {'CHRD', setup, steps} at a fixed address, which 0026-remote-ui fills at its first ev_tick (6-OP FM's chord knobs and MULTISAMPLE's labels); zero pointers at build (0x4001a3e8..0x4001a3ea stay unclaimed)."
 
 # ---- 0021-ext: MULTISAMPLE = machine 52 (CB TEST), rui1031 (rytm-teensy docs/MULTISAMPLE.md, voice flag 0x30) ----
 # Its SRC records: BT IMPROVED's 398..402 (0014 variants=0: machine 34 unlisted; with variants=1 BT IMPROVED lists without knobs),
@@ -5983,6 +5970,7 @@ size   = 6
 expect_len = 8
 expect_sha256 = "e39c227a08564642473ffc1d1698dcc60a8befb1648629dc0d1a9ccd69ee5d65"
 entry  = "us_load_thunk"
+elek_size = 8   # in elekloader's area: the jmp site covers both displaced instructions
 
 # cave7's head (0009-main-rms's; 0021 excludes 0009 since 2026-10-10, the user's decision): the machine choice's
 # hooks (us_prev_thunk, us_open_thunk, us_load_thunk, us_step, us_loaded) and the 10 before a 1E (us_assign_send).
@@ -6442,7 +6430,7 @@ addr    = 0x402ccd7c
 size    = 0x140
 section = ".ust"
 gate    = "slots"
-note    = "The sound tag's hooks: us_tag_load_c / us_tag_save_c / us_tag_copy_c and their three detour stubs."
+note    = "The sound tag's hooks: us_tag_load_c / us_tag_save_c / us_tag_copy_c and their three detour stubs; 7ae's arpeggiator code rides in the first two, us_snd_init beside them."
 
 # sound_save after its memset of the stored parameter block: `lea 0x401c59cc,%a0`, exactly six bytes, a2 the stored
 # record and a3 the live sound; us_tag_save writes slot 47 from +0x6e (machines 35..39 only).
@@ -6465,6 +6453,17 @@ size   = 6
 expect_len = 6
 expect_sha256 = "d3f41fad71a6d4378324ace3b8857b659a202f5b1d505251c478a142c3a07950"
 entry  = "us_tag_load"
+gate   = "slots"
+
+# sound_init_defaults, a2 the sound: `lea 0x40007028,%a4`, exactly six bytes. us_snd_init clears the spare bytes +0x6d..+0x6f first
+# (7ae): a fresh sound's are the allocator's, and +0x6d and the bits above the tag now hold the arpeggiator's code.
+[[detour]]
+owner  = "0021-ext"
+addr   = 0x400122e6
+size   = 6
+expect_len = 6
+expect_sha256 = "a880d3984223ae8e9891b56aafbfeb6c8e545b31166f258ffe97067b9da02a75"
+entry  = "us_snd_init"
 gate   = "slots"
 
 # 0x4011f558 (sound a2 -> track d2's live array; the trig loop's kit copy and sound lock, kit loads) on its copy path:
@@ -7338,3 +7337,127 @@ expect_sha256 = "8f96d172c43d6e9d5f2d435bd2b96f60df07aaf653786f343036ee418a71b00
 entry     = "panel_rx"
 rejoin    = 0x4008208c
 elek_size = 8
+
+# ---- 0021-ext in elekloader's area (slots=1, mdpage 2026-10-30): the three boxes other mods read by fixed address stay
+# where they were, as sites, the rest of 0021 links into the area. The pointers are `ptr` sites elekloader resolves.
+# ext_stepbox (0026, 0029): 'XSTP', ext_steps, us_live. us_cubox (0026 fills setup and steps at its first ev_tick):
+# 'CHRD', two zero words. The 'JUNO' mailbox's head (0022's router): the magic and the hook; the name cache behind it
+# moved into the area with the rest (no reader outside 0021; `.extn` is the slots=0 image's).
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4001a23c
+size        = 4
+expect_len  = 4
+expect_sha256 = "d42690c2515361aebd9267a39adeb3d0e7705edd9beac41a54f4b11fc7c486dd"
+replace     = "58535450"
+note        = "ext_stepbox magic 'XSTP'"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4001a240
+size        = 4
+expect_len  = 4
+expect_sha256 = "a3a72a96ca26d954d430e97d2ef5091fa8f35869615114b47d5eab84d31f504d"
+from_symbol = "ext_steps"
+note        = "ext_stepbox: ext_steps"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4001a244
+size        = 4
+expect_len  = 4
+expect_sha256 = "465922c39b84edc8b45e250d3fb07be026de53ba8d35a7b8759e44e1d42654f2"
+from_symbol = "us_live"
+note        = "ext_stepbox: us_live"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4001a3dc
+size        = 4
+expect_len  = 4
+expect_sha256 = "5303a19309cefa0fc64ca981823b2e0ca385796598cb1c6cf424f79017400257"
+replace     = "43485244"
+note        = "us_cubox magic 'CHRD'"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x4001a3e0
+size        = 8
+expect_len  = 8
+expect_sha256 = "e2fdf28d35e654372c02348e4e45427f0b546ba0aa265c94d4bf75a8897a0f34"
+replace     = "0000000000000000"
+note        = "us_cubox: setup, steps, zero until 0026 fills them"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40027a04
+size        = 4
+expect_len  = 4
+expect_sha256 = "0acb177aa3cc15f111958e891f9ac7a2b52006228cef2e6829aff9a0a4217426"
+replace     = "4a554e4f"
+note        = "the mailbox's magic 'JUNO', read by 0022's router"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40027a08
+size        = 4
+expect_len  = 4
+expect_sha256 = "e13ddd23ddcb72d1a761ac6c25639ee226f4cbcd7b82c89708088a8a2b2491a2"
+from_symbol = "us_sysex"
+note        = "the mailbox's hook, called by 0022's router"
+
+# ---- 7o: MIDI = machine 50 (HH TEST): as LIVE IN / CHOP (rui1051) but for its reports (44 / 43, ext.c us_flag_tab 0x80). SRC page MULTISAMPLE's
+# records, page 2 the shared records, names and mask 0026's (rytm-teensy core/midim/midim.h).
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40290444
+size        = 4
+expect_len  = 4
+expect_sha256 = "5cc7b5bfa7a4ffade7c51cdfe77895a0d58663e57838ec055230e1c34972e92f"
+from_symbol = "ext_render"
+note        = "engine entry of machine 50 (MIDI): ext_render, as machine 44"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x402883d4
+size        = 32
+expect_len  = 32
+expect_sha256 = "6a49dee613639e1a12a0bd641dbab0fe1ebffbf5cd968dfaea90bf4f095d4d83"
+replace     = "0000018e000001bb0000018f0000019000000191000001920000019600000197"
+note        = "machine 50's SRC page: MULTISAMPLE's records 398 443 399 400 401 402 406 407, DST CHAN BANK SBNK PROG PB AT MW (0026's set-up)"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf1e0
+size        = 2
+expect_len  = 2
+expect_sha256 = "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7"
+replace     = "ffff"
+note        = "machine 50 (MIDI): home -1 and every voice, as machine 44 (0x401bf17c + 2 m)"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf134
+size        = 4
+expect_len  = 4
+expect_sha256 = "af9e2be0cd3868da2cd9a81a6552d90f4d3c4fb5b16539971e02c9210ecc2af5"
+from_symbol = "cu_mi_name"
+note        = "machine 50 long name: MIDI"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf138
+size        = 4
+expect_len  = 4
+expect_sha256 = "2e3db4aced2880b7963ad6c175d3686587d6773cf43c16cf65bd8d7aea3b864e"
+from_symbol = "cu_mi_name"
+note        = "machine 50 short name: MIDI"

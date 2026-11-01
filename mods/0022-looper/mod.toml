@@ -25,6 +25,7 @@ stub = "stub.s"      # generated from looper.c by build.sh
 [requires]
 shared = false
 symbols = []
+mods = ["0021-ext"]   # the 'JUNO' mailbox at its fixed address
 
 [params]
 # slots: 1 passes 0021's user slots' SysEx (1A..1D) to its mailbox; 0 (default): c127fe8's router (15..17).

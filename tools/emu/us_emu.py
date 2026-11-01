@@ -278,13 +278,86 @@ def t_enum(e):
     eknob = e.peek(s, c + US_EN - 16, 16)
     check("enum: U1's cache holds P1's list (eknob 0, 12 names)", 0 in eknob[:8] and eknob[8 + eknob.index(0)] == 12,
           eknob.hex())
-    en = c + US_EN + 128 * (eknob.index(0) if 0 in eknob[:8] else 0)
+    en = c + US_EN + 36 * 8 * (eknob.index(0) if 0 in eknob[:8] else 0)
     got = [e.cstr(s, en + 8 * n, 8) for n in range(12)]
     check("enum: the second list replaced the first: NEW0..NEW7, entries 8..11 empty (not OLD08..OLD11)",
           got == new + [""] * 4, str(got))
     kw = e.peek(s, 0x41255933, 1)[0]
     check("enum: knob A in zone 10 of 12 (107..117: a name not sent), from P1's default 110", 107 <= kw <= 117, str(kw))
     print(f"  look at {turn_dir}/turn04.png: knob A reads --- (zone 10's value text) in place of MOD while it turns")
+
+
+def t_enum36(e):
+    """(0.4.0) A list of 36 names: the 19s say so (arg 1), the 1Bs page in 5 messages; 36 detents at ceil(128 k / 36); the
+    zone reads v x 36 / 128 on the report; a p-lock; SAVE KIT + RELOAD; a list's cursor passing the slot leaves the words."""
+    names = [f"N{i:02d}" for i in range(36)]
+    knobs = [dict(p=1, look="list", kind="enum", enum_count=36, long="Long List", short="LONG", default=72),
+             dict(p=2, look="list", kind="enum", enum_count=16, long="Short List", short="SHRT", default=40)]
+    short = [f"S{i:02d}" for i in range(16)]
+    msgs = [(100, "usb", b"".join(P.meta_messages(1, 5, P.ST_READY, 0, "LONGLIST", "LNG", "", knobs, fp=FP_A))),
+            (300, "usb", b"".join(P.list_messages(1, 0, 5, names))), (450, "usb", b"".join(P.list_messages(1, 1, 5, short))),
+            (500, "usb", P.slots([5, 0, 0, 0, 0], 0))]
+    ev, t = walk_list(600, UI["downs"]["u1"])
+    turn_dir = os.path.join(e.out, "enum36-turn")
+    os.makedirs(turn_dir, exist_ok=True)
+    s = e.run("enum36", t + 200, msgs + ev, save=True, env={"DTEMU_STRICT": "1"})
+    check("enum36: every slot ask says 36 names (19 what 0, arg 1)", any(a and a["what"] == 0 for a in e.asks()) and
+          all(a["arg"] == 1 for a in e.asks() if a and a["what"] == 0 and 1 <= a["slot"] <= 5), str(e.asks()[:3]))
+    c = e.u32(s, sym("us"))
+    EN = sym("us_off_en")
+    eknob = e.peek(s, c + EN - 16, 16)
+    check("enum36: U1's cache: P1's list of 36, P2's 16", eknob[8 + eknob.index(0)] == 36 and eknob[8 + eknob.index(1)] == 16, eknob.hex())
+    en = c + EN + 36 * 8 * eknob.index(0)
+    got = [e.cstr(s, en + 8 * n, 8) for n in range(36)]
+    check("enum36: all 36 names, across the 1B's five messages", got == names, str(got))
+    check("enum36: the default, 72, in zone 20", kit16(e, s)[0] == 72 and kit16(e, s)[1] == 40, str(kit16(e, s)[:2]))
+    clock = e.clock + t + 200
+    snap, seen = s, []
+    lo = {(k * 128 + 35) // 36 for k in range(36)}
+    for i in range(20):   # up to the top
+        snap = e.run(f"enum36-up{i}", 150, [(20, "turn", ("0:+8", 3, 10))], snap=snap, start=clock, save=True)
+        clock += 150
+        seen.append(kit16(e, snap)[0])
+    check("enum36: each detent stores a zone's lowest value, upwards", set(seen) <= lo and seen == sorted(seen) and seen[-1] > 72, str(seen))
+    print(f"  look at {e.out}/enum36-up19.png: knob A's name")
+    v = seen[-1]
+    s2 = e.run("enum36-trig", 200, [(20, "press", "BD")], snap=snap, start=clock, save=True)
+    tr = trigs(e)
+    check("enum36: the report carries the stored value, in zone v x 36 / 128", bool(tr) and tr[-1]["params"][0] >> 7 == v, str(tr[-1:]))
+    clock += 200
+    ev = [(20, "press", "RECORD"), (150, "press", "T1:300M"), (200, "turn", ("0:-8", 30, 4)), (600, "press", "T5"), (700, "press", "RECORD"),
+          (800, "press", "PLAY"), (2800, "press", "STOP")]
+    s3 = e.run("enum36-lock", 3000, ev, snap=s2, start=clock, save=True)
+    ps = {x["params"][0] >> 7 for x in trigs(e)}
+    check("enum36: a p-lock on the list: the locked step another stop, the other the sound's", v in ps and len(ps) == 2 and (ps - {v}).pop() in lo, str(ps))
+    clock += 3000
+    ev2, t2 = kit_menu(50, 2)
+    ev2 += [(t2 + 200, "press", "YES"), (t2 + 400, "press", "YES")]
+    ev3, t3 = kit_menu(t2 + 1000, 0)
+    ev3 += [(t3 + 200, "press", "YES")]
+    s4 = e.run("enum36-reload", t3 + 800, ev2 + ev3, snap=s3, start=clock, save=True)
+    check("enum36: SAVE KIT, RELOAD: the value kept", kit16(e, s4)[0] == v, str(kit16(e, s4)[:2]))
+    clock += t3 + 800
+    ev4, t4 = walk_list(50, 1, confirm=False)
+    s5 = e.run("enum36-preview", t4 + 100, ev4 + [(t4, "press", "UP")], snap=s4, start=clock, save=True)
+    s6 = e.run("enum36-preview2", 200, [(20, "press", "NO")], snap=s5, start=clock + t4 + 100, save=True)
+    check("enum36: a preview off the slot and NO: the value back, machine 35", kit16(e, s6)[0] == v and e.peek(s6, 0x8000ea00, 1)[0] == 35,
+          f"{kit16(e, s6)[:2]} {e.peek(s6, 0x8000ea00, 1).hex()}")
+
+
+def t_old16(e):
+    """A list of 16, as every machine before 0.4.0: stops and zones as before (a value saved then reads the same zone)."""
+    knobs = [dict(p=1, look="list", kind="enum", enum_count=16, long="Short List", short="SHRT", default=84)]
+    msgs = [(100, "usb", b"".join(P.meta_messages(1, 5, P.ST_READY, 0, "LIST16", "L16", "", knobs, fp=FP_A))),
+            (300, "usb", b"".join(P.list_messages(1, 0, 5, [f"S{i:02d}" for i in range(16)]))), (450, "usb", P.slots([5, 0, 0, 0, 0], 0))]
+    ev, t = walk_list(600, UI["downs"]["u1"])
+    s = e.run("old16", t + 100, msgs + ev, save=True)
+    snap, clock, seen = s, e.clock + t + 100, []
+    for i in range(3):
+        snap = e.run(f"old16-{i}", 150, [(20, "turn", ("0:+8", 3, 10))], snap=snap, start=clock, save=True)
+        clock += 150
+        seen.append(kit16(e, snap)[0])
+    check("old16: a 16-name list steps at 8 k", all(v % 8 == 0 for v in seen), str(seen))
 
 
 NP_KNOBS = [dict(p=1, look="list", kind="enum", role="preset", enum_count=4, long="Algorithm", short="ALG"),
@@ -755,8 +828,8 @@ def t_stale(e):
     t2 += 400
     s = e.run("stale-left", t2, ev, save=True, count=[0x400dea82])
     ch = e.peek(s, sym("us") + sym("us_off_ch"), 1)[0]
-    check("stale: list left by GLOBAL - U1 stays on BD, no close (0x400dea82 0), the note still there, no defaults",
-          e.peek(s, 0x8000ea00, 1)[0] == 35 and e.counts.get(0x400dea82) == 0 and ch == 1 and kit16(e, s)[8:] == base[8:],
+    check("stale: list left by GLOBAL - U1 stays on BD, no close (0x400dea82 0), the note gone with the list, no defaults",
+          e.peek(s, 0x8000ea00, 1)[0] == 35 and e.counts.get(0x400dea82) == 0 and ch == 0 and kit16(e, s)[8:] == base[8:],
           f"close {e.counts.get(0x400dea82)}, ch {ch}, {kit16(e, s)}")
     ev2, t3 = walk_list(t2, 0)   # SRC SRC, YES at once
     s = e.run("stale", t3 + 200, ev + ev2, save=True, count=[0x400dea82, 0x400def0a])
@@ -1387,7 +1460,7 @@ def t_kitguard(e):
           and word0(e, s2) == (FP_A, FP_A), f"{got} {word0(e, s2)}")
 
 
-TESTS = {"base": t_base,"exciter": t_exciter, "variants": t_variants, "takeover": t_takeover, "enum": t_enum,
+TESTS = {"base": t_base,"exciter": t_exciter, "variants": t_variants, "takeover": t_takeover, "enum": t_enum, "enum36": t_enum36, "old16": t_old16,
          "names": t_names, "labels": t_labels, "unused": t_unused, "dspmod": t_dspmod, "junopat": t_junopat, "writeback": t_writeback, "texts": t_texts,
          "page2": t_page2, "poweroff": t_poweroff, "stock": t_stock, "strict": t_strict, "menu": t_menu,
          "choose": t_choose, "assign": t_assign, "stale": t_stale, "sound": t_sound, "load": t_load, "window": t_window,

@@ -377,13 +377,13 @@ def t_stocktrigup(e):
 
 
 def t_upstock(e):
-    """1046: where rui1046 / rui1047 bind nothing to UP + a key (AMP is bound since rui1047: stockupkeys AMP shows stock leaves it free), the key does on rui1046 what it does on stock 1.73: for UP held +
-    SMPL / FLTR / AMP / NO / PAGE / a pad / T14 on the main screen and in GRID REC, and with T1 held in GRID REC (a stock
+    """1046: where rui1046 / rui1047 bind nothing to UP + a key (AMP is bound since rui1047, FLTR since 7ae: stockupkeys shows stock leaves them free), the key does on rui1046 what it does on stock 1.73: for UP held +
+    SMPL / NO / PAGE / a pad / T14 on the main screen and in GRID REC, and with T1 held in GRID REC (a stock
     track) UP + SRC / RECORD / PLAY / STOP, the items the gesture changes (against the same run without it) are the same
     on both, with the same new values for the pattern, the sequencer and the selected track (the two bases differ, so
     deltas are compared). UPSTOCK=A,B limits the keys."""
     kw = stock_kw(e)
-    plain = os.environ.get("UPSTOCK", "SMPL,FLTR,NO,PAGE,SD,T14").split(",")
+    plain = os.environ.get("UPSTOCK", "SMPL,NO,PAGE,SD,T14").split(",")
     held = os.environ.get("UPSTOCK_HELD", "SRC,RECORD,PLAY,STOP").split(",")
     for ctx, pre, keys in (("main", [], plain), ("grid", [(10, "press", "RECORD")], plain),
                            ("gridtrig", [(10, "press", "RECORD"), (20, "press", "T1:100")], held)):

@@ -363,8 +363,8 @@ def t_stock(e):
     b = e.run("play_seq", 700, [(300, "usb", mask2e((0, 1, 2)))] + pl)
     check("stock: the sequencer's state after 1.5 s of play identical with and without seq tracks (0x405c8c90..)",
           e.peek(a["snap"], 0x405C8C90, 0xB0) == e.peek(b["snap"], 0x405C8C90, 0xB0))
-    host = (0x2C, 0x2D, 0x35, 0x33, 0x3B, 0x2B, 0x49, 0x4B)   # ours, and what a host's presence changes (hello repeats and
-    # the snapshots after each - 33, 3B, 1036b's 49, 1052's 4B ACTIVE -, 2B idle bit)
+    host = (0x2C, 0x2D, 0x35, 0x33, 0x3B, 0x2B, 0x49, 0x4B, 0x45)   # ours, and what a host's presence changes (hello repeats and
+    # the snapshots after each - 33, 3B, 7ae's 45, 1036b's 49, 1052's 4B ACTIVE -, 2B idle bit)
     # per command in order (1033's resync sends 13 SCALE + FILL through the same sender: the other reports keep their
     # content and their order, only their interleaving with each other may shift)
     per = lambda r: {c: [m for m in r["msgs"] if m[4] == c] for c in {m[4] for m in r["msgs"]} - set(host)}   # noqa: E731

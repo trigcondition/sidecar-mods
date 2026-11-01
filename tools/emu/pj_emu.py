@@ -269,7 +269,7 @@ def t_hello(e):
     """The hello's caps carry bit 2, an ACTIVE follows it (slot 1, PRESETS), no event without a panel action."""
     got, img, _, _ = e.run("hello", ["w:400"])
     hellos = [g for g in got if g[0] == "HELLO"]
-    check("hello: a 35 with caps 7 (36, 16 label tables, 4B)", hellos and all(g[1] == 7 for g in hellos), hellos)
+    check("hello: a 35 with caps 15 (36, 16 label tables, 4B, 45)", hellos and all(g[1] == 15 for g in hellos), hellos)
     a = actives(got)
     check("hello: ACTIVE slot 1 PRESETS after it", a[:1] == [("ACTIVE", 1, "PRESETS")], a[:2])
     i_h = next((i for i, g in enumerate(got) if g[0] == "HELLO"), None)

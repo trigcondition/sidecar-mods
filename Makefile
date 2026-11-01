@@ -41,7 +41,7 @@ RELEASE_MODS := 0014-hidden-machines 0021-ext 0022-looper 0023-teensy-drive 0025
 RELEASE_ARGS := --param 0014-hidden-machines:variants=0 --param 0014-hidden-machines:funcgen=0 \
 	--param 0014-hidden-machines:test=0 --param slots=1 --param 0022-looper:keys=0 \
 	--param 0022-looper:sfx=1 --param 0022-looper:rui=1 --param 0022-looper:fxin=1 \
-	--area-elek 0022-looper --area-elek 0025-sendfx-report
+	--area-elek 0021-ext --area-elek 0022-looper --area-elek 0025-sendfx-report
 
 release: symbols layout
 	$(PY) tools/comp/calib_tables.py --check
