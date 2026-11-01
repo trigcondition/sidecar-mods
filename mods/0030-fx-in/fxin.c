@@ -11,6 +11,9 @@
  *   0x401b9e68  u16  bumped by the router on every 26 (an ask too): fxin_tick answers with 27.
  * Aligned long / word stores, one writer each in the MIDI task (the router) - plus fxin_tick's reset to
  * off when the port is down, when no host can be sending.
+ *
+ * Also the mix report for the Sidecar's through mode (host-link 50, design.md "The mix report"): each voice stem's pan
+ * and who is off ROUTE TO MAIN, from fxin_tick. Reads only.
  */
 #include <stdint.h>
 
@@ -93,6 +96,8 @@ static struct {
   uint8_t init;
   uint8_t was_up;   /* the port was configured at the last tick */
   uint8_t tell;     /* a report owed without an ask: the port came up */
+  uint8_t quiet;    /* ticks since the last 50 */
+  uint8_t mix[10];  /* the last 50's bytes */
 } st __attribute__((section(".bss")));
 
 static int32_t try_send(const uint8_t *m, int32_t n) {
@@ -109,6 +114,41 @@ static int32_t try_send(const uint8_t *m, int32_t n) {
   MIDI_SEND(n, m);
   MUTEX_GIVE(MIDI_MUTEX);
   return 1;
+}
+
+/* The mix report: F0 7D 52 54 50 <pan 0..7> <route bit 7> <route bits 0..6> F7 to the USB host, on a change and once a second
+ * (a host that restarted learns it). Stem s is physical voice stem_voice[s] (IN 2..9: BD SD RS/CP BT LT MT/HT CH/OH CY/CB);
+ * its pan is that voice's owning track's word 38 of the modulated copy, p-locks, slides and the LFO included, rounded as
+ * the unreleased 0024-ob-mix's mix CCs (measured there). The route byte: a set bit, that voice off the main bus, packed
+ * from physical voices 7,6,5,4,0,1,2,3 MSB first (re/subsystems/compressor-hardware.md); the host unpacks it. */
+extern const volatile int16_t lfo_track_array[];
+#define W_PAN        38
+#define TRACK_WORDS  42
+#define OWNER(v)     (((const volatile uint8_t *)0x40290dd8u)[v])
+#define ROUTE_BYTE   (*(const volatile uint8_t *)0x80006466u)
+#define MIX_EVERY    20          /* ev_tick is about 20 Hz */
+static const uint8_t stem_voice[8] = {0, 2, 7, 1, 3, 5, 4, 6};
+
+static void mix_tick(void) {
+  uint8_t m[16], b[10];
+  int32_t i, changed = st.quiet >= MIX_EVERY;
+  for (i = 0; i < 8; ++i) {
+    int32_t v = lfo_track_array[OWNER(stem_voice[i]) * TRACK_WORDS + W_PAN];
+    v = v < 0 ? 0 : (v + 0x80) >> 8;
+    b[i] = (uint8_t)(v > 127 ? 127 : v);
+  }
+  b[8] = ROUTE_BYTE >> 7;
+  b[9] = ROUTE_BYTE & 0x7f;
+  m[0] = 0xf0, m[1] = 0x7d, m[2] = 0x52, m[3] = 0x54, m[4] = 0x50, m[15] = 0xf7;
+  for (i = 0; i < 10; ++i) {
+    changed |= b[i] != st.mix[i];
+    m[5 + i] = b[i];
+  }
+  if (st.quiet < 255) ++st.quiet;
+  if (changed && try_send(m, 16)) {
+    for (i = 0; i < 10; ++i) st.mix[i] = b[i];
+    st.quiet = 0;
+  }
 }
 
 /* ev_tick (core-ar2, the UI loop): answer a 26 with 27, and send a 27 once each time the USB port comes
@@ -134,4 +174,5 @@ void fxin_tick(void *ctrl) {
       st.tell = 0;
     }
   }
+  if (up) mix_tick();
 }

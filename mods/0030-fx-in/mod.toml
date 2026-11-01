@@ -24,6 +24,10 @@ reverb per side, 0024-ob-mix's measured mix), from the CPU's own effect
 buffers of the same block as the voices on 2..9. Back to off when the USB port
 goes down. AUDIO IN still reaches the sampler and the analog path. Emulator
 only.
+
+Also the mix report for the Sidecar's through mode: F0 7D 52 54 50 <8 stems'
+pans> <route byte> F7, on a change at most 20 a second and once a second, from
+the same tick: reads only, works with the switch off.
 """
 
 [sources]
@@ -34,6 +38,6 @@ subscribe = [{ event = "ev_tick", fn = "fxin_tick", order = 75 }]
 
 [requires]
 shared = false
-symbols = ["fx_return_gain_pre", "fx_return_gain_post", "fx_delay_out", "fx_reverb_out", "ob_in_write"]
+symbols = ["fx_return_gain_pre", "fx_return_gain_post", "fx_delay_out", "fx_reverb_out", "ob_in_write", "lfo_track_array"]
 # its switch is written by 0022's router (fxin=1) on a host 26; elekloader's `requires` (with what build.py finds in the bytes; tools/build.py cross_refs)
 mods = ["0022-looper"]

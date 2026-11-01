@@ -49,6 +49,52 @@ fxin_ob:
 2:	jmp	ob_in_write
 
 #NO_APP
+	.align	2
+	.type	try_send, @function
+try_send:
+	mov3q.l #1,%d0
+	cmp.l 1094562388.l,%d0
+	jne .L2
+	move.l #1123449384,-(%sp)
+	jsr 1073746332
+	addq.l #4,%sp
+	tst.l %d0
+	jeq .L1
+	move.l 1094562704,%a0
+	clr.l %d0
+.L4:
+	tst.l %a0
+	jeq .L5
+	move.l 52(%a0),%a0
+	addq.l #1,%d0
+	mov3q.l #4,%d1
+	cmp.l %d0,%d1
+	jne .L4
+.L5:
+	mvz.w #4027,%d1
+	cmp.l 1094562392.l,%d1
+	jlt .L7
+	subq.l #4,%d0
+	tst.l %d0
+	jeq .L8
+.L7:
+	move.l #1123449384,-(%sp)
+	jsr 1073746414
+	addq.l #4,%sp
+.L2:
+	clr.l %d0
+.L1:
+	rts
+.L8:
+	move.l 4(%sp),-(%sp)
+	move.l 12(%sp),-(%sp)
+	jsr 1073752544
+	move.l #1123449384,-(%sp)
+	jsr 1073746414
+	lea (12,%sp),%sp
+	mov3q.l #1,%d0
+	jra .L1
+	.size	try_send, .-try_send
 	.text
 .LC0:
 	.string	"\360}RT'"
@@ -58,107 +104,174 @@ fxin_ob:
 	.globl	fxin_tick
 	.type	fxin_tick, @function
 fxin_tick:
-	subq.l #8,%sp
-	move.l %a6,-(%sp)
-	move.w 1075551848,%a6
+	link.w %fp,#-44
+	movem.l #1036,(%sp)
+	move.w 1075551848,%d2
 	move.l 1094562388,%d1
-	move.l %d2,-(%sp)
-	mov3q.l #1,%d2
-	cmp.l %d1,%d2
+	move.l %d1,-32(%fp)
+	mov3q.l #1,%d1
+	cmp.l -32(%fp),%d1
 	seq %d0
 	neg.l %d0
 	tst.b st+2.l
-	jne .L2
-	move.w %a6,st
-	move.b %d2,st+2
-.L2:
-	mov3q.l #1,%d2
+	jne .L16
+	move.w %d2,st
+	move.b %d1,st+2
+.L16:
+	mov3q.l #1,%d1
 	tst.b st+3.l
-	jne .L3
-	cmp.l %d1,%d2
-	jne .L5
+	jne .L17
+	cmp.l -32(%fp),%d1
+	jne .L19
 	moveq #1,%d1
 	move.b %d1,st+4
-	jra .L5
-.L3:
-	cmp.l %d1,%d2
-	jeq .L5
-	move.l #1180191025,%d1
-	cmp.l 1075551844.l,%d1
-	jne .L5
-	move.l #1180191024,%d2
-	move.l %d2,1075551844
-.L5:
+	jra .L19
+.L17:
+	cmp.l -32(%fp),%d1
+	jeq .L19
+	move.l #1180191025,%a0
+	cmp.l 1075551844.l,%a0
+	jne .L19
+	move.l #1180191024,%a1
+	move.l %a1,1075551844
+.L19:
 	move.b %d0,st+3
 	mvz.w st,%d1
-	mvz.w %a6,%d0
+	mvz.w %d2,%d0
 	cmp.l %d1,%d0
-	jne .L6
+	jne .L20
 	tst.b st+4.l
-	jeq .L1
-.L6:
-	move.l %sp,%d2
-	add.l #9,%d2
+	jeq .L21
+.L20:
 	mov3q.l #7,-(%sp)
 	pea .LC0
-	move.l %d2,-(%sp)
+	move.l %fp,%d3
+	add.l #-16,%d3
+	move.l %d3,-(%sp)
 	jsr memcpy
 	lea (12,%sp),%sp
-	move.l #1180191025,%d1
-	cmp.l 1075551844.l,%d1
+	move.l #1180191025,%a0
+	cmp.l 1075551844.l,%a0
 	seq %d0
-	neg.l %d0
-	move.b %d0,14(%sp)
-	mov3q.l #1,%d0
-	cmp.l 1094562388.l,%d0
-	jne .L1
-	move.l #1123449384,-(%sp)
-	jsr 1073746332
-	addq.l #4,%sp
-	tst.l %d0
-	jeq .L1
-	move.l 1094562704,%a0
-	clr.l %d0
-.L9:
-	tst.l %a0
-	jeq .L10
-	move.l 52(%a0),%a0
-	addq.l #1,%d0
-	mov3q.l #4,%d1
-	cmp.l %d0,%d1
-	jne .L9
-.L10:
-	mvz.w #4027,%d1
-	cmp.l 1094562392.l,%d1
-	jlt .L12
-	subq.l #4,%d0
-	tst.l %d0
-	jeq .L13
-.L12:
-	move.l #1123449384,-(%sp)
-	jsr 1073746414
-	addq.l #4,%sp
-.L1:
-	move.l (%sp)+,%d2
-	move.l (%sp)+,%a6
-	addq.l #8,%sp
-	rts
-.L13:
-	move.l %d2,-(%sp)
-	clr.b %d2
 	mov3q.l #7,-(%sp)
-	jsr 1073752544
-	move.l #1123449384,-(%sp)
-	jsr 1073746414
-	lea (12,%sp),%sp
-	move.w %a6,st
-	move.b %d2,st+4
-	jra .L1
+	move.l %d3,-(%sp)
+	neg.l %d0
+	move.b %d0,-11(%fp)
+	jsr try_send
+	addq.l #8,%sp
+	tst.l %d0
+	jeq .L21
+	clr.b %d0
+	move.w %d2,st
+	move.b %d0,st+4
+.L21:
+	mov3q.l #1,%d1
+	cmp.l -32(%fp),%d1
+	jne .L15
+	move.b st+5,%d2
+	mvz.b %d2,%d0
+	move.w %d2,%a1
+	moveq #19,%d2
+	move.l %d0,-32(%fp)
+	cmp.l %d0,%d2
+	jcs .L24
+	clr.l %d1
+.L24:
+	sub.l %a0,%a0
+	move.l #stem_voice,%d2
+.L27:
+	mvz.b (%a0,%d2.l),%d0
+	add.l #1076432344,%d0
+	move.l %d0,%a2
+	mvz.b (%a2),%d0
+	lea lfo_track_array,%a2
+	muls.w #42,%d0
+	mvs.w 76(%a2,%d0.l*2),%d0
+	tst.l %d0
+	jlt .L32
+	add.l #128,%d0
+	asr.l #8,%d0
+	cmp.l #128,%d0
+	jne .L26
+	moveq #127,%d0
+	jra .L26
+.L32:
+	clr.l %d0
+.L26:
+	move.b %d0,-26(%fp,%a0.l)
+	addq.l #1,%a0
+	moveq #8,%d0
+	cmp.l %a0,%d0
+	jne .L27
+	mvz.b -2147457946,%d0
+	moveq #127,%d2
+	move.l #-260222380,%a0
+	lsr.l #7,%d0
+	move.b %d0,-18(%fp)
+	move.b -2147457946,%d0
+	move.l %a0,-16(%fp)
+	sub.l %a0,%a0
+	and.l %d2,%d0
+	moveq #-9,%d2
+	move.b %d0,-17(%fp)
+	moveq #80,%d0
+	move.b %d2,-1(%fp)
+	move.l #st+6,%d2
+	move.b %d0,-12(%fp)
+.L28:
+	move.b -26(%fp,%a0.l),%d3
+	move.b (%a0,%d2.l),%d0
+	addq.l #1,%a0
+	move.b %d3,-12(%a0,%fp.l)
+	eor.l %d3,%d0
+	tst.b %d0
+	sne %d0
+	mvs.b %d0,%d0
+	neg.l %d0
+	or.l %d0,%d1
+	moveq #10,%d0
+	cmp.l %a0,%d0
+	jne .L28
+	move.l -32(%fp),%d0
+	cmp.l #255,%d0
+	jeq .L29
+	move.l %a1,%d0
+	addq.l #1,%d0
+	move.b %d0,st+5
+.L29:
+	tst.l %d1
+	jeq .L15
+	pea 16.w
+	pea -16(%fp)
+	jsr try_send
+	addq.l #8,%sp
+	tst.l %d0
+	jeq .L15
+	clr.l %d0
+.L31:
+	lea -26(%fp,%d0.l),%a1
+	move.l %d2,%a0
+	moveq #10,%d1
+	move.b (%a1),(%a0,%d0.l)
+	addq.l #1,%d0
+	cmp.l %d0,%d1
+	jne .L31
+	clr.b %d2
+	move.b %d2,st+5
+.L15:
+	movem.l -44(%fp),#1036
+	unlk %fp
+	rts
 	.size	fxin_tick, .-fxin_tick
+	.text
+	.type	stem_voice, @object
+	.size	stem_voice, 8
+stem_voice:
+	.base64	"AAIHAQMFBAY="
 	.section	.bss,"aw",@nobits
 	.align	2
 	.type	st, @object
-	.size	st, 6
+	.size	st, 16
 st:
-	.zero	6
+	.zero	16
 	.ident	"GCC: (GNU) 16.2.0"

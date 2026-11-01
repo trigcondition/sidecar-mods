@@ -100,3 +100,22 @@ the link client records the IN frames (oblink R) and the Rytm's USB MIDI (M).
   enters it (as 0024).
 - A 26 that arrives before the first ev_tick after boot is applied but its answer is lost (the port is not up then
   in practice; the unasked 27 on port up covers it).
+
+## The mix report (2026-11-01, the Sidecar's master FX, through mode)
+
+With every track off ROUTE TO MAIN the Sidecar mixes the 8 stems itself. VOL, level, velocity and accent are in a stem;
+PAN and the route are not (re/subsystems/compressor-hardware.md "Voices"). So `fxin_tick` reports them, to the USB host,
+from the UI loop (about 20 Hz), through the same try-lock send as the 27; nothing is written that the OS reads.
+
+`F0 7D 52 54 50 <p0..p7> <route bit 7> <route bits 0..6> F7`, 16 B, on a change, and once a second. At most 320 B/s under
+an LFO on every pan.
+
+- **Pan:** word 38 of `lfo_track_array` + 84 t (as the unreleased 0024-ob-mix's mix CCs, [measured] there: the modulated copy,
+  p-locks, slides and LFOs in), rounded the same way; t = the voice's owner (0x40290dd8), so a shared voice reports the track that plays it.
+- **Route:** the byte 0x80006466 as the block driver packed it, global and kit settings included. The host unpacks it.
+- **Stem order:** physical voices 0,2,7,1,3,5,4,6, 0x401ef1d0 inverted [code].
+- A kit's change, a p-lock or an LFO reaches the host within one tick plus the USB; the Sidecar ramps the gains over
+  at most 10 ms. A pan lags the analog one by up to 50 ms: a pan LFO at audio-ish rates is smoothed there.
+
+Older hosts ignore 50 (`voice_report` returns for anything but 03 / 04). A Sidecar on older mods gets no 50 and sums the
+stems centred.
