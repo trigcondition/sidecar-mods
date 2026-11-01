@@ -145,12 +145,13 @@ def seq4(a, name, strict=False):
 
 
 def t_seq(a):
-    r = seq4(a, "seq").key("PLAY", 1800).key("STOP", 300).go()
+    r = seq4(a, "seq").key("PLAY", 1800).key("STOP", 300).go(tail=2800)   # the default sounds' amps take up to 12 s to close
     tr = [m for m in r.msgs if m[4] == 4]
     v = sorted({m[5] & 7 for m in tr})
     flags = {m[5] & 7: m[5] & 0x78 for m in tr}
     check("seq: the sequencer's trigs on all four tracks, each its machine", v == [0, 1, 2, 3] and flags == {0: 0x00, 1: 0x08, 2: 0x10, 3: 0x48}, f"{len(tr)} trigs, flags {flags}")
-    check("seq: a note-off for each, within one", abs(r.count(0x11) - len(tr)) <= 4, f"{r.count(0x11)} offs, {len(tr)} trigs")
+    ended = all(any(m[4] == 0x11 and m[5] == vv for m in r.msgs[max(i for i, x in enumerate(r.msgs) if x[4] == 4 and x[5] & 7 == vv):]) for vv in range(4))
+    check("seq: every voice's last note ended (a note retrigged inside the amp's tail has no off of its own)", ended, f"{r.count(0x11)} offs, {len(tr)} trigs")
     gaps = {}
     last = {}
     voices = iter(m for m in r.msgs if m[4] in (3, 4))

@@ -22,7 +22,7 @@
 #define CREDIT_MAX 32
 #define CREDIT_FLOOR 12         /* 4 voices x note-off, trig, a spare */
 #define VCA_SHUT   0x7F00
-#define GATE_MIN   32u          /* blocks after a report before a closed amp means the note ended: its attack has started */
+#define GATE_MIN   32u          /* blocks after a trig before a closed amp means the note ended: its attack has started */
 #define GATE_SHUT  8u           /* blocks closed in a row */
 #define DEVICE_ID  3            /* core/device/a4.h */
 
@@ -49,7 +49,7 @@ static const struct { uint32_t at; uint8_t step; } source[A4_ON_PAGE] = {
 struct a4_voice {
     uint16_t seen[A4_ON_PAGE];  /* value << 7 | fraction: as the render last read them */
     uint16_t pend[A4_ON_PAGE];  /* what goes out next */
-    uint32_t sent_at;
+    uint32_t sent_at, on_at;
     uint8_t note, vel, machine; /* its machine + 1, 0 none */
     uint8_t pend_trig, pend_params, pend_off, late_off, open, shut;
 };
@@ -105,7 +105,7 @@ void a4_render(void)
         if (ev == 1) {
             x->note = (uint8_t)(VOICE_NOTE(v) & 0x7f);
             x->vel = VOICE_VEL(v) & 0x7f;
-            x->pend_trig = 1, x->open = 1, x->late_off = 0, x->shut = 0;
+            x->pend_trig = 1, x->open = 1, x->late_off = 0, x->shut = 0, x->on_at = now;
             read_voice(v, x, 1);
         } else if (ev == 2 && x->open) {
             x->open = 0;
@@ -116,7 +116,7 @@ void a4_render(void)
         } else if (v == scan) {
             read_voice(v, x, 0);
         }
-        if (x->open && ev != 1 && now - x->sent_at >= GATE_MIN) {   /* its amp has closed */
+        if (x->open && ev != 1 && now - x->on_at >= GATE_MIN) {   /* its amp has closed */
             if (VOICE_VCA_L(v) >= VCA_SHUT && VOICE_VCA_R(v) >= VCA_SHUT) {
                 if (++x->shut >= GATE_SHUT) {
                     x->open = 0, x->shut = 0;

@@ -125,8 +125,8 @@ def main():
     for name, det, lev, seq in (("machine", 1, False, False), ("input_only", 1, True, False), ("no_machine_lev0", 0, True, False), ("seq_to_a4", 1, True, True)):
         trig = None
         if seq:
-            a.notes = 1                                  # the sequencer plays; the A4's own trigs: one
-            trig = "6.0:0.3:0:60"
+            a.notes = 3                                  # the sequencer plays between the A4's own trigs
+            trig = "11.5:0.3:0:60"
         out, notes, t = run(a, name, det, lev, trig)
         ch, d = read_wav32(out + "/to_a4.wav")
         ic, r = read_wav32(out + "/from_a4.wav")
@@ -135,8 +135,12 @@ def main():
         ms = list(messages(open(out + "/usb.bin", "rb").read()))
         tr = sum(1 for m in ms if m[4] == 4)
         print(f"{name}: to A4 peaks {[round(max(abs(x) for x in c) / 2**31, 3) for c in d]}; voice 1 back on IN by the second {[round(v, 4) for v in peaks(r[2])]}; 04 from the A4 {tr}")
-        print("   ", [l for l in side.splitlines() if l.startswith("sidecar_emu: end")])
+        print("   ", [l for l in side.splitlines() if l.startswith("sidecar_emu: end")], "voice trigs in the engine:", sum(1 for l in side.splitlines() if "core: trig voice" in l))
+        res[name + "_trigs"] = (tr, sum(1 for l in side.splitlines() if "core: trig voice" in l))
     ok = res["input_only"] > 10 * res["no_machine_lev0"]
+    echo = res["seq_to_a4_trigs"]
+    print("PASS" if echo[0] == 4 and echo[1] == 3 else "FAIL", "the sequencer's note: the A4 played it (04s: 3 DIN + 1), the engine logged the 3 DIN trigs and not that echo:", echo)
+    ok = ok and echo[0] == 4 and echo[1] == 3
     print("PASS" if ok else "FAIL", "the Sidecar's voice through the A4's own voice and back on IN: input only", res["input_only"], "against no machine", res["no_machine_lev0"])
     return 0 if ok else 1
 

@@ -1,0 +1,36 @@
+{
+ "elekloader_store": 1,
+ "device": "analog-four-mk2",
+ "id": "0x38042e20",
+ "ancestors": [],
+ "split": {
+  "track": 2,
+  "pattern": 4
+ },
+ "generation": {
+  "sound": 1,
+  "kit": 1,
+  "global": 1,
+  "track": 1,
+  "pattern": 1,
+  "project": 1
+ },
+ "next": {
+  "sound": 4,
+  "kit": 0,
+  "global": 0,
+  "track": 0,
+  "pattern": 0,
+  "project": 0
+ },
+ "fields": [
+  {
+   "mod": "sidecar-a4",
+   "sym": "a4_machine",
+   "scope": "sound",
+   "offset": 0,
+   "bits": 4
+  }
+ ],
+ "freed": []
+}
