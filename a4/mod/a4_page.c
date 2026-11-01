@@ -23,15 +23,31 @@ const struct a4_machine a4_machine_of[A4_MACHINES] = {
 
 static uint32_t stepped_at;
 
+static void *selection;
+
+/* The selected track; before the page key first reached this page, track 1. UI task only: the call is virtual. */
+static uint32_t ui_track(void)
+{
+    return selection ? (uint32_t)SELECTION_TRACK(selection) : 0;
+}
+
 static void *ui_sound(void)
 {
-    return KIT_SOUND(KIT_INDEX, UI_TRACK);
+    return KIT_SOUND(KIT_INDEX, ui_track());
+}
+
+/* The page key on its way here: the view tells which selection object the pages share. */
+static int32_t a4_shown(void *view)
+{
+    if (view)
+        selection = VIEW_SELECTION(view);
+    return 1;
 }
 
 static int get(int32_t id, int32_t *value)
 {
     (void)id;
-    if (UI_TRACK >= A4_VOICES)
+    if (ui_track() >= A4_VOICES)
         return 0;
     *value = (int32_t)(core_store_get(STORE(a4_machine), ui_sound(), 0) & 7u) << 8;
     return 1;
@@ -40,8 +56,9 @@ static int get(int32_t id, int32_t *value)
 static int delta(void *view, int32_t id, int32_t d, int32_t func)
 {
     int32_t m;
-    (void)view; (void)id; (void)func;
-    if (UI_TRACK >= A4_VOICES)
+    (void)id; (void)func;
+    selection = VIEW_SELECTION(view);
+    if (ui_track() >= A4_VOICES)
         return 0;
     if (a4_now - stepped_at < STEP_GAP && d)    /* a list, not a value: a turn's size says nothing, an accelerated turn would skip machines */
         return 1;
@@ -64,7 +81,7 @@ static int text(struct core_text *t)
 
 const struct core_param a4_params = {KNOB, KNOB, get, delta, text};
 const struct core_page a4_page = {PAGE, "SIDECAR", {KNOB}};
-const struct core_view_page a4_view = {CORE_TRACK_SYNTH, CORE_KEY_OSC1, PAGE, 0};
+const struct core_view_page a4_view = {CORE_TRACK_SYNTH, CORE_KEY_OSC1, PAGE, a4_shown};
 
 /* The UI loop: each track's machine, for the render. A kit's change is seen within a tick. */
 void a4_machines_read(void)

@@ -59,8 +59,15 @@ typedef void (*a4_sem_fn)(void *sem);
 #define VOICE_NOTE(v)   (*(const volatile uint32_t *)(0x428799B8u + 76u * (v)))
 #define VOICE_VEL(v)    (*(const volatile uint8_t *)(0x428799C8u + 76u * (v)))
 
-/* The selected track (0..3 the synth tracks), and the live kit's sounds: core-a4's own layout. */
-#define UI_TRACK        (*(const volatile uint16_t *)0x4185403Eu)
+/* A voice's analog VCA as the control frame has it: 0x7FFF closed [measured, a4voice.rs]. The sequencer's LEN ends a note with no event of its own that
+ * was found; when both words are closed nothing of the voice can be heard, so that is where a note ends for the Sidecar too. */
+#define VOICE_VCA_L(v)  (*(const volatile int16_t *)(0x80003D82u + 26u * (v)))
+#define VOICE_VCA_R(v)  (*(const volatile int16_t *)(0x80003D84u + 26u * (v)))
+
+/* The selected track, through a page view, and the live kit's sounds: core-a4's own layout. */
+typedef int32_t (*a4_track_fn)(void *selection);
+#define VIEW_SELECTION(view) (*(void **)((char *)(view) + 116))     /* a page view's selection object */
+#define SELECTION_TRACK ((a4_track_fn)0x400ADBD2u)                  /* its track, 0..3 the synth tracks */
 #define KIT_INDEX       (*(const volatile uint32_t *)0x405F5CA4u)
 #define KIT_SOUND(k, t) ((void *)(0x411E9936u + 0x960u * (k) + 0x1Cu + 0x152u * (t)))
 #endif

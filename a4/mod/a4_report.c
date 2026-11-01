@@ -6,7 +6,7 @@
  *   - a trig 04 at once, with the current values
  *   - no answer per message; one voice in turn is sent again every RESEND blocks, which repairs a lost message
  *   - at most MAX_PASS messages a pass, trigs first, and one message every RATE blocks in all with a burst of CREDIT_MAX
- *   - a note's end 11 from the OS's own note-off event, never ahead of its trig
+ *   - a note's end 11 from the OS's own note-off event (a key, MIDI), or when the voice's amp has closed (the sequencer's LEN), never ahead of its trig
  * The render only reads and posts. The OS's sender runs on the mod's task. A track with no machine costs one byte test a block
  * and sends nothing. The hello: when the USB port comes up and HELLOS more times, and on while a track has a machine, so a
  * computer with no Sidecar on it sees a few short SysEx at connect and nothing after; a Sidecar that boots later resets the port
@@ -21,6 +21,9 @@
 #define RATE       5u           /* blocks a message: 300/s */
 #define CREDIT_MAX 32
 #define CREDIT_FLOOR 12         /* 4 voices x note-off, trig, a spare */
+#define VCA_SHUT   0x7F00
+#define GATE_MIN   32u          /* blocks after a report before a closed amp means the note ended: its attack has started */
+#define GATE_SHUT  8u           /* blocks closed in a row */
 #define DEVICE_ID  3            /* core/device/a4.h */
 
 /* The stock words a machine's P1..P15 read: the OS's working values for voice v, 8.8, after locks and LFOs [measured: each knob
@@ -48,7 +51,7 @@ struct a4_voice {
     uint16_t pend[A4_ON_PAGE];  /* what goes out next */
     uint32_t sent_at;
     uint8_t note, vel, machine; /* its machine + 1, 0 none */
-    uint8_t pend_trig, pend_params, pend_off, late_off, open;
+    uint8_t pend_trig, pend_params, pend_off, late_off, open, shut;
 };
 static struct a4_voice vo[A4_VOICES];
 volatile uint8_t a4_machine_now[A4_VOICES];
@@ -102,7 +105,7 @@ void a4_render(void)
         if (ev == 1) {
             x->note = (uint8_t)(VOICE_NOTE(v) & 0x7f);
             x->vel = VOICE_VEL(v) & 0x7f;
-            x->pend_trig = 1, x->open = 1, x->late_off = 0;
+            x->pend_trig = 1, x->open = 1, x->late_off = 0, x->shut = 0;
             read_voice(v, x, 1);
         } else if (ev == 2 && x->open) {
             x->open = 0;
@@ -112,6 +115,19 @@ void a4_render(void)
                 x->pend_off = 1;
         } else if (v == scan) {
             read_voice(v, x, 0);
+        }
+        if (x->open && ev != 1 && now - x->sent_at >= GATE_MIN) {   /* its amp has closed */
+            if (VOICE_VCA_L(v) >= VCA_SHUT && VOICE_VCA_R(v) >= VCA_SHUT) {
+                if (++x->shut >= GATE_SHUT) {
+                    x->open = 0, x->shut = 0;
+                    if (x->pend_trig)
+                        x->late_off = 1;
+                    else
+                        x->pend_off = 1;
+                }
+            } else {
+                x->shut = 0;
+            }
         }
         if (x->pend_trig || x->pend_off || (x->pend_params && now - x->sent_at >= REPORT_GAP && credit > CREDIT_FLOOR))
             wake = 1;
