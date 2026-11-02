@@ -17,6 +17,8 @@ A track's sound can pick a Sidecar machine. That track's trigs and parameters go
 | 4 | OSC1 PW | 9 | OSC2 PW | 14 | OSC 1&2 E |
 | 5 | OSC1 PWM | 10 | OSC2 PWM | 15 | OSC 1&2 H |
 
+What each P means is the machine's, as on the Rytm's SRC page: PLAITS ENG HRM TIM MOR DEC LPG TUN LEV, FM FIN AUX TMD MMD VEL GLD; JUNO PAT CUT RES ENV ATK DEC REL LEN; DAISYSP ENG STR BRI DMP INP EXC TUN LEV, XTN XDC FB OUT XP4 XLV XP5; 6-OP FM PAT TIM MOR DEC LPG TUN LEV LEN; MD CT1..CT8, ENG TYP LEV.
+
 P16 is fixed per machine. **LEV is not on the list:** turn OSC1 and OSC2 LEV down for the Sidecar alone, or leave them up to layer. A voice only sounds while the A4's amp is open: the same trig opens it. The A4's own amp envelope and filters shape the machine.
 
 With no Sidecar, or with every sound OFF, nothing changes: on USB a few short SysEx hellos at each port-up, and the page.
@@ -52,4 +54,4 @@ Needs an engine with the A4 profile (`core/device/a4.*`). Set USB CONFIG to OVER
 
 ## Not done
 
-Knob labels on the Sidecar's pages, sample machines (they need the Rytm's pool pages), remote UI, kit and project names on the Sidecar.
+Knob labels on the Sidecar's pages, sample machines (they need the Rytm's pool pages), remote UI, the project's name on the Sidecar, its transport report (use the A4's own CLOCK SEND and TRANSPORT SEND).
