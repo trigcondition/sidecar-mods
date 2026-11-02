@@ -482,7 +482,6 @@ def t_lock(a):
     check("lock: a locked trig moves TIM (knob H, P3); the others keep the track's 0", 0 < sum(x > 0 for x in tr) < len(tr), str(tr))
 
 
-TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 def poly_kit(r, track):
     """TRACKn, KIT > POLY CONFIG, all four voices."""
     r.key(f"TRACK{track}", 150).key("KIT", 120)
@@ -568,7 +567,27 @@ def t_mono(a):
     check("mono: a chord on a mono track's step: its first note", tr == [(60, 0)], str(seq_trigs(q)[-4:]))
 
 
-TESTS = {"chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+def t_chord_labels(a):
+    """Both features at once, on a machine with names: the page shows them while a programmed chord plays, a knob turned meanwhile asks for its title on the UI task, and every note still reports, in order, with the turned value."""
+    font = learn_font(a)
+    def prog(name):
+        return grid_chord(poly_kit(Run(a, name).overbridge().machine(1, 1), 1), notes=("KB_C1", "KB_E1", "KB_G1", "KB_B1"))
+    t0 = len(seq_trigs(prog("chlab0").go(tail=1)))
+    r = prog("chlab").key("PLAY", 300)
+    r.turn(7, 1, 40, every="3M", gap=300)                               # knob H on the OSC1 page: TIM, P3
+    r.key("STOP", 300).go(tail=500)
+    got, want = page_text(r.dir + "/end.png", font), want_labels("PLTS", "osc1")
+    check("chord_labels: the machine's names on the OSC1 page, in the run with the chord", all(same(g, w) for g, w in zip(got, want)), " ".join(x or "-" for x in got))
+    tr = seq_trigs(r)[t0:]
+    want_b = [(60, 0x00), (64, 0x00), (67, 0x00), (71, 0x00)]
+    bars = [tr[i:i + 4] for i in range(0, len(tr), 4)]
+    check("chord_labels: four notes on a step: four 04s, in order, every bar, with a knob turning", len(bars) >= 2 and all(b == want_b for b in bars), str(tr[:9]))
+    p3 = [m[8 + 2 * 2] for m in r.msgs if m[4] == 4][t0:]
+    check("chord_labels: the turned knob's value rides on the trigs", len(set(p3)) > 1, str(p3[:12]))
+    check("chord_labels: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
+TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "chord_labels": t_chord_labels, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():
