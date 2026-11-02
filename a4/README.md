@@ -6,7 +6,7 @@
 
 A track's sound can pick a Sidecar machine. That track's trigs and parameters go to a Sidecar over USB MIDI, and the machine's audio comes back in OVERBRIDGE mode through stock's track inputs, into that voice's own analog path: its filters, overdrive, amp, pan and the A4's chorus, delay and reverb all act on it. No audio code is patched: OUT channels 2..5 are stock's.
 
-- **SIDECAR page:** OSC1 key, pressed until after NOISE. Knob A: OFF PLTS JUNO DSY FM6 MD B2. It is stored in the sound, so kits, the sound pool and copy and paste carry it, and every sound starts OFF.
+- **SIDECAR page:** OSC1 key, pressed until after NOISE. Knob A: OFF PLTS JUNO DSY FM6 MD B2 U1 U2 U3 U4 U5 (U1..U5: what the Sidecar's User machines tab put in those slots). It is stored in the sound, so kits, the sound pool and copy and paste carry it, and every sound starts OFF.
 - **Knobs:** a Sidecar track reads OSC1 and OSC2's pages as the machine's P1..P15, after locks and LFOs. The screen still says TUN, DET and so on.
 
 | P | Knob | P | Knob | P | Knob |

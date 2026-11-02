@@ -234,6 +234,15 @@ def t_kit(a):
     check("kit: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
+def t_user(a):
+    """U5 on track 1, turned past the end of the list, and U1 on track 2 (the emulator's nudges drop some steps above 4, so the counts are by test)."""
+    r = Run(a, "user").overbridge().machine(1, 30).machine(2, 8)
+    r.midi("903c64", 100).midi("803c00", 100).midi("913c64", 100).midi("813c00", 100).go()
+    tr = {x[5] & 7: x[5] & 0x78 for x in r.msgs if x[4] == 4}
+    check("user: U5 and U1 by their flags, the list ends at U5", tr == {0: 0x70, 1: 0x50}, str(tr))
+    check("user: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
 def t_poly(a):
     """KIT > POLY CONFIG, all four voices: a chord on the selected track. The event block is the track's, whichever analog voices play the notes."""
     peek = ",".join(hex(0x80003D80 + 26 * v) for v in range(4))
@@ -261,7 +270,7 @@ def t_poly(a):
     check("poly: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
-TESTS = {"kit": t_kit, "poly": t_poly, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+TESTS = {"kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():

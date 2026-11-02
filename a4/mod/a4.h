@@ -9,7 +9,8 @@
 #define A4_VOICES   4
 #define A4_PARAMS   16          /* P1..P16, as the Rytm's reports */
 #define A4_ON_PAGE  15          /* the stock values a machine reads; P16 is fixed per machine */
-#define A4_MACHINES 6
+#define A4_MACHINES 11         /* PLTS..B2 and U1..U5; the sound's field is 4 bits: 0 OFF, 1..11 */
+#define A4_MACHINE_BITS 15u
 
 /* A machine: what its reports say to the Sidecar (core/machines.h). */
 struct a4_machine {
