@@ -842,24 +842,22 @@ def t_am1(a):
     """Decision 6: AM1 over its whole range, stock's a switch. With OSC1 LEV 0 only osc1's own words may move: nothing of the filters, drive, amp or OSC2's level and frequency words, stock's render takes the value, no fault."""
     F = 0x80003D6C
     W = (3, 5, 6, 7, 8, 9, 10, 11, 12, 72, 73, 74, 75)
-    def peeks(r):
+    def run(name, turn):
+        r = Run(a, name).overbridge().machine(1, 1)
         r.env["DTBOOT_PEEK"] = ",".join(hex(F + 2 * w & ~3) for w in W)
-        return r
-    r = peeks(Run(a, "am1").overbridge().machine(1, 1)).key("OSC1", 150).key("OSC2", 150).key("OSC1", 150).key("OSC1", 150)
-    idle = r.t
-    r.t += 300
-    t0 = r.t
-    r.turn(9, 1, 400, gap=200).turn(9, -1, 400, gap=200).go(extra=["--every", "8M"], tail=50)
+        r.key("OSC1", 150).key("OSC2", 150).key("OSC1", 150).key("OSC1", 150)
+        r.t0 = r.t = r.t + 300
+        if turn:
+            r.turn(9, 1, 400, gap=200).turn(9, -1, 400, gap=200)
+        else:
+            r.t += 400
+        return r.go(extra=["--every", "8M"], tail=50)
+    r, c = run("am1", True), run("am1_c", False)
     v = [m[6 + 24] * 128 + m[7 + 24] for m in r.msgs if m[4] == 3 and m[5] & 7 == 0]
     check("am1: P13 0..127", v and min(v) == 0 and max(v) >= 16256, f"{min(v) / 128 if v else None}..{max(v) / 128 if v else None}")
-    moved = []
-    for w in W:
-        x = peeked(r, F + 2 * w)
-        i = int((idle + 100) // 8)
-        j = int(t0 // 8)
-        if set(x[j:]) - set(x[i:j]):
-            moved.append(w)
-    check("am1: filters, drive, amp, OSC2's words unmoved by the sweep", not moved and len(peeked(r, F + 6)) > 50, str(moved))
+    span = lambda q, w: (lambda x: (min(x), max(x)))(peeked(q, F + 2 * w)[int(q.t0 // 8):])
+    moved = [(w, span(r, w), span(c, w)) for w in W if span(r, w) != span(c, w) and abs(span(r, w)[0] - span(c, w)[0]) + abs(span(r, w)[1] - span(c, w)[1]) > 8]
+    check("am1: filters, drive, amp, OSC2's words: the same with the sweep as with no turn (this kit's LFO moves some in both)", not moved and len(peeked(r, F + 6)) > 50, str(moved))
     check("am1: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
