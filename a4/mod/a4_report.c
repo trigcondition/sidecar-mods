@@ -31,19 +31,19 @@
 static const struct { uint32_t at; uint8_t step; } source[A4_ON_PAGE] = {
     {0x80005B18u, 2},   /* OSC1 TUN + FIN */
     {0x80005B28u, 2},   /* OSC1 DET */
-    {0x80005B48u, 4},   /* OSC1 SPD */
-    {0x80005E00u, 4},   /* OSC1 PW */
+    {0x80005B48u, 4},   /* OSC1 PW */
+    {0x80005E00u, 4},   /* OSC1 SPD */
     {0x80005B58u, 4},   /* OSC1 PWM */
     {0x80005B20u, 2},   /* OSC2 TUN + FIN */
     {0x80005B30u, 2},   /* OSC2 DET */
-    {0x80005B4Au, 4},   /* OSC2 SPD */
-    {0x80005E02u, 4},   /* OSC2 PW */
+    {0x80005B4Au, 4},   /* OSC2 PW */
+    {0x80005E02u, 4},   /* OSC2 SPD */
     {0x80005B5Au, 4},   /* OSC2 PWM */
-    {0x80005BA8u, 2},   /* NOISE, knob B */
-    {0x80005E18u, 2},   /* NOISE, knob C */
-    {0x80005E38u, 2},   /* OSC 1&2, knob D */
-    {0x80005E40u, 2},   /* OSC 1&2, knob E */
-    {0x80005E30u, 2},   /* OSC 1&2, knob H */
+    {0x80005BA8u, 2},   /* NOISE COL */
+    {0x80005E18u, 2},   /* NOISE FAD */
+    {0x80005E38u, 2},   /* OSC 1&2 BND */
+    {0x80005E40u, 2},   /* OSC 1&2 SLI */
+    {0x80005E30u, 2},   /* OSC 1&2 FAD */
 };
 
 struct a4_voice {

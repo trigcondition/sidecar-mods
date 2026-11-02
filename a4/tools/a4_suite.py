@@ -4,11 +4,12 @@
     a4_suite.py --emu DIR --stock STOCK.syx --syx OS.syx --card IMG --out DIR [names...]
 
 Firmware-derived outputs stay in --out. Exit 0 when every test passes."""
-import argparse, hashlib, os, re, subprocess, sys, wave, struct
+import argparse, hashlib, os, re, subprocess, sys, wave, struct, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from decode import messages
 
 RESULTS = []
+TITLE_PLTS_HRM = "ffe3ff35a4e2"
 
 
 def check(name, ok, detail=""):
@@ -180,11 +181,11 @@ def t_strict(a):
 
 def t_params(a):
     r = Run(a, "params").overbridge().machine(2, 1)
-    r.key("TRACK2", 120).turn(7, 1, 200).key("OSC1", 10)       # OSC1 SPD on T2
+    r.key("TRACK2", 120).turn(7, 1, 200).key("OSC1", 10)       # OSC1 PW on T2
     r.go()
     p = [m for m in r.msgs if m[4] == 3 and m[5] & 7 == 1]
     vals = [m[6 + 2 * 2] for m in p]                           # P3
-    check("params: T2's SPD moves voice 1's P3", p and max(vals) - min(vals) >= 3, f"P3 {min(vals) if vals else None}..{max(vals) if vals else None} in {len(p)} reports")
+    check("params: T2's PW moves voice 1's P3", p and max(vals) - min(vals) >= 3, f"P3 {min(vals) if vals else None}..{max(vals) if vals else None} in {len(p)} reports")
     check("params: voice 0 silent", not [m for m in r.msgs if m[4] in (3, 4) and m[5] & 7 == 0])
 
 
@@ -272,7 +273,205 @@ def t_poly(a):
     check("poly: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
-TESTS = {"kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+# The screen as text: labels read from the PNG with a font learned from stock's own screens, so no glyph of the firmware's lives here and the mod cannot mark its own work.
+def bitmap(p):
+    """A PNG of the screen (384 x 192, 8-bit RGB, 3 pixels a dot) as 64 rows of 128 dots."""
+    b = open(p, "rb").read()
+    w, h = struct.unpack(">II", b[16:24])
+    i, z = 8, b""
+    while i < len(b):
+        n, t = struct.unpack(">I4s", b[i:i + 8])
+        if t == b"IDAT":
+            z += b[i + 8:i + 8 + n]
+        i += n + 12
+    raw, st, rows, prev = zlib.decompress(z), w * 3, [], bytes(w * 3)
+    for y in range(h):
+        f, r = raw[y * (st + 1)], bytearray(raw[y * (st + 1) + 1:(y + 1) * (st + 1)])
+        for x in range(st):
+            a, c, u = r[x - 3] if x >= 3 else 0, prev[x - 3] if x >= 3 else 0, prev[x]
+            pa, pb, pc = abs(u - c), abs(a - c), abs(a + u - 2 * c)
+            r[x] = (r[x] + (0, a, u, (a + u) // 2, a if pa <= pb and pa <= pc else u if pb <= pc else c)[f]) & 255
+        rows.append(r)
+        prev = bytes(r)
+    return [[rows[y * 3 + 1][(x * 3 + 1) * 3] > 128 for x in range(w // 3)] for y in range(h // 3)]
+
+
+def glyphs(bm, c, row):
+    """The letters of knob c's label, row 0 or 1, as tuples of columns."""
+    y0, x0 = (26, 48)[row], 26 * c
+    col = [tuple(bm[y0 + y][x] for y in range(7)) for x in range(x0, min(x0 + 26, 128))]
+    out, g = [], []
+    for k in col:
+        if any(k):
+            g.append(k)
+        elif g:
+            out.append(tuple(g)); g = []
+    if g:
+        out.append(tuple(g))
+    return out
+
+
+def page_text(p, font):
+    """Knobs A..J as strings; a letter stock's screens did not teach reads ?."""
+    bm = bitmap(p)
+    return ["".join(font.get(g, "?") for g in glyphs(bm, c, r)) for r in (0, 1) for c in range(5)]
+
+
+STOCK_PAGES = {"OSC1": "TUN FIN DET TRK LEV WAV SUB PW SPD PWM", "OSC2": "AM1 SMD SNC BND SLI AM2 TRG FAD SPD VIB", "FILTERS": "FRQ RES OVR TRK DEP FRQ RES TYP TRK DEP", "AMP": "ATK DEC SUS REL SHP CHO DEL REV PAN VOL"}
+
+
+def learn_font(a):
+    r = Run(a, "font", syx=a.stock, usb=False, env={"DTBOOT_PNG_DIR": os.path.join(a.out, "font"), "DTBOOT_STEPS": "1"})
+    r.key("TRACK1").key("OSC2", 150).key("OSC2", 150).key("OSC1", 150).key("FILTERS", 150).key("AMP", 150).go()
+    png = lambda k: sorted(f for f in os.listdir(r.dir) if f.endswith(f"_{k}.png"))[-1]
+    font = {}
+    for key, want in STOCK_PAGES.items():
+        bm = bitmap(os.path.join(r.dir, png(key)))
+        i = 0
+        for row in (0, 1):
+            for c in range(5):
+                w = want.split()[i]
+                i += 1
+                g = glyphs(bm, c, row)
+                if len(g) == len(w):
+                    font.update(zip(g, w))
+    return font
+
+
+# P of each knob A..J on the four pages (a4_page.c's p_of_id), 0 a stock knob, and each machine's names (README).
+KNOBS = {"osc1": (1, 0, 2, 0, 0, 0, 0, 3, 4, 5), "noise": (0, 11, 12, 0, 0, 0, 0, 0, 0, 0), "osc2": (6, 0, 7, 0, 0, 0, 0, 8, 9, 10), "x": (0, 0, 0, 13, 14, 0, 0, 15, 0, 0)}
+STOCK_LABELS = {"osc1": STOCK_PAGES["OSC1"].split(), "osc2": STOCK_PAGES["OSC1"].split(), "x": STOCK_PAGES["OSC2"].split(), "noise": ["SNH", "COL", "FAD", "", "LEV", "", "", "", "", ""]}
+NAMES = {"PLTS": "ENG HRM TIM MOR DEC LPG TUN LEV FM FIN AUX TMD MMD VEL GLD", "JUNO": "PAT CUT RES ENV ATK DEC REL LEN", "DSY": "ENG STR BRI DMP INP EXC TUN LEV XTN XDC FB OUT XP4 XLV XP5",
+         "FM6": "PAT TIM MOR DEC LPG TUN LEV LEN", "MD": "CT1 CT2 CT3 CT4 CT5 CT6 CT7 CT8 ENG TYP LEV", "U1": "P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15"}
+
+
+def to_page(r, page):
+    """From the OSC1 page, which machine() ends on, to a page, by stock's own keys."""
+    {"osc1": lambda: None, "noise": lambda: r.key("OSC1", 150), "osc2": lambda: r.key("OSC2", 150), "x": lambda: r.key("OSC2", 150).key("OSC2", 150)}[page]()
+    return r
+
+
+def want_labels(machine, page):
+    n = NAMES[machine].split()
+    return [(n[p - 1] if p and p <= len(n) else s) for p, s in zip(KNOBS[page], STOCK_LABELS[page])]
+
+
+def same(got, want):
+    return len(got) == len(want) and all(g == w or (g == "?" and w != "?") for g, w in zip(got, want))
+
+
+def t_labels(a):
+    font = learn_font(a)
+    check("labels: stock's screens teach enough letters", len(font) >= 20, "".join(sorted(font.values())))
+    for machine, steps in (("PLTS", 1), ("JUNO", 2), ("DSY", 3), ("FM6", 4), ("MD", 5), ("U1", 8)):
+        for page in KNOBS:
+            r = to_page(Run(a, f"lab_{machine}_{page}", usb=False).machine(1, steps), page).go()
+            got, want = page_text(r.dir + "/end.png", font), want_labels(machine, page)
+            ok = all(same(g, w) for g, w in zip(got, want))
+            check(f"labels: {machine} on {page}", ok and r.rc == 0 and not r.faults(), " ".join(x or "-" for x in got))
+
+
+def t_title(a):
+    """A turn's title and value: the machine's, on stock's the long name and tuning. The SIDECAR knob's own label."""
+    r = Run(a, "title", usb=False).machine(1, 1).turn(2, -1, 30, every="3M", gap=100).go(tail=50)
+    s = Run(a, "title_s", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC2", 150).key("OSC1", 150).turn(2, -1, 30, every="3M", gap=100).go(tail=50)
+    bm, bs = bitmap(r.dir + "/end.png"), bitmap(s.dir + "/end.png")
+    h = hashlib.sha256(str([x[:68] for x in bm[:9]]).encode()).hexdigest()[:12]
+    check("title: a turned knob's title says PLTS HRM (the band's hash, read by eye once)", h == TITLE_PLTS_HRM, h)
+    check("title: not stock's", bm[:9] != bs[:9])
+    check("title: its value is the number the machine reads, not stock's", glyphs(bm, 2, 0) != glyphs(bs, 2, 0))
+    font = learn_font(a)
+    q = Run(a, "side", usb=False).key("TRACK1", 120).key("OSC1", 150).key("OSC1", 150).go()
+    check("title: the SIDECAR knob's label is its own", page_text(q.dir + "/end.png", font)[0][0] == "M" and page_text(q.dir + "/end.png", font)[0][2] == "H", page_text(q.dir + "/end.png", font)[0])
+
+
+def t_off(a):
+    """Every sound OFF, and a track OFF beside one with a machine: the screens step by step as stock's, a turned knob's title and value too."""
+    def script(r, track):
+        r.key(f"TRACK{track}", 120).key("OSC2", 150).key("OSC2", 150).key("OSC1", 150).key("FILTERS", 150).key("AMP", 150).key("OSC2", 150).key("OSC1", 150)
+        return r.turn(2, -1, 30, every="3M", gap=100).key("OSC1", 150)
+    def shots(r):
+        return [sha(os.path.join(r.dir, f)) for f in sorted(os.listdir(r.dir)) if f.startswith("step") and f.endswith(".png")] + [sha(r.dir + "/end.png")]
+    env = lambda n: {"DTBOOT_PNG_DIR": os.path.join(a.out, n), "DTBOOT_STEPS": "1"}
+    s = script(Run(a, "off_s", syx=a.stock, usb=False, env=env("off_s")), 1).go(tail=50)
+    m = script(Run(a, "off_m", usb=False, env=env("off_m")), 1).go(tail=50)
+    x, y = shots(s), shots(m)
+    check("off: every sound OFF: each screen as stock's", x == y and len(x) >= 8, f"{len(x)} screens, {sum(p != q for p, q in zip(x, y))} differ")
+    s2 = script(Run(a, "off_s2", syx=a.stock, usb=False, env=env("off_s2")), 2).go(tail=50)
+    m2 = script(Run(a, "off_m2", usb=False, env=env("off_m2")).machine(1, 1), 2).go(tail=50)
+    x2, y2 = shots(s2), shots(m2)[-len(shots(s2)):]
+    check("off: T2 OFF beside T1 with a machine: its screens as stock's", x2 == y2, f"{len(x2)} screens, {sum(p != q for p, q in zip(x2, y2))} differ")
+
+
+def reports(r, voice=0):
+    """(time in M, [P1..P15 as 14 bits]) of a voice's 03 reports."""
+    it, out = iter(m for m in r.msgs if m[4] in (3, 4)), []
+    for c, k in r.sent():
+        if k in (3, 4):
+            m = next(it, None)
+            if m is not None and m[4] == 3 and m[5] & 7 == voice:
+                out.append((c / 1e6, [h * 128 + l for h, l in zip(m[6::2][:15], m[7::2][:15])]))
+    return out
+
+
+def t_knobs(a):
+    """Each knob the machine reads moves its P and no other, over 0..127; each stock knob none. The kit's own LFO on OSC1 DET runs through P2: left out of the moves, and proof that an LFO reaches a P."""
+    for page, ps in KNOBS.items():
+        r = to_page(Run(a, "knob_" + page).overbridge().machine(1, 1).key("OSC2", 150).key("OSC1", 150), page)
+        win = []
+        for e in range(10):
+            t0 = r.t
+            r.turn(e, -1, 500, gap=200).turn(e, 1, 500, gap=200)
+            win.append((t0, r.t))
+        r.go(tail=100)
+        rep = reports(r)
+        bad, full = [], True
+        for e, (t0, t1) in enumerate(win):
+            w = [v for c, v in rep if t0 <= c < t1]
+            moved = {k + 1 for k in range(15) if k != 1 and len({x[k] for x in w}) > 1}
+            if e == 2 and page == "osc1":                   # P2's own knob
+                moved |= {2}
+            want = {ps[e]} - {0}
+            if (page == "osc1" and e == 1) or (page == "osc2" and e == 1):     # FIN is P1's, P6's fraction
+                want = {1 if page == "osc1" else 6}
+            if moved != want:
+                bad.append((e, sorted(moved), sorted(want)))
+            if ps[e]:
+                lo, hi = min(x[ps[e] - 1] for x in w), max(x[ps[e] - 1] for x in w)
+                top = 16256
+                if not (lo <= 128 and hi >= top):
+                    full, bad = False, bad + [(e, lo / 128, hi / 128)]
+        check(f"knobs: {page}: each knob moves its P, 0..127 (TUN 1..127)", not bad and full and rep, str(bad[:4]))
+        if page == "osc1":
+            z = {min(int(v[0] / 128) * 17 >> 7, 16) for c, v in rep}
+            check("knobs: PLAITS ENG reaches all 17 engines", len(z) == 17, f"{len(z)} zones")
+            lfo = [v[1] for c, v in rep if c < win[0][1]]
+            check("knobs: an LFO moves its P (this kit's LFO 2 on DET)", len(set(lfo)) > 20, f"P2 {min(lfo) / 128:.1f}..{max(lfo) / 128:.1f}")
+
+
+def t_fin(a):
+    """FIN under TUN's lowest: PAT 0 of a list. FIN over TUN's highest stays in range."""
+    r = Run(a, "fin").overbridge().machine(1, 2).key("OSC2", 150).key("OSC1", 150).turn(0, -1, 500, gap=200).turn(1, -1, 500, gap=200)
+    t = r.t
+    r.turn(0, 1, 500, gap=200).turn(1, 1, 500, gap=200).go(tail=100)
+    v = [x[0] for c, x in reports(r)]
+    lo, hi = [x[0] for c, x in reports(r) if c < t], [x[0] for c, x in reports(r) if c > t + 250]
+    check("fin: TUN down and FIN down: P1's integer reaches 0; both up it stays at the top, no wrap", min(lo) < 128 and hi and min(hi) > 16000, f"P1 {min(lo) / 128:.2f}, then {min(hi) / 128:.2f}..{max(hi) / 128:.2f}")
+
+
+def t_lock(a):
+    """A parameter lock on a trig: hold the trig, turn HRM: the step's report carries it, the track's own value stays."""
+    r = Run(a, "lock").overbridge().machine(1, 1).key("OSC2", 150).key("OSC1", 150)
+    r.turn(7, -1, 300, gap=120).key("RECORD", 100).key("T1", 100).key("T9", 100)
+    r.args += ["--press", f"T9@{r.t}M:300M"]
+    r.t += 100
+    r.turn(7, 1, 40, every="3M", gap=220)
+    r.key("RECORD", 100).key("PLAY", 1200).key("STOP", 200).go()
+    tr = [m[8 + 2 * 2] for m in r.msgs if m[4] == 4 and m[5] & 7 == 0]
+    check("lock: a locked trig moves TIM (knob H, P3); the others keep the track's 0", 0 < sum(x > 0 for x in tr) < len(tr), str(tr))
+
+
+TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "fin": t_fin, "lock": t_lock, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():

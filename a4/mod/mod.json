@@ -1,13 +1,18 @@
 {
  "id": "sidecar-a4",
- "version": "0.3",
+ "version": "0.4",
  "title": "Sidecar",
  "category": "Sidecar",
  "license": "GPL-2.0-or-later",
- "description": "The Sidecar on an Analog Four MKII: a SIDECAR page picks a machine for a track's sound, and that track's trigs and parameters go to a Sidecar over USB MIDI under the A4 device profile. Its audio comes back through stock's Overbridge track inputs, into the voice's analog path. Every sound starts OFF. Checked in an emulator, never on a unit.",
+ "description": "The Sidecar on an Analog Four MKII: a SIDECAR page picks a machine for a track's sound, and that track's trigs and parameters go to a Sidecar over USB MIDI under the A4 device profile. Its audio comes back through stock's Overbridge track inputs, into the voice's analog path. Every sound starts OFF. A track with a machine shows its names on the stock OSC and NOISE pages. Runs on a unit on Overbridge.",
  "device": "analog-four-mk2",
  "os": "1.56",
- "sources": ["a4_report.c", "a4_usb.c", "a4_task.c", "a4_page.c"],
+ "sources": ["a4_report.c", "a4_usb.c", "a4_task.c", "a4_page.c", "a4_label.s"],
+ "sites": [
+  {"addr": "0x40023678", "stock": "206800684e90", "op": "jsr", "target": "a4_label_call"},
+  {"addr": "0x40025c26", "stock": "2068006c4e90", "op": "jsr", "target": "a4_title_call"},
+  {"addr": "0x400263aa", "stock": "2068006c4e90", "op": "jsr", "target": "a4_title_call"}
+ ],
  "storage": [{"sym": "a4_machine", "scope": "sound", "bits": 4}],
  "subscribe": [
   {"event": "ev_render_out", "fn": "a4_render", "order": 20},
@@ -16,6 +21,7 @@
  "contribute": [
   {"to": "core_pages", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page", 0]]},
   {"to": "core_params", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_params", 0]]},
+  {"to": "core_params", "order": 51, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_knob_text", 0]]},
   {"to": "core_view_pages", "order": 30, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_view", 0]]}
  ],
  "requires": ["core"],

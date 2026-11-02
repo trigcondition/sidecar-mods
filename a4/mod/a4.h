@@ -11,6 +11,8 @@
 #define A4_ON_PAGE  15          /* the stock values a machine reads; P16 is fixed per machine */
 #define A4_MACHINES 11         /* PLTS..B2 and U1..U5; the sound's field is 4 bits: 0 OFF, 1..11 */
 #define A4_MACHINE_BITS 15u
+#define A4_ID_FIRST 40         /* the stock parameter ids a machine reads, OSC1 TUN .. NOISE FAD */
+#define A4_ID_LAST  76
 
 /* A machine: what its reports say to the Sidecar (core/machines.h). */
 struct a4_machine {

@@ -1,27 +1,29 @@
 # The Sidecar on an Analog Four MKII
 
-**Emulator only: this has never run on a real Analog Four.** A mod for OS 1.56, built with [elekloader](https://github.com/irpina/elekloader)'s core-a4. Unofficial: not affiliated with, endorsed by or supported by Elektron. No Elektron firmware is in this repository: you supply the stock `.syx`, and neither it nor anything built from it may be committed.
+**Runs on the owner's unit, OS 1.56, on Overbridge: machines heard through filter, drive and FX.** A mod for OS 1.56, built with [elekloader](https://github.com/irpina/elekloader)'s core-a4. Unofficial: not affiliated with, endorsed by or supported by Elektron. No Elektron firmware is in this repository: you supply the stock `.syx`, and neither it nor anything built from it may be committed.
 
 ## What it does
 
 A track's sound can pick a Sidecar machine. That track's trigs and parameters go to a Sidecar over USB MIDI, and the machine's audio comes back in OVERBRIDGE mode through stock's track inputs, into that voice's own analog path: its filters, overdrive, amp, pan and the A4's chorus, delay and reverb all act on it. No audio code is patched: OUT channels 2..5 are stock's.
 
 - **SIDECAR page:** OSC1 key, pressed until after NOISE. Knob A: OFF PLTS JUNO DSY FM6 MD B2 U1 U2 U3 U4 U5 (U1..U5: what the Sidecar's User machines tab put in those slots). It is stored in the sound, so kits, the sound pool and copy and paste carry it, and every sound starts OFF.
-- **Knobs:** a Sidecar track reads OSC1 and OSC2's pages as the machine's P1..P15, after locks and LFOs. The screen still says TUN, DET and so on.
+- **Knobs:** a track with a machine shows that machine's names on the stock OSC1, OSC2, NOISE and OSC 1&2 pages, and a turned knob's title says PLTS HRM and its value the plain 0..127 the machine reads. The knobs are stock's: locks, LFOs and kit saves work as ever, after them the values go to the Sidecar as P1..P15. A track that is OFF shows stock's screens. Knobs a machine does not read keep their stock names and act on the analog voice alone. U1..U5 show P1..P15: the mod does not know a plugin's names.
 
-| P | Knob | P | Knob | P | Knob |
+| P | Stock knob | P | Stock knob | P | Stock knob |
 |---|---|---|---|---|---|
-| 1 | OSC1 TUN + FIN | 6 | OSC2 TUN + FIN | 11 | NOISE B |
-| 2 | OSC1 DET | 7 | OSC2 DET | 12 | NOISE C |
-| 3 | OSC1 SPD | 8 | OSC2 SPD | 13 | OSC 1&2 D |
-| 4 | OSC1 PW | 9 | OSC2 PW | 14 | OSC 1&2 E |
-| 5 | OSC1 PWM | 10 | OSC2 PWM | 15 | OSC 1&2 H |
+| 1 | OSC1 TUN + FIN | 6 | OSC2 TUN + FIN | 11 | NOISE COL |
+| 2 | OSC1 DET | 7 | OSC2 DET | 12 | NOISE FAD |
+| 3 | OSC1 PW | 8 | OSC2 PW | 13 | OSC 1&2 BND |
+| 4 | OSC1 SPD | 9 | OSC2 SPD | 14 | OSC 1&2 SLI |
+| 5 | OSC1 PWM | 10 | OSC2 PWM | 15 | OSC 1&2 FAD |
 
 What each P means is the machine's, as on the Rytm's SRC page: PLAITS ENG HRM TIM MOR DEC LPG TUN LEV, FM FIN AUX TMD MMD VEL GLD; JUNO PAT CUT RES ENV ATK DEC REL LEN; DAISYSP ENG STR BRI DMP INP EXC TUN LEV, XTN XDC FB OUT XP4 XLV XP5; 6-OP FM PAT TIM MOR DEC LPG TUN LEV LEN; MD CT1..CT8, ENG TYP LEV.
 
-P16 is fixed per machine. **LEV is not on the list:** turn OSC1 and OSC2 LEV down for the Sidecar alone, or leave them up to layer. A voice only sounds while the A4's amp is open: the same trig opens it. **Poly (KIT > POLY CONFIG):** a chord reports on its track, with that track's machine, as one voice retrigged, and the audio returns only through the analog voice of that number, so notes the A4 gives to other voices do not carry the Sidecar. Use poly tracks for the A4's own voices. The A4's own amp envelope and filters shape the machine.
+Every P covers 0..127. TUN stops at 1 and 127: FIN adds or takes about 2.5, so the first entry of a list (JUNO, 6-OP FM PAT) needs TUN down and FIN down. FIN is P1's and P6's fraction, a knob with a stock name.
 
-With no Sidecar, or with every sound OFF, nothing changes: on USB a few short SysEx hellos at each port-up, and the page.
+P16 is fixed per machine. **The knobs still move the analog voice:** ENG is still its TUN, TIM its PW. Turn OSC1 and OSC2 LEV down for the Sidecar alone (those two LEV knobs are the analog oscillators', not the machine's LEV), or leave them up to layer and hear them follow. Noise LEV up adds the noise to the voice. **Start from a cleared sound:** a sound's own values and LFOs are the machine's too: a factory kit's LFO on DET sweeps PLAITS HRM, and an LFO on TUN would jump ENG between engines. The LFO and envelope destination lists keep stock's names: DET is HRM on PLAITS, by the table above. A voice only sounds while the A4's amp is open: the same trig opens it. **Poly (KIT > POLY CONFIG):** a chord reports on its track, with that track's machine, as one voice retrigged, and the audio returns only through the analog voice of that number, so notes the A4 gives to other voices do not carry the Sidecar. Use poly tracks for the A4's own voices. The A4's own amp envelope and filters shape the machine.
+
+With no Sidecar, or with every sound OFF, nothing changes: on USB a few short SysEx hellos at each port-up, and the page. No audio code is patched. Three sites in the page's draw and turn ask the mod for a knob's names, and stock answers when the track is OFF.
 
 ## Build and rehearse
 
@@ -56,4 +58,4 @@ Needs an engine with the A4 profile (`core/device/a4.*`). Set USB CONFIG to OVER
 
 ## Not done
 
-Knob labels on the Sidecar's pages, sample machines (they need the Rytm's pool pages), remote UI, the project's name on the Sidecar, its transport report (use the A4's own CLOCK SEND and TRANSPORT SEND).
+Machine names in the LFO and envelope destination lists, knob labels on the Sidecar's pages, sample machines (they need the Rytm's pool pages), remote UI, the project's name on the Sidecar, its transport report (use the A4's own CLOCK SEND and TRANSPORT SEND).

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* a4_page.c - the SIDECAR page, behind the OSC1 key after stock's pages: knob A picks the machine of the selected track's sound.
  * The choice is a field of the sound (mod storage: 0 OFF, so every sound of every project starts off and a track stays the
- * analog voice it always was). id 51 is a stock parameter no page shows [read]; core_params answers for it. */
+ * analog voice it always was). id 51 is a stock parameter no page shows [read]; core_params answers for it. And the names: a track with a machine
+ * shows them on the stock pages' knobs. */
 #include "analog-four-mk2/pages.h"
 #include "analog-four-mk2/store.h"
 #include "a4.h"
@@ -89,6 +90,97 @@ static int text(struct core_text *t)
 const struct core_param a4_params = {KNOB, KNOB, get, delta, text};
 const struct core_page a4_page = {PAGE, "SIDECAR", {KNOB}};
 const struct core_view_page a4_view = {CORE_TRACK_SYNTH, CORE_KEY_OSC1, PAGE, a4_shown};
+
+/* The machine's name of each knob, on the stock OSC1, OSC2, NOISE and OSC 1&2 pages: the P a stock parameter id reports, 0 none [measured: each knob turned in the emulator]. */
+static const uint8_t p_of_id[A4_ID_LAST - A4_ID_FIRST + 1] = {
+    1, 0, 2, 0, 0, 0, 0, 3, 4, 5,               /* 40.. OSC1  TUN FIN DET TRK LEV WAV SUB PW SPD PWM */
+    0, 0, 0,                                    /* 50.. AM1 PM2 FM2 */
+    6, 0, 7, 0, 0, 0, 0, 8, 9, 10,              /* 53.. OSC2 */
+    0, 0, 0, 0, 0,                              /* 63.. AM2 PMX FMX SMD SNC */
+    13, 14, 0, 15, 0, 0, 0,                     /* 68.. BND SLI TRG FAD SPD VIB SNH */
+    11, 12,                                     /* 75.. NOISE COL FAD */
+};
+
+static const char labels[5][A4_ON_PAGE][4] = {
+    {"ENG", "HRM", "TIM", "MOR", "DEC", "LPG", "TUN", "LEV", "FM", "FIN", "AUX", "TMD", "MMD", "VEL", "GLD"},   /* PLTS */
+    {"PAT", "CUT", "RES", "ENV", "ATK", "DEC", "REL", "LEN"},                                                   /* JUNO */
+    {"ENG", "STR", "BRI", "DMP", "INP", "EXC", "TUN", "LEV", "XTN", "XDC", "FB", "OUT", "XP4", "XLV", "XP5"},   /* DSY */
+    {"PAT", "TIM", "MOR", "DEC", "LPG", "TUN", "LEV", "LEN"},                                                   /* FM6 */
+    {"CT1", "CT2", "CT3", "CT4", "CT5", "CT6", "CT7", "CT8", "ENG", "TYP", "LEV"},                              /* MD, B2 */
+};
+#define LISTED 6                /* the sound's field up to B2 has names; U1..U5 keep P numbers */
+
+/* The selected sound's machine, if id is a knob it reads: *m 1.. and the P; 0 stock's. UI task. */
+static uint32_t p_here(int32_t id, uint32_t *m)
+{
+    uint32_t t, p;
+    if (id < A4_ID_FIRST || id > A4_ID_LAST || !(p = p_of_id[id - A4_ID_FIRST]))
+        return 0;
+    if ((t = ui_track()) >= A4_VOICES)
+        return 0;
+    *m = core_store_get(STORE(a4_machine), KIT_SOUND(KIT_INDEX, t), 0) & A4_MACHINE_BITS;
+    return *m && *m <= A4_MACHINES ? p : 0;
+}
+
+/* The draw of a page's knob asks here for its label: 0 is stock's (a4_label.s). A knob the machine does not read keeps stock's: it is the analog voice's. */
+const char *a4_label(void *view, int32_t id)
+{
+    static char user[4];
+    uint32_t m, p;
+    if (id == KNOB)
+        return "MCH";
+    selection = VIEW_SELECTION(view);
+    if (!(p = p_here(id, &m)))
+        return 0;
+    if (m > LISTED) {
+        user[0] = 'P';
+        user[1] = p >= 10 ? '1' : (char)('0' + p);
+        user[2] = p >= 10 ? (char)('0' + p - 10) : 0;
+        user[3] = 0;
+        return user;
+    }
+    m = m == LISTED ? LISTED - 1 : m;
+    return labels[m - 1][p - 1][0] ? labels[m - 1][p - 1] : 0;
+}
+
+/* The title a turn puts on the screen, stock's long name: the machine and the knob's name. */
+const char *a4_title(void *view, int32_t id)
+{
+    static char title[12];
+    const char *a, *b;
+    uint32_t m, i = 0;
+    if (id == KNOB)
+        return "MACHINE";
+    if (!(b = a4_label(view, id)))
+        return 0;
+    p_here(id, &m);
+    for (a = a4_machine_of[m - 1].name; *a; ++a)
+        title[i++] = *a;
+    title[i++] = ' ';
+    while (*b)
+        title[i++] = *b++;
+    title[i] = 0;
+    return title;
+}
+
+/* A knob of a machine shows the plain number the machine reads, not stock's tuning or percentage. */
+static int p_text(struct core_text *t)
+{
+    uint32_t m, i = 0;
+    int32_t v = t->value >> 8;
+    if (!p_here(t->id, &m))
+        return CORE_TEXT_PASS;
+    v = v < 0 ? 0 : v > 127 ? 127 : v;
+    if (v >= 100)
+        t->buf[i++] = '1';
+    if (v >= 10)
+        t->buf[i++] = (char)('0' + v / 10 % 10);
+    t->buf[i++] = (char)('0' + v % 10);
+    t->buf[i] = 0;
+    return CORE_TEXT_DONE;
+}
+
+const struct core_param a4_knob_text = {A4_ID_FIRST, A4_ID_LAST, 0, 0, p_text};
 
 /* The UI loop: each track's machine, for the render. A kit's change is seen within a tick. */
 void a4_machines_read(void)
