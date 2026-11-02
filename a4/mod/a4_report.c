@@ -209,9 +209,11 @@ static int report(uint32_t v, int trig)
 static int report_off(uint32_t v)
 {
     uint8_t m[7] = {0xf0, 0x7d, 0x52, 0x54, 0x11, (uint8_t)v, 0xf7};
-    if (!send(m, sizeof m))
+    vo[v].pend_off = 0;                         /* ahead of the send: the render may set it again meanwhile, and that off must stay */
+    if (!send(m, sizeof m)) {
+        vo[v].pend_off = 1;
         return 0;
-    vo[v].pend_off = 0;
+    }
     ++a4_offs;
     return 1;
 }

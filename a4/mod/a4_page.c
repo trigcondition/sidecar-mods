@@ -60,7 +60,9 @@ static int delta(void *view, int32_t id, int32_t d, int32_t func)
     selection = VIEW_SELECTION(view);
     if (ui_track() >= A4_VOICES)
         return 0;
-    if (a4_now - stepped_at < STEP_GAP && d)    /* a list, not a value: a turn's size says nothing, an accelerated turn would skip machines */
+    if (!d)
+        return 1;
+    if (a4_now - stepped_at < STEP_GAP)         /* a list, not a value: a turn's size says nothing, an accelerated turn would skip machines */
         return 1;
     stepped_at = a4_now;
     m = (int32_t)(core_store_get(STORE(a4_machine), ui_sound(), 0) & 7u) + (d > 0 ? 1 : -1);

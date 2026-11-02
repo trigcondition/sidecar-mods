@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* a4.h - the Sidecar on an Analog Four MKII: what the mod's files share, and OS 1.56's addresses in one place. Each was read in
- * the OS 1.56 image, and the voice state and parameter words measured in an emulator (docs/A4.md). OS 1.56 only: never assume
+ * the OS 1.56 image, and the voice state and parameter words measured in an emulator (README.md, and the Sidecar's docs/device-profiles.md). OS 1.56 only: never assume
  * they carry over. */
 #ifndef A4_H
 #define A4_H
