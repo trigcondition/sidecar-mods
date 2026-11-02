@@ -272,7 +272,92 @@ def t_poly(a):
     check("poly: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
-TESTS = {"kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+def poly_kit(r, track):
+    """TRACKn, KIT > POLY CONFIG, all four voices."""
+    r.key(f"TRACK{track}", 150).key("KIT", 120)
+    for _ in range(5):
+        r.key("DOWN", 120)
+    r.key("YES", 120)
+    for i in range(4):
+        r.key("YES", 100)
+        if i < 3:
+            r.key("RIGHT", 100)
+    return r.key("NO", 120).key("NO", 120).key("NO", 400)
+
+
+def grid_chord(r, step="T1", notes=("KB_C1", "KB_E1", "KB_G1")):
+    """An empty pattern; a trig holding a chord: GRID RECORD, the step held, the keys held together."""
+    r.key("BANK_H", 120).key("T16", 500).key("RECORD", 150)
+    t = r.t
+    r.args += ["--press", f"{step}@{t}M:700M"]
+    for i, k in enumerate(notes):
+        r.args += ["--press", f"{k}@{t + 100 + i * 60}M:{400 - i * 60}M"]
+    r.t += 900
+    return r.key("RECORD", 200)
+
+
+def seq_trigs(r):
+    """(note, voice byte) of the 04s after PLAY: the grid's own key presses come before."""
+    return [(x[6], x[5]) for x in r.msgs if x[4] == 4]
+
+
+def t_chord(a):
+    """A chord programmed on one step, the owner's case: one event with all its notes, one trig a step before this mod. Each note a 04, in order, every bar."""
+    r = poly_kit(Run(a, "chord").overbridge().machine(1, 4), 1)        # FM6
+    grid_chord(r, notes=("KB_C1", "KB_E1", "KB_G1", "KB_B1"))
+    t0 = len(seq_trigs(r.go(tail=1)))
+    r = poly_kit(Run(a, "chord").overbridge().machine(1, 4), 1)
+    grid_chord(r, notes=("KB_C1", "KB_E1", "KB_G1", "KB_B1"))
+    r.key("PLAY", 1000).key("STOP", 300).go(tail=500)
+    tr = seq_trigs(r)[t0:]
+    want = [(60, 0x48), (64, 0x48), (67, 0x48), (71, 0x48)]
+    bars = [tr[i:i + 4] for i in range(0, len(tr), 4)]
+    check("chord: four notes on a step: four 04s, in order, every bar, on the track's voice and machine", len(bars) >= 2 and all(b == want for b in bars), str(tr[:9]))
+    sent = [(c, k) for c, k in r.sent() if k == 4][-len(tr):]
+    gap = max((sent[i + 3][0] - sent[i][0]) / 200000 for i in range(0, len(sent) - 3, 4)) if len(sent) >= 4 else 1e9
+    check("chord: the four within the engine's 20 ms", gap < 20, f"longest {gap:.2f} ms")
+    check("chord: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+    vel = {x[7] for x in r.msgs if x[4] == 4}
+    check("chord: each note's velocity", vel == {100}, str(vel))
+
+
+def t_chord_keys(a):
+    """Three keys at one instant, MIDI's three in a row: a note a block; all reported. An 11 only when the last is up, though voice 0 closes first."""
+    r = poly_kit(Run(a, "chord_keys").overbridge().machine(1, 1), 1)
+    t = r.t
+    for n in (0x3c, 0x40, 0x43):
+        r.args += ["--midi", f"90{n:02x}64@{t}M"]
+    r.args += ["--midi", f"803c00@{t + 150}M"]                         # voice 0's note lets go first
+    r.args += ["--midi", f"804000@{t + 500}M", "--midi", f"804300@{t + 500}M"]
+    r.t += 800
+    r.go(tail=300)
+    ev = [(x[4], x[6] if x[4] == 4 else None) for x in r.msgs if x[4] in (4, 0x11)]
+    check("chord_keys: three notes, in order, then one 11", ev == [(4, 60), (4, 64), (4, 67), (0x11, None)], str(ev))
+    log = [(c, k) for c, k in r.sent() if k == 0x11]
+    check("chord_keys: the 11 waits for the last key: 500M after the first, not 150M", bool(log) and log[-1][0] / 1e6 >= t + 490, str(log[-1:]) + f" keys up at {t + 500}M")
+    check("chord_keys: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
+def t_mono(a):
+    """No POLY CONFIG: a trig is one 04 and its end one 11, what it always was; a chord on a mono track's step plays its first note, as the A4 does; two notes closer than 20 ms get an 11 between them."""
+    r = Run(a, "mono").overbridge().machine(1, 1)
+    r.midi("903c64", 200).midi("803c00", 300)
+    t = r.t
+    r.args += ["--midi", f"904064@{t}M", "--midi", f"904364@{t}M"]
+    r.t += 300
+    r.args += ["--midi", f"804000@{r.t}M", "--midi", f"804300@{r.t}M"]
+    r.t += 200
+    r.go(tail=200)
+    ev = [(x[4], x[6] if x[4] == 4 else None) for x in r.msgs if x[4] in (4, 0x11)]
+    check("mono: one 04, one 11; then two at once with an 11 between, so that the Sidecar never takes a chord", ev == [(4, 60), (0x11, None), (4, 64), (0x11, None), (4, 67), (0x11, None)], str(ev))
+    q = Run(a, "mono_step").overbridge().machine(1, 1)
+    grid_chord(q)
+    q.key("PLAY", 800).key("STOP", 300).go(tail=300)
+    tr = [x for x in seq_trigs(q)][-1:]
+    check("mono: a chord on a mono track's step: its first note", tr == [(60, 0)], str(seq_trigs(q)[-4:]))
+
+
+TESTS = {"chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():
