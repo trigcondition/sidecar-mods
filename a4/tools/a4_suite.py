@@ -235,12 +235,14 @@ def t_kit(a):
 
 
 def t_user(a):
-    """U5 on track 1, turned past the end of the list, and U1 on track 2 (the emulator's nudges drop some steps above 4, so the counts are by test)."""
-    r = Run(a, "user").overbridge().machine(1, 30).machine(2, 8)
-    r.midi("903c64", 100).midi("803c00", 100).midi("913c64", 100).midi("813c00", 100).go()
-    tr = {x[5] & 7: x[5] & 0x78 for x in r.msgs if x[4] == 4}
-    check("user: U5 and U1 by their flags, the list ends at U5", tr == {0: 0x70, 1: 0x50}, str(tr))
-    check("user: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+    """U5 turned past the end of the list, U1 one step on from B2 (the emulator's nudges drop some steps above 4, so the counts are by test)."""
+    r = Run(a, "user").overbridge().machine(1, 30)
+    r.midi("903c64", 100).midi("803c00", 100).go()
+    q = Run(a, "user1").overbridge().machine(1, 8)
+    q.midi("903c64", 100).midi("803c00", 100).go()
+    tr = [x[5] for x in r.msgs + q.msgs if x[4] == 4]
+    check("user: U5 past the end of the list, U1 after the last built-in, by their flags", tr == [0x70, 0x50], str(tr))
+    check("user: no fault", r.rc == 0 and not r.faults() and q.rc == 0 and not q.faults(), "; ".join(r.faults()[:2]))
 
 
 def t_poly(a):
