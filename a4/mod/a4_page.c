@@ -2,7 +2,7 @@
 /* a4_page.c - the SIDECAR page, behind the OSC1 key after stock's pages: knob A picks the machine of the selected track's sound.
  * The choice is a field of the sound (mod storage: 0 OFF, so every sound of every project starts off and a track stays the
  * analog voice it always was). id 51 is a stock parameter no page shows [read]; core_params answers for it. And the names: a track with a machine
- * shows them on the stock pages' knobs. */
+ * shows them on the stock pages' knobs, and those pages' other knobs empty, as stock's own page table leaves one. */
 #include "analog-four-mk2/pages.h"
 #include "analog-four-mk2/store.h"
 #include "a4.h"
@@ -10,6 +10,12 @@
 #define PAGE 48
 #define KNOB 51
 #define STEP_GAP 90u            /* blocks between steps: 60 ms */
+#define ID_FIN1 41              /* OSC1 FIN */
+#define ID_LEV1 44              /* OSC1, OSC2, NOISE LEV */
+#define ID_LEV2 57
+#define ID_LEV3 77
+#define M_JUNO 2                /* a4_machine_of + 1 */
+#define M_FM6 4
 
 STORE_FIELD(a4_machine);
 
@@ -29,12 +35,10 @@ const struct a4_machine a4_machine_of[A4_MACHINES] = {
 
 static uint32_t stepped_at;
 
-static void *selection;
-
-/* The selected track; before the page key first reached this page, track 1. UI task only: the call is virtual. */
+/* The selected track. UI task only: the call is virtual. */
 static uint32_t ui_track(void)
 {
-    return selection ? (uint32_t)SELECTION_TRACK(selection) : 0;
+    return (uint32_t)SELECTION_TRACK(UI_SELECTION);
 }
 
 static void *ui_sound(void)
@@ -42,11 +46,9 @@ static void *ui_sound(void)
     return KIT_SOUND(KIT_INDEX, ui_track());
 }
 
-/* The page key on its way here: the view tells which selection object the pages share. */
 static int32_t a4_shown(void *view)
 {
-    if (view)
-        selection = VIEW_SELECTION(view);
+    (void)view;
     return 1;
 }
 
@@ -62,8 +64,7 @@ static int get(int32_t id, int32_t *value)
 static int delta(void *view, int32_t id, int32_t d, int32_t func)
 {
     int32_t m;
-    (void)id; (void)func;
-    selection = VIEW_SELECTION(view);
+    (void)view; (void)id; (void)func;
     if (ui_track() >= A4_VOICES)
         return 0;
     if (!d)
@@ -122,14 +123,14 @@ static uint32_t p_here(int32_t id, uint32_t *m)
     return *m && *m <= A4_MACHINES ? p : 0;
 }
 
-/* The draw of a page's knob asks here for its label: 0 is stock's (a4_label.s). A knob the machine does not read keeps stock's: it is the analog voice's. */
+/* The draw of a page's knob asks here for its label: 0 is stock's (a4_label.s). A knob the machine does not read is empty (a4_knobs), unless it is one of the voice's own stock keeps. */
 const char *a4_label(void *view, int32_t id)
 {
     static char user[4];
     uint32_t m, p;
+    (void)view;
     if (id == KNOB)
         return "MCH";
-    selection = VIEW_SELECTION(view);
     if (!(p = p_here(id, &m)))
         return 0;
     if (m > LISTED) {
@@ -181,6 +182,59 @@ static int p_text(struct core_text *t)
 }
 
 const struct core_param a4_knob_text = {A4_ID_FIRST, A4_ID_LAST, 0, 0, p_text};
+
+/* What such a page keeps of its knobs: what the machine reads, the three LEV that layer the analog voice under it, and OSC1 FIN where the first P is a list: TUN alone stops at 1, so a
+ * list's entry 0 needs it [measured: t_fin]. */
+static int kept(int32_t id, uint32_t m)
+{
+    uint32_t p;
+    if (id == ID_LEV1 || id == ID_LEV2 || id == ID_LEV3)
+        return 1;
+    if (id == ID_FIN1)
+        return m == M_JUNO || m == M_FM6;
+    if (id < A4_ID_FIRST || id > A4_ID_LAST || !(p = p_of_id[id - A4_ID_FIRST]))
+        return 0;
+    return m > LISTED || labels[(m == LISTED ? LISTED - 1 : m) - 1][p - 1][0];
+}
+
+/* page_info on the four pages: with a machine, stock's entry with the other knobs' ids 0. Id 0 is stock's own empty knob: hatched by the draw (0x40025030), no title or value, a turn stops at
+ * it (0x400259de) [read; measured]. Each reader of a knob asks afresh, and with no view at hand, so the selection is the UI model's. OFF answers 0: stock's own entry. UI task. */
+static const struct core_page *a4_knobs(int32_t page)
+{
+    static struct core_page shown;
+    const int32_t *e = PAGE_ENTRY(page);
+    uint32_t t, m, k;
+    if ((t = ui_track()) >= A4_VOICES)
+        return 0;
+    m = core_store_get(STORE(a4_machine), KIT_SOUND(KIT_INDEX, t), 0) & A4_MACHINE_BITS;
+    if (!m || m > A4_MACHINES)
+        return 0;
+    shown.name = (const char *)e[0];
+    for (k = 0; k < 10; ++k)
+        shown.ids[k] = kept(e[k + 1], m) ? e[k + 1] : 0;
+    return &shown;
+}
+
+const struct core_page_fn a4_page_osc1 = {6, a4_knobs}, a4_page_noise = {7, a4_knobs}, a4_page_osc2 = {8, a4_knobs}, a4_page_osc12 = {9, a4_knobs};
+
+/* A chord's note preview (hold a trig, YES): stock's step asks here with the trig's notes, ahead of playing them, and plays as many as the track has voices, one a block; ARP on, all of them
+ * [read: 0x40026e7e, 0x4009ca1c]. The rest goes to the report by this side door: a mono track's one note is all the audio side would see of the chord. UI task. */
+void a4_preview(const struct a4_notes *d, uint32_t arp)
+{
+    uint8_t note[A4_CHORD];
+    const int8_t *p = d->cur, *last = d->last;
+    int8_t *const *node = d->node;
+    uint32_t n = 0, t;
+    if (arp || (t = ui_track()) >= A4_VOICES || !a4_machine_now[t])
+        return;
+    while (p != d->end && n < A4_CHORD) {
+        if (*p >= 0)
+            note[n++] = (uint8_t)*p;
+        if (++p == last)
+            p = *++node, last = p + 512;
+    }
+    a4_preview_notes(t, note, n);
+}
 
 /* The UI loop: each track's machine, for the render. A kit's change is seen within a tick. */
 void a4_machines_read(void)

@@ -11,6 +11,7 @@
 #define A4_ON_PAGE  15          /* the stock values a machine reads; P16 is fixed per machine */
 #define A4_MACHINES 11         /* PLTS..B2 and U1..U5; the sound's field is 4 bits: 0 OFF, 1..11 */
 #define A4_MACHINE_BITS 15u
+#define A4_CHORD    4u          /* the notes of a trig [read: four slots, 0x40101b80]: the queue, a power of two */
 #define A4_ID_FIRST 40         /* the stock parameter ids a machine reads, OSC1 TUN .. NOISE FAD */
 #define A4_ID_LAST  76
 
@@ -72,8 +73,20 @@ typedef void (*a4_sem_fn)(void *sem);
 
 /* The selected track, through a page view, and the live kit's sounds: core-a4's own layout. */
 typedef int32_t (*a4_track_fn)(void *selection);
-#define VIEW_SELECTION(view) (*(void **)((char *)(view) + 116))     /* a page view's selection object */
+typedef char *(*a4_model_fn)(void);
+#define UI_SELECTION ((void *)(((a4_model_fn)0x401494DEu)() + 48))  /* the selection object every page view holds at +116: the UI model's [read: 0x40025274] */
 #define SELECTION_TRACK ((a4_track_fn)0x400ADBD2u)                  /* its track, 0..3 the synth tracks */
 #define KIT_INDEX       (*(const volatile uint32_t *)0x405F5CA4u)
 #define KIT_SOUND(k, t) ((void *)(0x411E9936u + 0x960u * (k) + 0x1Cu + 0x152u * (t)))
+#define PAGE_ENTRY(p) ((const int32_t *)(0x401B31E8u + 44u * (p)))  /* stock's page table: the name, then ten knob ids, 0 an empty knob */
+
+/* A trig's notes as stock's preview gets them, a deque of bytes [read: 0x400b9e16]; what is here is what it reads. */
+struct a4_notes {
+    void *map;
+    uint32_t size;
+    const int8_t *cur, *first, *last;
+    int8_t *const *node;
+    const int8_t *end;
+};
+void a4_preview_notes(uint32_t track, const uint8_t *note, uint32_t n);
 #endif

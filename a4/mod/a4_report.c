@@ -5,7 +5,8 @@
  *   - a parameter-only 03 at most every REPORT_GAP blocks of a voice
  *   - a trig 04 at once, with the current values; a chord is one 04 a note, in order: a sequencer chord comes as one event with all
  *     its notes, on a mono track too, a keyboard's or MIDI's one note a block, so a poly track queues them; on a mono track a new event
- *     takes the place of whatever is left of the last, latest value wins
+ *     takes the place of whatever is left of the last, latest value wins. A note preview plays no more notes than the track has voices, one a block: the OS's first note brings the
+ *     others (a4_preview), so that no gap rule has to tell a preview's notes from a quick line
  *   - no answer per message; one voice in turn is sent again every RESEND blocks, which repairs a lost message
  *   - at most MAX_PASS messages a pass, trigs first, and one message every RATE blocks in all with a burst of CREDIT_MAX
  *   - a note's end 11 from the OS's own note-off event (a key, MIDI), or when the voice's amp has closed (the sequencer's LEN), never ahead of its trig;
@@ -28,7 +29,8 @@
 #define GATE_MIN   32u          /* blocks after a trig before a closed amp means the note ended: its attack has started */
 #define GATE_SHUT  8u           /* blocks closed in a row */
 #define DEVICE_ID  3            /* core/device/a4.h */
-#define CHORD      4u           /* the notes of a trig [read: four slots, 0x40101b80]: the queue, a power of two */
+#define CHORD      A4_CHORD
+#define PREVIEW_GAP 30u         /* blocks, 20 ms: a preview's own note comes a block or two after its notes [measured] */
 #define CHORD_GAP  30u          /* blocks, 20 ms: core/device/device.h kChordMs. A mono track's two events closer than it get an 11 between them, or the Sidecar would take a chord */
 #define NO_NOTE    0xFFu
 
@@ -63,6 +65,7 @@ struct a4_voice {
     uint8_t pend_params, pend_off, late_off, open, shut;
 };
 static struct a4_voice vo[A4_VOICES];
+static struct { uint32_t at; uint8_t n, base, note[CHORD]; } extra[A4_VOICES];  /* a note preview's notes the OS will not play: the next trig brings them, shifted as it is */
 volatile uint8_t a4_machine_now[A4_VOICES];
 volatile uint32_t a4_now;
 static uint32_t hello_at, resend_at;
@@ -95,6 +98,23 @@ static int amp_shut(uint32_t v)
         if ((uint32_t)VOICE_OWNER(w) == v && (VOICE_VCA_L(w) < VCA_SHUT || VOICE_VCA_R(w) < VCA_SHUT))
             return 0;
     return 1;
+}
+
+/* The UI task, ahead of a preview: the OS plays the first notes, one for each of the track's voices. */
+void a4_preview_notes(uint32_t v, const uint8_t *note, uint32_t n)
+{
+    uint32_t i, keep = 1, m;
+    uint16_t sr;
+    if (POLY(v))
+        for (m = POLY_MASK & 15, keep = 0; m; m >>= 1)
+            keep += m & 1;
+    if (n <= keep)
+        return;
+    IRQ_OFF(sr);
+    for (i = keep; i < n; ++i)
+        extra[v].note[i - keep] = note[i];
+    extra[v].base = note[0], extra[v].n = (uint8_t)(n - keep), extra[v].at = now;
+    IRQ_ON(sr);
 }
 
 static void read_voice(uint32_t v, struct a4_voice *x, int trig)
@@ -139,16 +159,21 @@ void a4_render(void)
         ev = VOICE_EVENT(v);
         if (ev == 1) {
             int32_t c = VOICE_COUNT(v);
-            uint32_t n = c < 1 ? 1 : c > (int32_t)CHORD ? CHORD : (uint32_t)c, k, first = VOICE_NOTE(v, 0) & 0x7f;
+            uint32_t n = c < 1 ? 1 : c > (int32_t)CHORD ? CHORD : (uint32_t)c, k, first = VOICE_NOTE(v, 0) & 0x7f, e = extra[v].n;
+            extra[v].n = 0;
+            if (e && now - extra[v].at >= PREVIEW_GAP)
+                e = 0;
             if (!POLY(v)) {
                 x->qh = x->qt, ++x->event;      /* latest value wins */
-                if (x->open && (n > 1 || first != x->last) && now - x->on_at < CHORD_GAP)
+                if (x->open && (n + e > 1 || first != x->last) && now - x->on_at < CHORD_GAP)
                     x->pend_off = 1;
             }
             for (k = 0; k < n; ++k)
                 if (!k || VOICE_NOTE(v, k))     /* a slot left empty on the trig reads 0 */
                     queue(x, VOICE_NOTE(v, k) & 0x7f, VOICE_VEL(v, k) & 0x7f);
-            if (n > 1)
+            for (k = 0; k < e; ++k)
+                queue(x, (extra[v].note[k] + first - extra[v].base) & 0x7f, VOICE_VEL(v, 0) & 0x7f);
+            if (n + e > 1)
                 x->last = NO_NOTE;      /* the next trig differs, whatever its note */
             if (x->held < CHORD)
                 x->held = (uint8_t)(x->held + n > CHORD ? CHORD : x->held + n);
