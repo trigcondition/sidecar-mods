@@ -9,6 +9,7 @@
 
 #define PAGE 48
 #define KNOB 51
+#define SCREEN 49
 #define STEP_GAP 90u            /* blocks between steps: 60 ms */
 
 STORE_FIELD(a4_machine);
@@ -90,6 +91,19 @@ static int text(struct core_text *t)
 const struct core_param a4_params = {KNOB, KNOB, get, delta, text};
 const struct core_page a4_page = {PAGE, "SIDECAR", {KNOB}};
 const struct core_view_page a4_view = {CORE_TRACK_SYNTH, CORE_KEY_OSC1, PAGE, a4_shown};
+
+/* The way to the Sidecar's screen: a view after the SIDECAR page that never shows. The OSC1 key's step asks it there, and only there: with a Sidecar that answers that press
+ * opens the screen, and the step goes on to stock's OSC1 page, under it. Without one the key does what it did. */
+static int32_t a4_screen_shown(void *view)
+{
+    (void)view;
+    if (a4_screen_can_open())
+        a4_screen_open();
+    return 0;
+}
+
+const struct core_page a4_screen_page = {SCREEN, "SCREEN", {0}};
+const struct core_view_page a4_screen_view = {CORE_TRACK_SYNTH, CORE_KEY_OSC1, SCREEN, a4_screen_shown};
 
 /* The machine's name of each knob, on the stock OSC1, OSC2, NOISE and OSC 1&2 pages: the P a stock parameter id reports, 0 none [measured: each knob turned in the emulator]. */
 static const uint8_t p_of_id[A4_ID_LAST - A4_ID_FIRST + 1] = {

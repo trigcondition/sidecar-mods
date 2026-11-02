@@ -102,7 +102,7 @@ def read_wav32(p):
     return ch, [d[c::ch] for c in range(ch)]
 
 
-def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False, step=False):
+def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False, step=False, screen=None, peek=None):
     out = os.path.join(a.out, name)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
@@ -114,6 +114,9 @@ def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False, ste
     img = out + "/a4.img"
     subprocess.run(["cp", "-c", a.card, img], check=True)
     env = dict(os.environ, DTBOOT_QUIET_USB="1", DTBOOT_USB_OUT=out + "/usb.bin", DTEMU_STRICT="1", DTEMU_NO_JIT="1") if False else dict(os.environ, DTBOOT_QUIET_USB="1", DTBOOT_USB_OUT=out + "/usb.bin")
+    env["DTBOOT_END_PNG"] = out + "/end.png"
+    if peek:
+        env["DTBOOT_PEEK"] = peek
     t = 4000
     args, t = panel_overbridge(t)
     t += 300                                    # re-enumerated, the hello met, the Sidecar restarted
@@ -127,6 +130,12 @@ def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False, ste
     if step:
         m, t, a.played = panel_step(t)
         args += m
+    if screen is not None:                      # a note, so the voice reports; past the SIDECAR page with OSC1; the keys
+        args += ["--midi", f"90{a.note:02x}64@{M(t)}", "--midi", f"80{a.note:02x}00@{M(t + 100)}"]
+        t += 300
+        args += ["--press", f"OSC1@{M(t)}"]; t += 400
+        for k in screen:
+            args += ["--press", f"{k}@{M(t)}"]; t += 200
     if chord:
         args += ["--midi", "".join(f"90{n:02x}64" for n in chord) + f"@{M(t)}", "--midi", "".join(f"80{n:02x}00" for n in chord) + f"@{M(t + 300)}"]
         t += 500
@@ -135,10 +144,10 @@ def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False, ste
         args += ["--midi", f"90{a.note:02x}64@{M(at)}", "--midi", f"80{a.note:02x}00@{M(off)}"]
         notes.append((at, off))
     t += 400 * a.notes + 200 + getattr(a, "tail", 0)
-    cmd = [dtboot, a.syx, "--card", img, "--usb-host", "--usb-midi-real", "--ob-link", f"127.0.0.1:{PORT}", "--analog-wav", out + "/a4_out.wav", "--instr", M(t), "--every", "1G", *args]
+    cmd = [dtboot, a.syx, "--card", img, "--usb-host", "--usb-midi-real", "--ob-link", f"127.0.0.1:{PORT}", "--analog-wav", out + "/a4_out.wav", "--instr", M(t), "--every", "100M" if peek else "1G", *args]
     emu = subprocess.Popen(cmd, stdout=emu_log, stderr=subprocess.STDOUT, env=env)
     time.sleep(1)
-    sc = [os.path.join(a.engine, "core/build/sidecar_emu"), "--link", f"127.0.0.1:{PORT}", "--card", card, "--out-wav", out + "/to_a4.wav", "--in-wav", out + "/from_a4.wav"]
+    sc = [os.path.join(a.engine, "core/build/sidecar_emu"), "--link", f"127.0.0.1:{PORT}", "--card", card, "--out-wav", out + "/to_a4.wav", "--in-wav", out + "/from_a4.wav", "--frame-out", out + "/frame.bin"]
     for tr in (trig.split(",") if trig else ()):
         sc += ["--trig", tr]
     sc += list(extra)
@@ -164,6 +173,52 @@ def window(x, at, len_s, end_clock, rate=48000):
     n = len(x)
     i = n - int((end_clock - at) / 200 * rate)
     return x[max(0, i):max(0, i) + int(len_s * rate)]
+
+
+def symbol(syx, name):
+    """A symbol's address from the build's map."""
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k == name and isinstance(v, (int, str)):
+                    return int(v, 0) if isinstance(v, str) else v
+                r = walk(v)
+                if r is not None:
+                    return r
+        elif isinstance(x, list):
+            for v in x:
+                r = walk(v)
+                if r is not None:
+                    return r
+    return walk(json.load(open(syx + ".map.json")))
+
+
+def screen_load(a):
+    """The page drawn from the real engine while a machine plays, against the same notes with the page closed: the frame on the A4's screen, the stream, the audio interrupt's load (core_audio_load, 256ths, every 0.5 s), the voice's level on OUT."""
+    from a4_suite import bitmap, frame_rows
+    load = symbol(a.syx, "core_audio_load")
+    a.notes, a.tail, ok, rows = 40, 200, True, {}
+    for name, keys, ex in (("closed", None, ()), ("open", ("RIGHT", "RIGHT", "RIGHT"), ()), ("flood", ("RIGHT", "RIGHT", "RIGHT"), ("--flood",))):
+        out, notes, t = run(a, "screen_" + name, 1, False, extra=ex, peek=f"{load:x},{symbol(a.syx, 'a4_rx_msgs'):x},{symbol(a.syx, 'a4_rui_torn'):x},{symbol(a.syx, 'a4_rui_drop'):x}", screen=keys if keys else None)
+        log = open(out + "/dtboot.log", errors="replace").read()
+        side = open(out + "/sidecar.log").read()
+        lo = [int(x, 16) for x in __import__("re").findall(rf"\[{load:08x}\]=([0-9a-f]+)", log)][4:]
+        print(name, "last peek", [l for l in log.splitlines() if "peek" in l][-1][:120])
+        m = __import__("re").search(r"bad_blocks: (\d+).*?out_underruns: (\d+)", log)
+        ch, d = read_wav32(out + "/to_a4.wav")
+        rows[name] = dict(max=max(lo), mean=sum(lo) / len(lo), bad=int(m.group(1)), under=int(m.group(2)), rms=rms(d[2][-480000:]) / 2**31, sc=[l for l in side.splitlines() if "under" in l][-1].split("under ")[1])
+        print(name, rows[name], [l for l in side.splitlines() if " screen " in l])
+        if keys:
+            bm, fr = bitmap(out + "/end.png"), frame_rows(out + "/frame.bin")
+            print("PASS" if bm == fr else "FAIL", "the page on the A4's screen is the real engine's frame:", sum(x != y for p, q in zip(bm, fr) for x, y in zip(p, q)), "pixels differ")
+            ok = ok and bm == fr
+    good = True
+    for n in ("open", "flood"):
+        o, c = rows[n], rows["closed"]
+        g = o["bad"] == 0 and o["sc"].startswith("0,") and o["max"] <= c["max"] + 3 and o["mean"] <= c["mean"] + 1
+        good = good and g
+        print("PASS" if g else "FAIL", f"the stream, page {n}:", f"bad blocks {o['bad']}, engine underruns {o['sc']}, audio load max {o['max']}/256 against {c['max']} closed, mean {o['mean']:.1f} against {c['mean']:.1f}; the link's own OUT underruns {o['under']} against {c['under']}: the emulator's host against the Mac's clock, up and down from run to run, not judged")
+    return ok and good
 
 
 def main():
@@ -234,6 +289,7 @@ def main():
         good = min(rise) >= 6 and tr == [60, 64, 67] * 2 and others == 0
         print("PASS" if good else "FAIL", f"{mach}: a chord on a mono track's step: last 04s {tr}, at -7 and -3 semitones {rise} dB over the mono line, other channels {others / 2**31:.5f}")
         ok_chord = ok_chord and good
+    ok_screen = screen_load(a)
     offs = [x for x in res["all_off"][0] if x.startswith("80")]
     legal = all(int(p, 16) < 128 for x in res["all_off"][0] for p in x.split()[1:3])
     good = len(offs) == 2 and legal and {x.split()[1] for x in offs} == {"3c", "40"}
@@ -243,7 +299,7 @@ def main():
     ok = res["input_only"] > 10 * res["no_machine_lev0"]
     echo = res["seq_to_a4_trigs"]
     print("PASS" if echo == (2, 1) else "FAIL", "the sequencer's note: the A4 played it (04s: 1 DIN + 1), the engine logged the DIN trig and not that echo:", echo)
-    ok = ok and echo == (2, 1) and ok_off and ok_chord
+    ok = ok and echo == (2, 1) and ok_off and ok_chord and ok_screen
     print("PASS" if ok else "FAIL", "the Sidecar's voice through the A4's own voice and back on IN: input only", res["input_only"], "against no machine", res["no_machine_lev0"])
     return 0 if ok else 1
 

@@ -29,6 +29,9 @@ int a4_usb_up(void);                                    /* a host has the port *
 int a4_usb_send(const uint8_t *m, uint32_t n);          /* 1 gone; 0 not now, nothing sent, try again */
 void a4_wake(void);                                     /* the render: the task has work */
 void a4_service(void);                                  /* the task */
+void a4_remote_service(void);                           /* the task, after the trigs: a4_remote.c */
+int a4_screen_can_open(void);                           /* a Sidecar answers: a4_remote.c */
+void a4_screen_open(void);                              /* the user asked, on the UI task */
 
 /* Every interrupt masked, and back. */
 #define IRQ_OFF(sr) __asm__ volatile ("move.w %%sr,%0\n\tmove.w #0x2700,%%sr" : "=d"(sr) :: "memory")

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """The mod's suite in the emulator: analog-emu's dtboot, the firmware's own USB stack. Nothing here talks to a unit.
 
-    a4_suite.py --emu DIR --stock STOCK.syx --syx OS.syx --card IMG --out DIR [names...]
+    a4_suite.py --emu DIR --stock STOCK.syx --syx OS.syx --card IMG --out DIR [--engine SIDECAR_FIRMWARE] [names...]
 
 Firmware-derived outputs stay in --out. Exit 0 when every test passes."""
-import argparse, hashlib, os, re, subprocess, sys, wave, struct, zlib
+import argparse, hashlib, os, re, shutil, subprocess, sys, time, wave, struct, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from decode import messages
 
 RESULTS = []
+PORT = 7345
 TITLE_PLTS_HRM = "ffe3ff35a4e2"
 
 
@@ -19,8 +20,8 @@ def check(name, ok, detail=""):
 
 class Run:
     """One dtboot run, a key script with times in M instructions."""
-    def __init__(self, a, name, syx=None, usb=True, strict=False, card=None, env=None):
-        self.a, self.name = a, name
+    def __init__(self, a, name, syx=None, usb=True, strict=False, card=None, env=None, host=None):
+        self.a, self.name, self.host, self.old = a, name, host, None        # host: the real engine on the link, these extra arguments
         self.syx = syx or a.syx
         self.dir = os.path.join(a.out, name)
         os.makedirs(self.dir, exist_ok=True)
@@ -76,10 +77,24 @@ class Run:
         if self.usb:
             cmd += ["--usb-host", "--usb-midi-real"]
         env["DTBOOT_END_PNG"] = self.dir + "/end.png"
-        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", env=env)
-        self.log = r.stdout + r.stderr
+        if self.host is None:
+            r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", env=env)
+            self.log, self.rc = r.stdout + r.stderr, r.returncode
+        else:
+            shutil.rmtree(self.dir + "/sc", ignore_errors=True)
+            os.makedirs(self.dir + "/sc")
+            emu = subprocess.Popen(cmd + ["--ob-link", f"127.0.0.1:{PORT}"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env)
+            time.sleep(1)
+            with open(self.dir + "/sidecar.log", "w") as f:
+                side = subprocess.Popen([os.path.join(self.old or self.a.engine, "core/build/sidecar_emu"), "--link", f"127.0.0.1:{PORT}", "--card", self.dir + "/sc", *([] if self.old else ["--frame-out", self.dir + "/frame.bin"]), *self.host], stdout=f, stderr=subprocess.STDOUT)
+                self.log = emu.communicate()[0]
+                self.rc = emu.returncode
+                time.sleep(1)
+                if side.poll() is None:
+                    side.terminate()
+                side.wait()
+            self.side = open(self.dir + "/sidecar.log").read()
         open(self.dir + "/log.txt", "w").write(self.log)
-        self.rc = r.returncode
         self.msgs = list(messages(open(self.usb_file, "rb").read())) if os.path.exists(self.usb_file) else []
         return self
 
@@ -677,16 +692,277 @@ def t_chord_labels(a):
     check("chord_labels: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
-TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+# ---- the remote UI: the real engine on the link. Screens are read off the emulated panel; what the engine says it sent is its --frame-out.
+def frame_rows(p):
+    """The engine's last frame: glass pixel (x, y from the top) = byte (7 - y / 8) + 8 x, bit y % 8 [as the Rytm's]."""
+    b = open(p, "rb").read()
+    return [[bool(b[(7 - y // 8) + 8 * x] >> (y % 8) & 1) for x in range(128)] for y in range(64)]
+
+
+SHOWN = 900     # after the port's hello: its splash has run
+CODE = "9173 2046"      # sidecar_emu --pair-at's, made up for this test: a real code never comes near these logs
+
+
+def open_page(r):
+    """OVERBRIDGE, the splash let go by, OSC1 past the SIDECAR page."""
+    r.overbridge()
+    r.t += SHOWN
+    return r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400)
+
+
+def closed_ref(a, name, keys=()):
+    """The same keys with no Sidecar at all: the OSC1 cycle comes round to OSC1."""
+    r = Run(a, name).overbridge()
+    r.t += SHOWN
+    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400)
+    r.t += 400
+    for k in keys:
+        r.key(k, 300)
+    return r.go()
+
+
+def t_remote_open(a):
+    ref = closed_ref(a, "rui_ref")
+    r = open_page(Run(a, "rui_open", host=[]))
+    r.t += 400
+    r.go()
+    bm, fr = bitmap(r.dir + "/end.png"), frame_rows(r.dir + "/frame.bin")
+    check("remote_open: the A4's screen is the engine's frame, pixel for pixel", bm == fr, f"{sum(x != y for p, q in zip(bm, fr) for x, y in zip(p, q))} pixels differ")
+    check("remote_open: and not stock's", bm != bitmap(ref.dir + "/end.png") and sum(map(sum, bm)) > 300, f"{sum(map(sum, bm))} pixels on")
+    m = re.search(r"opens (\d+), keys (\d+), turns (\d+), bad (\d+)", r.side)
+    check("remote_open: one open, nothing the engine could not read", m and m.group(1) == "1" and m.group(4) == "0", m.group(0) if m else "no line")
+    check("remote_open: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+    o = [x for x in r.msgs if x[4] == 0x30]
+    check("remote_open: 30 once, page 0, on, the user's", [list(x[6:9]) for x in o] == [[0, 1, 0]], str([list(x[6:9]) for x in o]))
+    q = Run(a, "rui_nohost").overbridge()
+    q.t += SHOWN
+    q.env = dict(q.env, DTBOOT_PNG_DIR=q.dir, DTBOOT_STEPS="1")
+    q.key("OSC1", 150).key("OSC1", 150).key("OSC1", 150).key("OSC1", 150).go()
+    c = [sha(os.path.join(q.dir, f)) for f in sorted(os.listdir(q.dir)) if f.startswith("step") and f.endswith("_OSC1.png")]
+    check("remote_open: no Sidecar: the OSC1 key's cycle as it was, no stop added: 3 steps round", len(c) >= 4 and c[-1] == c[-4] and len({*c[-4:]}) == 3 and not [x for x in q.msgs if x[4] == 0x30], str(c[-4:]))
+
+
+def nav(a, name, keys, gap=300, **kw):
+    r = open_page(Run(a, name, host=kw.pop("host", []), env={"DTBOOT_STEPS": "1"}))
+    r.env["DTBOOT_PNG_DIR"] = r.dir
+    r.t += 300
+    for k in keys:
+        r.key(k, gap)
+    r.go(tail=300)
+    names = sorted(f for f in os.listdir(r.dir) if f.startswith("step") and f.endswith(".png"))
+    r.shots = [bitmap(os.path.join(r.dir, f)) for f in names[-len(keys):]] if keys else []
+    return r
+
+
+def t_remote_keys(a):
+    """The six keys reach the engine as the Rytm's do: the Rytm's codes, press and release, and each moves the page as on the Rytm."""
+    keys = ("RIGHT", "RIGHT", "RIGHT", "LEFT", "LEFT", "LEFT", "YES", "DOWN", "DOWN", "UP", "NO", "NO")
+    r = nav(a, "rui_keys", keys)
+    code = {"RIGHT": 0x41, "LEFT": 0x40, "YES": 0x44, "DOWN": 0x43, "UP": 0x42, "NO": 0x45}
+    k = [(x[6] << 7 | x[7], x[8]) for x in r.msgs if x[4] == 0x31]
+    want = [p for n in keys for p in ((code[n], 1), (code[n], 0))]
+    check("remote_keys: 31 for each key, its code, press then release", k == want, str(k[:6]))
+    s = r.shots
+    sidecar, system, scope = s[2], s[0], s[1]
+    check("remote_keys: RIGHT steps the ring and comes round, SIDECAR SYSTEM SCOPE", system != sidecar and scope != system and s[3] == scope and s[4] == system and s[5] == sidecar, "")
+    check("remote_keys: YES opens the MENU, DOWN and UP move its cursor", s[6] != sidecar and s[7] != s[6] and s[8] != s[7] and s[9] == s[7], "")
+    check("remote_keys: NO back to SIDECAR, NO again leaves", s[10] == sidecar and s[11] != sidecar, "")
+    check("remote_keys: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+    t = open_page(Run(a, "rui_turn", host=[], env={"DTBOOT_STEPS": "1"}))
+    t.key("RIGHT", 300).key("RIGHT", 400)
+    a0 = t.t
+    t.turn(1, 1, 8, every="20M", gap=300).go(tail=200)
+    tr = [x for x in t.msgs if x[4] == 0x32]
+    check("remote_keys: a knob the page takes: 32 for knob B, none to stock", tr and all(x[6] == 1 for x in tr) and sum(x[7] - 64 for x in tr) > 0, str([list(x[6:9]) for x in tr[:4]]))
+
+
+def t_remote_exit(a):
+    ref = closed_ref(a, "rui_ref2", ("AMP",))
+    r = nav(a, "rui_exit", ("AMP",))
+    check("remote_exit: a stock page key leaves and does its job: stock's AMP page, pixel for pixel", bitmap(r.dir + "/end.png") == bitmap(ref.dir + "/end.png"), "")
+    o = [list(x[6:9]) for x in r.msgs if x[4] == 0x30]
+    check("remote_exit: told: 30 off, reason escape", o[-1:] == [[0, 0, 3]], str(o))
+    q = nav(a, "rui_exit_no", ("NO",))
+    ref0 = closed_ref(a, "rui_ref3")
+    check("remote_exit: NO on the status page: stock's screen, pixel for pixel", bitmap(q.dir + "/end.png") == bitmap(ref0.dir + "/end.png"), "")
+    u = nav(a, "rui_after", ("NO", "RIGHT", "YES", "NO"))
+    n = [x for x in u.msgs if x[4] == 0x31]
+    check("remote_exit: closed, the arrows and YES are stock's again: nothing to the host", len(n) == 2, f"{len(n)} 31s")
+    s = closed_ref(a, "rui_ref4", ("RIGHT", "YES", "NO"))
+    check("remote_exit: and the screen is stock's after them", bitmap(u.dir + "/end.png") == bitmap(s.dir + "/end.png"), "")
+
+
+def t_remote_play(a):
+    """Open, with the sequencer playing: transport stays stock's, the trigs go out, a trig on the panel is stock's while the page does not take it."""
+    r = Run(a, "rui_play", host=[]).overbridge().machine(1, 1)
+    r.key("RECORD", 100).key("T1", 60).key("T9", 60).key("RECORD", 100)
+    r.t += SHOWN
+    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400)
+    t = r.t
+    r.key("PLAY", 1200).key("STOP", 300).go(tail=200)
+    sent = r.sent()
+    n = [c for c, k in sent if k == 4 and c / 1e6 > t]
+    check("remote_play: PLAY with the page open: the sequencer runs, its trigs report", len(n) >= 2, f"{len(n)} trigs")
+    bm, fr = bitmap(r.dir + "/end.png"), frame_rows(r.dir + "/frame.bin")
+    check("remote_play: the page stayed up, the engine's frame", bm == fr, "")
+    check("remote_play: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
+def last_hello(a, name, **kw):
+    r = Run(a, name, host=kw.get("host", [])).overbridge()
+    r.t += 600
+    r.go()
+    c = [c for c, k in r.sent() if k == 0x36]
+    return c[-1] / 1e6 if c else None
+
+
+def t_remote_splash(a):
+    """The connection animation: the frame on stock's screen for 3 s, the icon's slide and the line, every key stock's, stock's screen after."""
+    t = last_hello(a, "rui_sp0")
+    check("remote_splash: a 36 after the hello's answer", t is not None, str(t))
+    if t is None:
+        return
+    fs = []
+    for at in (30, 300, 500):
+        r = Run(a, f"rui_sp{at}", host=[]).overbridge()
+        r.t = 4000
+        r.overbridge = None
+        r.args = Run(a, "x").overbridge().args
+        r.t = int(t) + at
+        fs.append(r.go(tail=0))
+    a0, a1, a2 = [bitmap(x.dir + "/end.png") for x in fs]
+    st = closed_ref(a, "rui_ref5")
+    check("remote_splash: the animation: the screen moves, slide then line", a0 != a1 and a1 != a2 and sum(map(sum, a1)) > 200, f"{sum(map(sum, a0))} {sum(map(sum, a1))} {sum(map(sum, a2))} pixels on")
+    late = Run(a, "rui_splate", host=[]).overbridge()
+    late.t = int(t) + 1000
+    late.go(tail=0)
+    check("remote_splash: over by itself: not the splash", bitmap(late.dir + "/end.png") not in (a0, a1, a2), "")
+    k = Run(a, "rui_spkey", host=[]).overbridge()
+    k.t = int(t) + 150
+    k.key("AMP", 100).go(tail=0)
+    check("remote_splash: a key ends it and is stock's", bitmap(k.dir + "/end.png") != a1 and not [x for x in k.msgs if x[4] == 0x30], "")
+
+
+def t_remote_pair(a):
+    """The pairing code on the A4's screen: the modal over stock's screen and on the status page. A made-up code, sidecar_emu's; nothing of it is printed here."""
+    t = last_hello(a, "rui_pa0")
+    r = Run(a, "rui_pair", host=["--pair-at", "6"]).overbridge()
+    r.t = int(t) + 1500
+    r.go(tail=0)
+    bm = bitmap(r.dir + "/end.png")
+    ref = Run(a, "rui_pair0", host=[]).overbridge()
+    ref.t = int(t) + 1500
+    ref.go(tail=0)
+    box = bm[16][4:124]
+    check("remote_pair: the box on the A4's screen, over stock's, closed page", bm != bitmap(ref.dir + "/end.png") and all(box), "")
+    check("remote_pair: the code is in no log", CODE not in r.side + r.log, "")
+    o = bitmap(a.out + "/rui_open/end.png")
+    q = open_page(Run(a, "rui_pairst", host=["--pair-at", "1"]))
+    q.t += 400
+    q.go()
+    b2 = bitmap(q.dir + "/end.png")
+    rows = {y for y in range(64) if b2[y] != o[y]}
+    check("remote_pair: its line on the status page, only there", rows and rows <= set(range(29, 39)) and b2 == frame_rows(q.dir + "/frame.bin"), str(sorted(rows)[:3]))
+    check("remote_pair: the code is in no log, no fault", CODE not in q.side + q.log and r.rc == 0 and not r.faults() and q.rc == 0, "; ".join(r.faults()[:2]))
+
+
+def t_remote_link(a):
+    """The Sidecar gone with the page open: stock's screen by itself within a second or so, and it stays. The link closed, then the USB host gone, then a power cut."""
+    ref = closed_ref(a, "rui_ref6")
+    r = open_page(Run(a, "rui_lk0", host=[]))
+    r.t += 400
+    r.go()
+    secs = float(re.search(r"end: .*?, ([\d.]+) s,", r.side).group(1))
+    open_bm = bitmap(r.dir + "/end.png")
+    q = open_page(Run(a, "rui_lk1", host=["--seconds", f"{secs:.2f}"]))
+    q.t += 400 + 1000
+    q.go()
+    bm = bitmap(q.dir + "/end.png")
+    o = [list(x[6:9]) for x in q.msgs if x[4] == 0x30]
+    check("remote_link: the link closed while open: stock's screen, pixel for pixel", bm == bitmap(ref.dir + "/end.png") and bm != open_bm, str(o))
+    check("remote_link: closed by the time-out, and told", o[-1:] == [[0, 0, 2]], str(o))
+    check("remote_link: no fault, the A4 runs on", q.rc == 0 and not q.faults(), "; ".join(q.faults()[:2]))
+    g = open_page(Run(a, "rui_lk2", host=[]))
+    t0 = g.t + 200
+    g.t += 1200
+    g.go(extra=["--usb-host-gone", f"{t0}M:{t0 + 300}M"])
+    check("remote_link: the USB host gone while open: stock's screen, no fault", bitmap(g.dir + "/end.png") == bitmap(ref.dir + "/end.png") and g.rc == 0 and not g.faults(), "; ".join(g.faults()[:2]))
+    p = open_page(Run(a, "rui_lk3", host=[]))
+    at = p.t + 200
+    p.go(extra=["--power-off", f"{at}M"], tail=800)
+    check("remote_link: a power cut while open: the mod's power-off", p.rc == 0 and not p.faults(), "; ".join(p.faults()[:2]))
+    b = Run(a, "rui_lk4", card=p.card, usb=False)
+    b.key("OSC1", 300).go()
+    s = Run(a, "rui_lk5", card=p.card, syx=a.stock, usb=False)
+    s.key("OSC1", 300).go()
+    check("remote_link: and the next boot is stock's screen", bitmap(b.dir + "/end.png") == bitmap(s.dir + "/end.png"), "")
+
+
+def t_remote_voice(a):
+    """A voice's page: on the ring once the voice has reported, drawn from the engine, a knob reaches the engine's voice."""
+    r = Run(a, "rui_voice", host=[], env={"DTBOOT_STEPS": "1"}).overbridge().machine(1, 1)
+    r.env["DTBOOT_PNG_DIR"] = r.dir
+    r.t += SHOWN
+    r.midi("903c64", 100).midi("803c00", 200)
+    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400).key("RIGHT", 300).key("RIGHT", 400)
+    b0 = r.t
+    r.turn(0, 1, 6, every="20M", gap=300).go(tail=200)
+    bm, fr = bitmap(r.dir + "/end.png"), frame_rows(r.dir + "/frame.bin")
+    names = sorted(f for f in os.listdir(r.dir) if f.startswith("step") and f.endswith("_RIGHT.png"))
+    before = bitmap(os.path.join(r.dir, names[-1]))
+    check("remote_voice: T1's page drawn, the engine's frame", bm == fr, "")
+    check("remote_voice: a knob moves it on the screen", bm != before and [x for x in r.msgs if x[4] == 0x32], f"{sum(x != y for p, q in zip(bm, before) for x, y in zip(p, q))} pixels")
+
+
+def t_remote_old(a):
+    """This mod on the kernel before it, which has no pages: no restart past the one the hello asks, nothing to open, the key as it was."""
+    if not a.old_engine:
+        check("remote_old: needs --old-engine", False)
+        return
+    r = Run(a, "rui_old", host=[]).overbridge()
+    r.old = a.old_engine
+    r.t += SHOWN
+    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400).key("RIGHT", 300).go(tail=300)
+    ref = closed_ref(a, "rui_ref7", ("RIGHT",))
+    check("remote_old: one restart, the box served", r.side.count(": restart:") == 1 and "end: Analog Four" in r.side, f"{r.side.count(': restart:')} restarts")
+    check("remote_old: nothing opens, stock's screen", bitmap(r.dir + "/end.png") == bitmap(ref.dir + "/end.png") and not [x for x in r.msgs if x[4] == 0x30], "")
+    check("remote_old: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
+def t_remote_off(a):
+    """A Sidecar connected, the page never opened: stock's screens step by step, with stock's hello-less USB, a turned knob's title too."""
+    def script(r):
+        r.overbridge()
+        r.t += SHOWN
+        r.key("TRACK1", 120).key("OSC2", 150).key("OSC2", 150).key("FILTERS", 150).key("AMP", 150).key("LFO", 150).key("LEFT", 150).key("RIGHT", 150).key("YES", 150).key("NO", 150).key("OSC1", 150)
+        return r.turn(2, -1, 30, every="3M", gap=100).key("OSC1", 150)
+    def shots(r):
+        return [sha(os.path.join(r.dir, f)) for f in sorted(os.listdir(r.dir)) if f.startswith("step") and f.endswith(".png")] + [sha(r.dir + "/end.png")]
+    s = script(Run(a, "rui_off_s", syx=a.stock, env={"DTBOOT_STEPS": "1"}))
+    s.env["DTBOOT_PNG_DIR"] = s.dir
+    s.go(tail=50)
+    m = script(Run(a, "rui_off_m", host=[], env={"DTBOOT_STEPS": "1"}))
+    m.env["DTBOOT_PNG_DIR"] = m.dir
+    m.go(tail=50)
+    x, y = shots(s)[-13:], shots(m)[-13:]
+    check("remote_off: engine connected, closed: each screen as stock's", x == y and len(x) == 13, f"{len(x)} screens, {sum(p != q for p, q in zip(x, y))} differ")
+    check("remote_off: nothing of the page on the wire", not [z for z in m.msgs if z[4] in (0x30, 0x31, 0x32)], "")
+
+
+TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after,
+         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--emu", required=True); ap.add_argument("--stock", required=True); ap.add_argument("--syx", required=True)
-    ap.add_argument("--card", required=True); ap.add_argument("--out", required=True); ap.add_argument("names", nargs="*")
+    ap.add_argument("--card", required=True); ap.add_argument("--out", required=True); ap.add_argument("--engine"); ap.add_argument("--old-engine"); ap.add_argument("names", nargs="*")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     for n in a.names or TESTS:
+        if n.startswith("remote_") and not a.engine:
+            check(f"{n}: needs --engine", False)
+            continue
         print(n, flush=True)
         TESTS[n](a)
     bad = [n for n, ok in RESULTS if not ok]

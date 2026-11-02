@@ -18,6 +18,7 @@ static void loop(void)
     for (;;) {
         SEM_WAIT(sem);
         a4_service();
+        a4_remote_service();
     }
 }
 

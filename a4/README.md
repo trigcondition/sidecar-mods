@@ -22,7 +22,11 @@ What each P means is the machine's, as on the Rytm's SRC page: PLAITS ENG HRM TI
 Every P covers 0..127. TUN stops at 1 and 127: FIN adds or takes about 2.5, so the first entry of a list (JUNO, 6-OP FM PAT) needs TUN down and FIN down. FIN is P1's and P6's fraction, a knob with a stock name.
 P16 is fixed per machine. **The knobs still move the analog voice:** ENG is still its TUN, TIM its PW. Turn OSC1 and OSC2 LEV down for the Sidecar alone (those two LEV knobs are the analog oscillators', not the machine's LEV), or leave them up to layer and hear them follow. Noise LEV up adds the noise to the voice. **Start from a cleared sound:** a sound's own values and LFOs are the machine's too: a factory kit's LFO on DET sweeps PLAITS HRM, and an LFO on TUN would jump ENG between engines. The LFO and envelope destination lists keep stock's names: DET is HRM on PLAITS, by the table above. A voice only sounds while the A4's amp is open: the same trig opens it. **Chords and KIT > POLY CONFIG:** a chord on a step reaches the track's machine whole, whatever POLY CONFIG says, so a mono track plays a Sidecar chord and takes no analog voice from another track. POLY CONFIG decides the A4's own voices alone: a mono track's oscillators play the chord's first note. Each note is one 04 on the track's voice, in order. PLTS, JUNO, DSY, FM6 and user machines that declare instances play it; MD and B2 (drums) and a mono user machine stay one hit. Keys and MIDI give one note at a time: on a poly track they make a chord too, on a mono track each note follows the last as ever, and two different trigs there closer than 20 ms get a note-off between them, so that the Sidecar does not take them for a chord. A chord ends when the last key is up or every analog voice the track owns has closed. **The limit:** all of a chord's audio is on that one channel, so it enters one analog voice, the one of the track's number, takes that voice's filters and amp and no others, and that amp must be open. On a mono track it is, as the same trig plays there. On a poly track, if the A4 gives none of the chord's notes to that voice, the chord is silent while the notes play elsewhere. With note send on, a 6-OP FM voice may take its notes from MIDI as well: nothing doubles. The A4's own amp envelope and filters shape the machine.
 
-With no Sidecar, or with every sound OFF, nothing changes: on USB a few short SysEx hellos at each port-up, and the page. No audio code is patched. Three sites in the page's draw and turn ask the mod for a knob's names, and stock answers when the track is OFF.
+With no Sidecar, or with every sound OFF, nothing changes: on USB a few short SysEx hellos at each port-up, and the page. No audio code is patched. A fourth site reads each SysEx at the router's entry, on the MIDI task; three sites in the page's draw and turn ask the mod for a knob's names, and stock answers when the track is OFF.
+
+## The Sidecar's screen
+
+With a Sidecar connected, on a kernel that has the pages, press OSC1 on the SIDECAR page: the A4's screen shows the Sidecar's pages, as the Rytm's does. LEFT and RIGHT step SIDECAR, SYSTEM, a page for each track with a machine, SCOPE and REC; YES on SIDECAR is the MENU; NO goes back, and on SIDECAR leaves. Any stock page key leaves too and does its stock job. While a page is open only the arrows, YES, NO and the knobs and pushes A..H a page uses are the Sidecar's; I, J and LEVEL do nothing on the status pages; the keyboard, the track keys and the transport stay stock's. A Sidecar lost, its USB gone or a power cut gives the stock screen back by itself, within about a second. With no Sidecar, or a kernel without pages, the OSC1 key steps OSC1, NOISE, SIDECAR as ever, and nothing is captured. A Sidecar that connects shows its splash for 3 s and the pairing code when it asks for one, over the stock screen; any key ends them and is stock's.
 
 ## Build and rehearse
 
@@ -30,7 +34,7 @@ You need a stock `Analog-Four_MKII_OS1.56.syx`, `m68k-elf-gcc`, Python 3, an ele
 
 ```sh
 STOCK=/path/Analog-Four_MKII_OS1.56.syx ELEKLOADER=/path/elekloader ./build.sh
-tools/a4_suite.py --emu ANALOG_EMU --stock STOCK.syx --syx out/a4156_sidecar.syx --card CARD.img --out DIR
+tools/a4_suite.py --emu ANALOG_EMU --stock STOCK.syx --syx out/a4156_sidecar.syx --card CARD.img --out DIR --engine SIDECAR_FIRMWARE --old-engine OLDER_SIDECAR_FIRMWARE
 tools/a4_e2e.py --emu ANALOG_EMU --engine SIDECAR_FIRMWARE --syx out/a4156_sidecar.syx --card CARD.img --out DIR
 ANALOG_EMU/tools/rehearse_flash.py STOCK.syx $PWD/out/a4156_sidecar.syx --out DIR --card CARD.img --hello yes
 ANALOG_EMU/tools/rehearse_flash.py $PWD/out/a4156_sidecar.syx STOCK.syx --out DIR2 --card DIR/card.img --hello no
@@ -57,4 +61,4 @@ Needs an engine with the A4 profile (`core/device/a4.*`). Set USB CONFIG to OVER
 
 ## Not done
 
-Machine names in the LFO and envelope destination lists, knob labels on the Sidecar's pages, sample machines (they need the Rytm's pool pages), remote UI, the project's name on the Sidecar, its transport report (use the A4's own CLOCK SEND and TRANSPORT SEND).
+Machine names in the LFO and envelope destination lists, knob labels on the Sidecar's pages, sample machines (they need the Rytm's pool pages), the Rytm's pages that need its pools, sequencer, send FX or project reports, the project's name on the Sidecar, its transport report (use the A4's own CLOCK SEND and TRANSPORT SEND).
