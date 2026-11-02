@@ -244,7 +244,7 @@ def t_kit(a):
     r.midi("903c64", 100).midi("803c00", 200)
     r.key("KIT", 200).key("DOWN", 120).key("YES", 300).key("DOWN", 120).key("YES", 400).key("NO", 200)
     r.midi("903c64", 100).midi("803c00", 200).go()
-    kits = [m[5] for m in r.msgs if m[4] == 0x3b]
+    kits = [m[6] for m in r.msgs if m[4] == 0x3b and m[5] == 1 and len(m) == 8]
     check("kit: the kit reported, and its change", len(set(kits)) >= 2, str(kits[:8]))
     check("kit: the machine stays with the sound of the kit it was set in", r.count(4) == 1, f"{r.count(4)} trigs")
     check("kit: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
@@ -367,8 +367,12 @@ def to_page(r, page):
 
 
 def want_labels(machine, page):
+    """The machine's names; the three LEV and, on a list's machine, OSC1 FIN stay stock's; every other knob empty."""
     n = NAMES[machine].split()
-    return [(n[p - 1] if p and p <= len(n) else s) for p, s in zip(KNOBS[page], STOCK_LABELS[page])]
+    keep = {4} if page != "x" else set()
+    if page == "osc1" and machine in ("JUNO", "FM6"):
+        keep.add(1)
+    return [n[p - 1] if p and p <= len(n) else s if i in keep else "" for i, (p, s) in enumerate(zip(KNOBS[page], STOCK_LABELS[page]))]
 
 
 def same(got, want):
@@ -450,9 +454,7 @@ def t_knobs(a):
             moved = {k + 1 for k in range(15) if k != 1 and len({x[k] for x in w}) > 1}
             if e == 2 and page == "osc1":                   # P2's own knob
                 moved |= {2}
-            want = {ps[e]} - {0}
-            if (page == "osc1" and e == 1) or (page == "osc2" and e == 1):     # FIN is P1's, P6's fraction
-                want = {1 if page == "osc1" else 6}
+            want = {ps[e]} - {0}                            # PLAITS: FIN is empty here, it moves nothing
             if moved != want:
                 bad.append((e, sorted(moved), sorted(want)))
             if ps[e]:
@@ -485,6 +487,65 @@ def t_fin(a):
     check("fin: TUN down and FIN down: P1's integer reaches 0; both up it stays at the top, no wrap", min(lo) < 128 and hi and min(hi) > 16000, f"P1 {min(lo) / 128:.2f}, then {min(hi) / 128:.2f}..{max(hi) / 128:.2f}")
 
 
+def cell(bm, c):
+    """Knob c's square of the page, A..J, its name under it: no title band."""
+    y0, x0 = (9, 31)[c // 5], 26 * (c % 5)
+    return [r[x0:x0 + 26] for r in bm[y0:y0 + 22]]
+
+
+def t_hatched(a):
+    """The knobs a machine has no use for are stock's own empty knob: the very pixels of stock's NOISE page's empty ones, with nothing behind them."""
+    s = Run(a, "h_stock", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC1", 150).go(tail=50)
+    empty = bitmap(s.dir + "/end.png")
+    for machine, steps, page, knobs in (("JUNO", 2, "osc1", (3, 5, 6)), ("U1", 8, "osc1", (1, 3, 5, 6)), ("FM6", 4, "osc2", (1, 3, 5, 6, 8, 9)), ("FM6", 4, "noise", (0, 1, 2)), ("FM6", 4, "x", (0, 1, 2, 3, 4, 5, 6, 7, 8))):
+        r = to_page(Run(a, f"h_{machine}_{page}", usb=False).machine(1, steps), page).go(tail=50)
+        bm = bitmap(r.dir + "/end.png")
+        bad = [c for c in knobs if cell(bm, c) != cell(empty, 5 + c % 5 if c < 5 and c != 3 else c)]    # D, F..J empty there; the others by their column
+        check(f"hatched: {machine} on {page}: stock's empty knob", not bad and r.rc == 0 and not r.faults(), str(bad))
+    def script(name, turn):
+        r = Run(a, name).overbridge().machine(1, 2)                      # JUNO, on OSC1: knob D (TRK), F (WAV), G (SUB) empty
+        before = r.t
+        if turn:
+            for e in (3, 5, 6):
+                r.turn(e, 1, 40, every="3M", gap=150)
+        else:
+            r.t += 450
+        return r, before
+    r, t0 = script("h_idle", False)
+    r.go(tail=100)
+    q, t1 = script("h_turn", True)
+    q.go(tail=100)
+    check("hatched: turned knobs: the screen stays, no title, no value", sha(r.dir + "/end.png") == sha(q.dir + "/end.png"), f"{sha(r.dir + '/end.png')} {sha(q.dir + '/end.png')}")
+    x, y = [v for c, v in reports(r)][-1:], [v for c, v in reports(q)][-1:]
+    check("hatched: turned knobs: the machine's values stay", x == y and x, str(len(reports(q))))
+    def off(name, turn):                                                  # what they would have changed: back to OFF, and the page is stock's page of an untouched sound
+        r = Run(a, name, usb=False).machine(1, 2)
+        if turn:
+            for e in (3, 5, 6):
+                r.turn(e, 1, 40, every="3M", gap=150)
+        r.key("OSC1", 150).key("OSC1", 150).nudge(0, -1, 60, 4).key("OSC1", 150)
+        return r.go(tail=50)
+    u, v = off("h_off0", False), off("h_off1", True)
+    check("hatched: a turn left the sound as it was: TRK, WAV, SUB unchanged once back OFF", sha(u.dir + "/end.png") == sha(v.dir + "/end.png"), f"{sha(u.dir + '/end.png')} {sha(v.dir + '/end.png')}")
+    l0 = Run(a, "h_lev0", usb=False).machine(1, 4).go(tail=50)
+    l1 = Run(a, "h_lev1", usb=False).machine(1, 4).turn(4, 1, 40, every="3M", gap=100).go(tail=50)
+    b0, b1 = bitmap(l0.dir + "/end.png"), bitmap(l1.dir + "/end.png")
+    check("hatched: LEV stays alive on a machine: its turn shows title and value", b0[:9] != b1[:9] and cell(b0, 4) != cell(b1, 4), "")
+    m = Run(a, "h_t2").machine(1, 2).key("TRACK2", 150).go(tail=50)
+    t = Run(a, "h_t2s", syx=a.stock).key("TRACK1", 120).key("OSC1", 150).key("OSC1", 150).key("TRACK2", 150).go(tail=50)
+    check("hatched: TRACK2 OFF, on the same page after a machine's T1: stock's screen", sha(m.dir + "/end.png") == sha(t.dir + "/end.png"), f"{sha(m.dir + '/end.png')} {sha(t.dir + '/end.png')}")
+    def kit(r):
+        return r.key("KIT", 200).key("DOWN", 120).key("YES", 300).key("DOWN", 120).key("YES", 400).key("NO", 200).go(tail=100)
+    m = kit(Run(a, "h_kit").machine(1, 2))
+    t = kit(Run(a, "h_kits", syx=a.stock).key("TRACK1", 120).key("OSC1", 150).key("OSC1", 150))
+    check("hatched: a kit with no machine loaded with the page open: stock's screen", sha(m.dir + "/end.png") == sha(t.dir + "/end.png"), f"{sha(m.dir + '/end.png')} {sha(t.dir + '/end.png')}")
+    p = Run(a, "h_pow").machine(1, 2)
+    p.go(extra=["--power-off", f"{p.t + 100}M"], tail=800)
+    b = Run(a, "h_boot", card=p.card).go(tail=300)
+    bm = bitmap(b.dir + "/end.png")
+    check("hatched: on the page a boot opens, no key pressed", b.rc == 0 and not b.faults() and all(cell(bm, c) == cell(empty, c) for c in (3, 5, 6)), "; ".join(b.faults()[:2]))
+
+
 def t_lock(a):
     """A parameter lock on a trig: hold the trig, turn HRM: the step's report carries it, the track's own value stays."""
     r = Run(a, "lock").overbridge().machine(1, 1).key("OSC2", 150).key("OSC1", 150)
@@ -510,15 +571,15 @@ def poly_kit(r, track, voices=4):
     return r.key("NO", 120).key("NO", 120).key("NO", 400)
 
 
-def grid_chord(r, step="T1", notes=("KB_C1", "KB_E1", "KB_G1")):
-    """An empty pattern; a trig holding a chord: GRID RECORD, the step held, the keys held together."""
+def grid_chord(r, step="T1", notes=("KB_C1", "KB_E1", "KB_G1"), stay=False):
+    """An empty pattern; a trig holding a chord: GRID RECORD, the step held, the keys held together. stay: still in GRID RECORD."""
     r.key("BANK_H", 120).key("T16", 500).key("RECORD", 150)
     t = r.t
     r.args += ["--press", f"{step}@{t}M:700M"]
     for i, k in enumerate(notes):
         r.args += ["--press", f"{k}@{t + 100 + i * 60}M:{400 - i * 60}M"]
     r.t += 900
-    return r.key("RECORD", 200)
+    return r if stay else r.key("RECORD", 200)
 
 
 def seq_trigs(r):
@@ -670,6 +731,56 @@ def t_mono_stall(a):
     r, ev = step_chord(a, "mstall", play=lambda q: setattr(q, "t", q.t + 1400), extra=lambda t: ["--usb-host-noread", f"{t + 100}M:{t + 900}M"])
     bars, want = whole_chords(ev, (60, 64, 67, 71))
     check("mono_stall: the chords after it are whole, no fault", len(bars) >= 2 and all(b == want for b in bars) and r.rc == 0 and not r.faults(), str([[e[1] for e in b] for b in bars]))
+
+
+def preview(a, name, machine=4, voices=0, notes=FOUR, midi=None):
+    """A chord on T1's first step, in GRID RECORD; the trig held, YES. (the run, the 04s and 11s from the press on.)"""
+    r = Run(a, name).overbridge().machine(1, machine)
+    if voices:
+        poly_kit(r, 1, voices)
+    grid_chord(r, notes=notes, stay=True)
+    t = r.t
+    r.args += ["--press", f"T1@{t}M:500M", "--press", f"YES@{t + 150}M:100M"]
+    r.t = t + 520
+    if midi:                                                            # the trig let go: while it is held, MIDI's notes go into it
+        midi(r)
+    r.t = max(r.t, t + 700)
+    r.key("RECORD", 300).go(tail=500)
+    it = iter(m for m in r.msgs if m[4] in (4, 0x11))
+    ev = []
+    for c, k in r.sent():
+        if k in (4, 0x11):
+            m = next(it, None)
+            if m and c / 1e6 >= t:
+                ev.append((4, m[6], m[5], m[7]) if k == 4 else (0x11,))
+    return r, ev
+
+
+def t_preview(a):
+    """Hold a trig, YES: the whole chord, on a mono track too: the OS itself plays no more notes than the track has voices. One 11 at its end."""
+    r, ev = preview(a, "prev4")
+    check("preview: mono: four notes, the track's machine, then one 11", ev == [(4, n, 0x48, 100) for n in (60, 64, 67, 71)] + [(0x11,)], str(ev))
+    check("preview: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+    r, ev = preview(a, "prev3", notes=FOUR[:3])
+    check("preview: mono: three notes, no fourth", ev == [(4, n, 0x48, 100) for n in (60, 64, 67)] + [(0x11,)], str(ev))
+    for voices in (1, 2, 4):
+        r, ev = preview(a, f"prevp{voices}", voices=voices)
+        got = sorted(e[1] for e in ev if e[0] == 4)
+        check(f"preview: POLY CONFIG {voices}: all four notes, one 11 when the last is off", got == [60, 64, 67, 71] and ev[-1] == (0x11,) and sum(e[0] == 0x11 for e in ev) == 1, str(ev))
+    r, ev = preview(a, "prev1", notes=FOUR[:1])
+    check("preview: a step of one note: one 04, one 11", ev == [(4, 60, 0x48, 100), (0x11,)], str(ev))
+    def line(q):
+        q.midi("904364", 40).midi("804300", 20).midi("904764", 40).midi("804700", 20)
+    r, ev = preview(a, "prevl", midi=line)
+    tr = [e[:2] for e in ev]
+    check("preview: notes after it don't stack on it: each one note, in its turn", tr[:4] == [(4, 60), (4, 64), (4, 67), (4, 71)] and (4, 67) in tr[4:] and (4, 71) in tr[4:] and len([e for e in tr if e[0] == 4]) == 6, str(tr))
+    o = Run(a, "prevo").overbridge()
+    grid_chord(o, notes=FOUR, stay=True)
+    t = o.t
+    o.args += ["--press", f"T1@{t}M:500M", "--press", f"YES@{t + 150}M:100M"]
+    o.t += 700
+    o.key("RECORD", 300).go(tail=300)
+    check("preview: OFF: nothing reported, no fault", o.count(4) == 0 and o.rc == 0 and not o.faults(), f"{o.count(4)} trigs")
 
 
 def t_chord_labels(a):
@@ -949,8 +1060,103 @@ def t_remote_off(a):
     check("remote_off: nothing of the page on the wire", not [z for z in m.msgs if z[4] in (0x30, 0x31, 0x32)], "")
 
 
-TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after,
-         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off}
+def t_remote_kit(a):
+    """A kit change reaches the engine: 3B <version> <kit> on the wire, read, not counted bad. The kit's second T1 has a machine too, so that its 3B goes."""
+    r = Run(a, "rui_kit", host=[]).overbridge().machine(1, 1)
+    r.t += SHOWN
+    r.midi("903c64", 100).midi("803c00", 200)
+    r.key("KIT", 200).key("DOWN", 120).key("YES", 300).key("DOWN", 120).key("YES", 400).key("NO", 200)
+    r.machine(1, 1).key("NO", 200)
+    r.midi("903c64", 100).midi("803c00", 200).go(tail=400)
+    said = [bytes(m) for m in r.msgs if m[4] == 0x3b]
+    kits = [m[6] for m in said if len(m) == 8 and m[5] == 1]
+    check("remote_kit: 3B as the engine reads it: 1, the kit", len(kits) == len(said) and kits, str([m.hex() for m in said[:4]]))
+    check("remote_kit: the change goes out, both kits", len(set(kits)) >= 2 and kits[0] != kits[-1], str(kits[:8]))
+    bad = re.findall(r"turns \d+, bad (\d+)", r.side)
+    check("remote_kit: the engine counts none bad", bad and all(b == "0" for b in bad), str(bad))
+    check("remote_kit: a machine in each kit plays, no fault", r.count(4) >= 2 and r.rc == 0 and not r.faults(), f"{r.count(4)} trigs; " + "; ".join(r.faults()[:2]))
+
+
+def t_remote_pages(a):
+    """The pages and the screen together: chords and a preview under an open page; a hatched knob with the page closed; open and close leave the hatched knobs right."""
+    def picked(name, steps, **kw):                                      # the hello over, a machine on T1, still on SIDECAR: one more OSC1 opens the page; with no Sidecar it comes round to OSC1
+        r = Run(a, name, **kw).overbridge()
+        r.t += SHOWN
+        return r.key("TRACK1", 120).key("OSC1", 150).key("OSC1", 150).nudge(0, 1, 60, steps)
+    def since(r, t):
+        it = iter(m for m in r.msgs if m[4] in (4, 0x11))
+        return [(4, m[6]) if k == 4 else (0x11,) for c, k in r.sent() if k in (4, 0x11) for m in [next(it, None)] if m and c / 1e6 >= t]
+    def frame(r):
+        return bitmap(r.dir + "/end.png") == frame_rows(r.dir + "/frame.bin")
+    def opens(r):
+        return [list(x[6:9]) for x in r.msgs if x[4] == 0x30]
+    def chord(name, stay):                                              # 6-OP FM, a mono track; four notes on its first step, on the SIDECAR page yet
+        return grid_chord(picked(name, 4, host=[]), notes=FOUR, stay=stay)
+
+    r = chord("rp_seq", False).key("OSC1", 400)
+    t = r.t
+    r.key("PLAY", 1200).key("STOP", 300).go(tail=200)
+    ev = [e for e in since(r, t) if e[0] == 4]
+    bars = [ev[i:i + 4] for i in range(0, len(ev), 4)]
+    check("remote_pages: page open: each bar's chord whole, in order", len(bars) >= 2 and all(b == [(4, n) for n in (60, 64, 67, 71)] for b in bars), str(ev[:9]))
+    check("remote_pages: the page stayed up over the chords, the engine's frame", opens(r) == [[0, 1, 0]] and frame(r) and r.rc == 0 and not r.faults(), f"{opens(r)} " + "; ".join(r.faults()[:2]))
+    def held(r, ms=700):                                                # the trig held, YES; a preview's press
+        t = r.t
+        r.args += ["--press", f"T1@{t}M:{ms}M", "--press", f"YES@{t + 150}M:100M"]
+        r.t = t + ms + 100
+        return t
+    p = chord("rp_prev", True)                                          # a preview ringing when the page opens. Held, OSC1 steps no page [measured], and with the page up YES is the page's: below
+    t = held(p, 280)
+    p.key("OSC1", 500).go(tail=300)
+    ev = since(p, t)
+    check("remote_pages: a preview as the page opens: all four notes, one 11", ev == [(4, n) for n in (60, 64, 67, 71)] + [(0x11,)], str(ev))
+    check("remote_pages: and the page opened over it, the engine's frame", opens(p) == [[0, 1, 0]] and frame(p) and p.rc == 0 and not p.faults(), str(opens(p)))
+    y = chord("rp_yes", True).key("OSC1", 400)                          # the page open first: YES is the page's, so a held trig previews nothing
+    t = held(y)
+    y.go(tail=300)
+    check("remote_pages: page open, YES on a held trig is the page's: no preview", not since(y, t) and [x for x in y.msgs if x[4] == 0x31 and x[7] == 0x44] and y.rc == 0 and not y.faults(), str(since(y, t)))
+    c = chord("rp_after", True).key("OSC1", 400).key("NO", 300)
+    t = held(c)
+    c.go(tail=300)
+    ev = since(c, t)
+    check("remote_pages: the page closed again: the same trig previews whole", ev == [(4, n) for n in (60, 64, 67, 71)] + [(0x11,)] and opens(c) == [[0, 1, 0], [0, 0, 1]], str(ev))
+
+    i, q = picked("rp_idle", 2, host=[]).key("OSC2", 150), picked("rp_turn", 2, host=[]).key("OSC2", 150)   # JUNO, never opened: OSC2's B, D, F, G, I, J empty
+    i.t += 450
+    for e in (3, 5, 6):
+        q.turn(e, 1, 40, every="3M", gap=150)
+    i.go(tail=100), q.go(tail=100)
+    check("remote_pages: closed, an engine there: a hatched knob's turn leaves the screen", sha(i.dir + "/end.png") == sha(q.dir + "/end.png"), f"{sha(i.dir + '/end.png')} {sha(q.dir + '/end.png')}")
+    check("remote_pages: closed: no 32 for it, the machine's values stay", not [x for x in q.msgs if x[4] == 0x32] and reports(q) and [v for c, v in reports(i)][-1:] == [v for c, v in reports(q)][-1:], f"{len(reports(q))} reports, 32s {len([x for x in q.msgs if x[4] == 0x32])}")
+
+    s = Run(a, "rp_stock", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC1", 150).go(tail=50)
+    empty = bitmap(s.dir + "/end.png")
+    def juno(name, keys=(), **kw):                                      # one OSC1, and the keys: a Sidecar's page and out of it, or with none stock's own steps to the same page
+        r = picked(name, 2, **kw).key("OSC1", 400)
+        r.t += 300
+        for k in keys:
+            r.key(k, 300)
+        return r
+    x, w = juno("rp_x", ("NO",), host=[]).go(tail=100), juno("rp_w").go(tail=100)
+    bx = bitmap(x.dir + "/end.png")
+    check("remote_pages: open, NO: JUNO's OSC1 page as with no Sidecar", bx == bitmap(w.dir + "/end.png"), "")
+    check("remote_pages: its empty knobs are stock's empty knob", all(cell(bx, c) == cell(empty, c) for c in (5, 6)) and cell(bx, 3) == cell(empty, 8), "")
+    check("remote_pages: both ways: opened, and NO on SIDECAR: the engine closes it", opens(x) == [[0, 1, 0], [0, 0, 1]], str(opens(x)))
+    y, z = juno("rp_y", ("OSC2",), host=[]).go(tail=100), juno("rp_z", ("OSC2",)).go(tail=100)
+    check("remote_pages: a page key out: OSC2 hatched as with no Sidecar", bitmap(y.dir + "/end.png") == bitmap(z.dir + "/end.png") and opens(y) == [[0, 1, 0], [0, 0, 3]], str(opens(y)))
+    m, n = juno("rp_m", ("TRACK2", "NO"), host=[]), juno("rp_n", ("TRACK2",))
+    n.t += 300                                                          # the sound's name leaves the band as long after TRACK2 as NO's press
+    m.go(tail=100), n.go(tail=100)
+    check("remote_pages: TRACK2 chosen under the page, OFF: stock's knobs after it, no hatching left", bitmap(m.dir + "/end.png") == bitmap(n.dir + "/end.png"), str(opens(m)))
+    u, v = juno("rp_u", ("NO",), host=[]), juno("rp_v", ("NO",), host=[])
+    v.turn(3, 1, 40, every="3M", gap=150)
+    u.t += 150
+    u.go(tail=100), v.go(tail=100)
+    check("remote_pages: after a close a hatched knob is still dead", sha(u.dir + "/end.png") == sha(v.dir + "/end.png") and not [z for z in v.msgs if z[4] == 0x32], "")
+
+
+TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "hatched": t_hatched, "preview": t_preview, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after,
+         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off, "remote_kit": t_remote_kit, "remote_pages": t_remote_pages}
 
 
 def main():

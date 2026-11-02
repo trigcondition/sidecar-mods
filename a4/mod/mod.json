@@ -1,6 +1,6 @@
 {
  "id": "sidecar-a4",
- "version": "0.7",
+ "version": "0.8",
  "title": "Sidecar",
  "category": "Sidecar",
  "license": "GPL-2.0-or-later",
@@ -12,7 +12,8 @@
   {"addr": "0x40023678", "stock": "206800684e90", "op": "jsr", "target": "a4_label_call"},
   {"addr": "0x40025c26", "stock": "2068006c4e90", "op": "jsr", "target": "a4_title_call"},
   {"addr": "0x400263aa", "stock": "2068006c4e90", "op": "jsr", "target": "a4_title_call"},
-  {"addr": "0x40066320", "stock": "4feffff048d7041c", "op": "jmp", "target": "a4_router"}
+  {"addr": "0x40066320", "stock": "4feffff048d7041c", "op": "jmp", "target": "a4_router"},
+  {"addr": "0x400291cc", "stock": "4eb9400b9e16", "op": "jsr", "target": "a4_notes_call"}
  ],
  "storage": [{"sym": "a4_machine", "scope": "sound", "bits": 4}],
  "subscribe": [
@@ -29,7 +30,11 @@
   {"to": "core_params", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_params", 0]]},
   {"to": "core_params", "order": 51, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_knob_text", 0]]},
   {"to": "core_view_pages", "order": 30, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_view", 0]]},
-  {"to": "core_view_pages", "order": 31, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_screen_view", 0]]}
+  {"to": "core_view_pages", "order": 31, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_screen_view", 0]]},
+  {"to": "core_page_fns", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page_osc1", 0]]},
+  {"to": "core_page_fns", "order": 51, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page_noise", 0]]},
+  {"to": "core_page_fns", "order": 52, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page_osc2", 0]]},
+  {"to": "core_page_fns", "order": 53, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page_osc12", 0]]}
  ],
  "requires": ["core"],
  "resources": {"core": "0.3"}
