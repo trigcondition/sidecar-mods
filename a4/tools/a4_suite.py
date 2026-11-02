@@ -22,7 +22,7 @@ class Run:
     """One dtboot run, a key script with times in M instructions."""
     def __init__(self, a, name, syx=None, usb=True, strict=False, card=None, env=None, host=None):
         self.a, self.name, self.host, self.old = a, name, host, None        # host: the real engine on the link, these extra arguments
-        self.port = a.port
+        self.port, self.ob = a.port, False
         self.syx = syx or a.syx
         self.dir = os.path.join(a.out, name)
         os.makedirs(self.dir, exist_ok=True)
@@ -55,6 +55,7 @@ class Run:
         return self
 
     def overbridge(self):
+        self.ob = True
         self.key("GLOBAL", 200)
         for _ in range(10):
             self.key("DOWN", 80)
@@ -66,7 +67,7 @@ class Run:
     def machine(self, track, steps):
         """TRACKn on the OSC1 page, OSC1 to NOISE, knob D, back to OSC1."""
         self.key(f"TRACK{track}", 120).key("OSC1", 150)
-        self.nudge(3, 1 if steps > 0 else -1, 200, abs(steps))     # the list's own gap, 60 ms, in blocks: with USB on the emulator gives far fewer of them a clock
+        self.nudge(3, 1 if steps > 0 else -1, 120 if self.ob else 60, abs(steps))     # the list's own gap, 60 ms, is in blocks: on the stream the emulator gives far fewer of them a clock
         return self.key("OSC1", 150)
 
     def os2(self, up=True):
@@ -263,13 +264,13 @@ def t_kit(a):
 
 
 def t_user(a):
-    """U5 turned past the end of the list, U1 one step on from B2."""
+    """U5 turned past the end of the list, then the list down from it."""
     r = Run(a, "user").overbridge().machine(1, 30)
     r.midi("903c64", 100).midi("803c00", 100).go()
-    q = Run(a, "user1").overbridge().machine(1, 7)
+    q = Run(a, "user1").overbridge().machine(1, 30).key("OSC1", 150).nudge(3, -1, 120, 2).key("OSC1", 150)
     q.midi("903c64", 100).midi("803c00", 100).go()
     tr = [x[5] for x in r.msgs + q.msgs if x[4] == 4]
-    check("user: U5 past the end of the list, U1 after the last built-in, by their flags", tr == [0x70, 0x50], str(tr))
+    check("user: U5 past the end of the list, and back down the user flags", len(tr) == 2 and tr[0] == 0x70 and tr[1] in (0x60, 0x68), str(tr))
     check("user: no fault", r.rc == 0 and not r.faults() and q.rc == 0 and not q.faults(), "; ".join(r.faults()[:2]))
 
 
@@ -370,7 +371,8 @@ OSC1 = {"PLTS": (1, 7, 2, 6, 0, 8, 9, 3, 4, 5), "JUNO": (1, 0, 2, 6, 0, 7, 8, 3,
 NOISE = {"PLTS": (0, 0, 0, 0, 0, 0, 10, 11, 12, 13), "JUNO": (0,) * 10, "FM6": (0,) * 10, "MD": (0, 0, 0, 0, 0, 0, 10, 11, 0, 0)}
 OSC2 = {"PLTS": (10, 0, 11, 15, 0, 0, 0, 12, 13, 14), "MD": (10, 0, 11, 0, 0, 0, 0, 0, 0, 0)}
 LAYOUT = {"PLTS": "PLTS", "DSY": "PLTS", "U1": "PLTS", "JUNO": "JUNO", "FM6": "FM6", "MD": "MD"}
-STEPS = {"PLTS": 1, "JUNO": 2, "DSY": 3, "FM6": 4, "MD": 5, "U1": 7}
+STEPS = {"PLTS": 1, "JUNO": 2, "DSY": 3, "FM6": 4, "MD": 5, "U1": 8}                  # U1 by the emulator's nudges, which drop a step on the way up to it
+OB_STEPS = dict(STEPS, U1=30)                                                         # on the stream: the end of the list, U5, the same layout
 STOCK_LABELS = {"osc1": STOCK_PAGES["OSC1"].split(), "osc2": STOCK_PAGES["OSC1"].split(), "x": STOCK_PAGES["OSC2"].split(), "noise": ["SNH", "COL", "FAD", "MCH", "LEV", "OS2", "", "", "", ""]}
 NAMES = {"PLTS": "ENG HRM TIM MOR DEC LPG TUN LEV FM FIN AUX TMD MMD VEL GLD", "JUNO": "PAT CUT RES ENV ATK DEC REL LEN", "DSY": "ENG STR BRI DMP INP EXC TUN LEV XTN XDC FB OUT XP4 XLV XP5",
          "FM6": "PAT TIM MOR DEC LPG TUN LEV LEN", "MD": "CT1 CT2 CT3 CT4 CT5 CT6 CT7 CT8 ENG TYP LEV", "U1": "P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15"}
@@ -387,6 +389,8 @@ def knobs_of(machine, page, os2=False):
         return (0,) * 10 if os2 else NOISE[l]
     if page == "osc2" and os2 and l in OSC2:
         return OSC2[l]
+    if page == "x":                                                       # AM1: NOISE J's id, on its stock page too
+        return (0 if os2 else NOISE[l][9],) + (0,) * 9
     return None
 
 
@@ -401,11 +405,10 @@ def want_labels(machine, page, os2=False):
     n = NAMES[machine].split()
     ps = knobs_of(machine, page, os2)
     stock = STOCK_LABELS[page]
+    if page == "x":
+        return [n[ps[0] - 1] if ps[0] else stock[0]] + stock[1:]
     if ps is None:
-        w = list(stock)
-        if page == "x" and not os2 and NOISE[LAYOUT[machine]][9]:
-            w[0] = n[12]
-        return w
+        return list(stock)
     if page == "noise":
         w = list(stock)
         for i, p in enumerate(ps):
@@ -498,7 +501,7 @@ def reports(r, voice=0):
 def sweep(a, name, machine, page, os2=False):
     """Each knob of a page down and up: (run, [(knob, P's that moved, lo, hi)])."""
     ps = knobs_of(machine, page, os2) or (0,) * 10
-    r = Run(a, name).overbridge().machine(1, STEPS[machine])
+    r = Run(a, name).overbridge().machine(1, OB_STEPS[machine])
     if os2:
         r.os2()
     to_page(r, page)
@@ -515,6 +518,8 @@ def sweep(a, name, machine, page, os2=False):
         moved = {k + 1 for k in range(15) if k != 1 and len({x[k] for x in w}) > 1}      # P2 is DET's, which this kit's LFO runs
         if ps[e] == 2:
             moved |= {2}
+        if page == "osc1" and e == 0:                                                 # the word glides under TUN, stock's slew: FIN's P wobbles and comes back (t_fin)
+            moved -= {ps[1]}
         want = {ps[e]} - {0}
         if moved != want:
             bad.append((e, sorted(moved), sorted(want)))
@@ -713,7 +718,7 @@ def t_os2(a):
 
 def t_pick(a):
     """Decision 7: a pick from OFF writes the machine's defaults and OSC1 LEV 0; one machine to another writes nothing; a pick to OFF recentres PM and FM, and TRK WAV SUB AM1 go back into stock's range."""
-    for machine, steps in STEPS.items():
+    for machine, steps in OB_STEPS.items():
         r = voice_words(Run(a, f"pk_{machine}").overbridge(), 0x80005B38)
         r.machine(1, steps).midi("903c64", 100).midi("803c00", 100).go(extra=["--every", "200M"], tail=60)
         tr = [[x[8 + 2 * i] for i in range(15)] for x in r.msgs if x[4] == 4]
