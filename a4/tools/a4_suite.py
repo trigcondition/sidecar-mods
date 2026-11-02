@@ -222,7 +222,19 @@ def t_stock_after(a):
     check("power: the mod again: the machines kept", tr == {0: 0x08, 1: 0x00}, str(tr))
 
 
-TESTS = {"no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+def t_kit(a):
+    """A machine on kit 1's T1; LOAD KIT to kit 2: its T1 has none, and the Sidecar hears the kit."""
+    r = Run(a, "kit").overbridge().machine(1, 1)
+    r.midi("903c64", 100).midi("803c00", 200)
+    r.key("KIT", 200).key("DOWN", 120).key("YES", 300).key("DOWN", 120).key("YES", 400).key("NO", 200)
+    r.midi("903c64", 100).midi("803c00", 200).go()
+    kits = [m[5] for m in r.msgs if m[4] == 0x3b]
+    check("kit: the kit reported, and its change", len(set(kits)) >= 2, str(kits[:8]))
+    check("kit: the machine stays with the sound of the kit it was set in", r.count(4) == 1, f"{r.count(4)} trigs")
+    check("kit: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
+TESTS = {"kit": t_kit, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():

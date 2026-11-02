@@ -58,6 +58,7 @@ volatile uint8_t a4_machine_now[A4_VOICES];
 volatile uint32_t a4_now;
 static uint32_t hello_at, resend_at;
 #define now a4_now
+static int16_t kit_said = -1;
 static uint8_t was_up, hellos, scan, resend_v, turn, rate_tick;
 static volatile int32_t credit = CREDIT_MAX;
 volatile uint32_t a4_trigs, a4_reports, a4_offs, a4_hellos, a4_deferred;    /* to look at in the emulator */
@@ -224,6 +225,17 @@ static int any_machine(void)
     return 0;
 }
 
+/* The kit in use, as the Rytm's 3B, on a change and at each hello: the Sidecar's LFOs and inserts are per kit. */
+static int report_kit(void)
+{
+    uint32_t k = KIT_INDEX;
+    uint8_t m[7] = {0xf0, 0x7d, 0x52, 0x54, 0x3b, (uint8_t)(k & 0x7f), 0xf7};
+    if (k > 127 || !send(m, sizeof m))
+        return 0;
+    kit_said = (int16_t)k;
+    return 1;
+}
+
 void a4_service(void)
 {
     static const uint8_t hi[] = {0xf0, 0x7d, 0x52, 0x54, 0x4f, 1, DEVICE_ID >> 7, DEVICE_ID & 0x7f, 1, 'A', '4', 0xf7};
@@ -243,9 +255,12 @@ void a4_service(void)
             for (v = 0; v < A4_VOICES; ++v)     /* a new Sidecar has no values yet */
                 if (vo[v].machine)
                     vo[v].pend_params = 1;
+            kit_said = -1;
         }
         return;
     }
+    if (any_machine() && kit_said != (int16_t)KIT_INDEX && credit > CREDIT_FLOOR && report_kit())
+        --left;
     for (v = 0; v < A4_VOICES; ++v) {           /* the trigs first; a voice's note-off goes ahead of its trig: it is older */
         struct a4_voice *x = &vo[v];
         if (!x->pend_trig)
