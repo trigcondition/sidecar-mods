@@ -3,10 +3,12 @@
  * (docs/device-profiles.md "How to pace them"):
  *   - latest value wins: one pending snapshot a voice, overwritten by every change; no queue of changes
  *   - a parameter-only 03 at most every REPORT_GAP blocks of a voice
- *   - a trig 04 at once, with the current values
+ *   - a trig 04 at once, with the current values; a chord is one 04 a note, in order: a sequencer chord comes as one event with all
+ *     its notes, a keyboard's or MIDI's one note a block, so a poly track queues them; a mono track stays latest value wins
  *   - no answer per message; one voice in turn is sent again every RESEND blocks, which repairs a lost message
  *   - at most MAX_PASS messages a pass, trigs first, and one message every RATE blocks in all with a burst of CREDIT_MAX
- *   - a note's end 11 from the OS's own note-off event (a key, MIDI), or when the voice's amp has closed (the sequencer's LEN), never ahead of its trig
+ *   - a note's end 11 from the OS's own note-off event (a key, MIDI), or when the voice's amp has closed (the sequencer's LEN), never ahead of its trig;
+ *     on a poly track when the last key is up, or when every analog voice the track owns has closed
  * The render only reads and posts. The OS's sender runs on the mod's task. A track with no machine costs one byte test a block
  * and sends nothing. The hello: when the USB port comes up and HELLOS more times, and on while a track has a machine, so a
  * computer with no Sidecar on it sees a few short SysEx at connect and nothing after; a Sidecar that boots later resets the port
@@ -25,6 +27,8 @@
 #define GATE_MIN   32u          /* blocks after a trig before a closed amp means the note ended: its attack has started */
 #define GATE_SHUT  8u           /* blocks closed in a row */
 #define DEVICE_ID  3            /* core/device/a4.h */
+#define CHORD      4u           /* the notes of a trig [read: four slots, 0x40101b80]: the queue, a power of two */
+#define CHORD_GAP  30u          /* blocks, 20 ms: core/device/device.h kChordMs. A mono track's two trigs closer than it get an 11 between them, or the Sidecar would take a chord */
 
 /* The stock words a machine's P1..P15 read: the OS's working values for voice v, 8.8, after locks and LFOs [measured: each knob
  * moved in an emulator; a4 docs]. Each entry: its address for voice 0 and the step to voice 1. */
@@ -50,8 +54,10 @@ struct a4_voice {
     uint16_t seen[A4_ON_PAGE];  /* value << 7 | fraction: as the render last read them */
     uint16_t pend[A4_ON_PAGE];  /* what goes out next */
     uint32_t sent_at, on_at;
-    uint8_t note, vel, machine; /* its machine + 1, 0 none */
-    uint8_t pend_trig, pend_params, pend_off, late_off, open, shut;
+    uint8_t note[CHORD], vel[CHORD];    /* the trigs to send, a ring: the task takes qh, the render adds at qt, each under no lock but the mask */
+    uint8_t qh, qt, last, held;         /* last: the newest trig's note; held: a poly track's keys down */
+    uint8_t machine;            /* its machine + 1, 0 none */
+    uint8_t pend_params, pend_off, late_off, open, shut;
 };
 static struct a4_voice vo[A4_VOICES];
 volatile uint8_t a4_machine_now[A4_VOICES];
@@ -62,6 +68,31 @@ static int16_t kit_said = -1;
 static uint8_t was_up, hellos, scan, resend_v, turn, rate_tick;
 static volatile int32_t credit = CREDIT_MAX;
 volatile uint32_t a4_trigs, a4_reports, a4_offs, a4_hellos, a4_deferred;    /* to look at in the emulator */
+
+#define TRIGS(x) ((uint8_t)((x)->qt - (x)->qh))
+#define POLY(v)  (POLY_MASK >> (v) & 1)
+
+static void queue(struct a4_voice *x, uint32_t note, uint32_t vel)
+{
+    if (TRIGS(x) >= CHORD)
+        ++x->qh;                                /* the oldest goes: the latest values win here too */
+    x->note[x->qt & (CHORD - 1)] = (uint8_t)note;
+    x->vel[x->qt & (CHORD - 1)] = (uint8_t)vel;
+    x->last = (uint8_t)note;
+    ++x->qt;
+}
+
+/* The amp's end of a note: a mono track's own voice. A poly track's notes sit on the voices it owns, any of which may close first. */
+static int amp_shut(uint32_t v)
+{
+    uint32_t w;
+    if (!POLY(v))
+        return VOICE_VCA_L(v) >= VCA_SHUT && VOICE_VCA_R(v) >= VCA_SHUT;
+    for (w = 0; w < A4_VOICES; ++w)
+        if ((uint32_t)VOICE_OWNER(w) == v && (VOICE_VCA_L(w) < VCA_SHUT || VOICE_VCA_R(w) < VCA_SHUT))
+            return 0;
+    return 1;
+}
 
 static void read_voice(uint32_t v, struct a4_voice *x, int trig)
 {
@@ -95,7 +126,7 @@ void a4_render(void)
         uint32_t m = a4_machine_now[v], ev;
         if (m != x->machine) {
             if (x->machine)
-                x->pend_off = 1, x->open = 0, x->pend_trig = 0, x->late_off = 0, wake = 1;  /* it left a machine: its note ends */
+                x->pend_off = 1, x->open = 0, x->qh = x->qt, x->late_off = 0, x->held = 0, wake = 1;  /* it left a machine: its note ends */
             x->machine = (uint8_t)m;
             if (m)
                 read_voice(v, x, 1);
@@ -104,24 +135,41 @@ void a4_render(void)
             continue;
         ev = VOICE_EVENT(v);
         if (ev == 1) {
-            x->note = (uint8_t)(VOICE_NOTE(v) & 0x7f);
-            x->vel = VOICE_VEL(v) & 0x7f;
-            x->pend_trig = 1, x->open = 1, x->late_off = 0, x->shut = 0, x->on_at = now;
+            uint32_t n = 1, k, first = VOICE_NOTE(v, 0) & 0x7f, poly = POLY(v);
+            if (poly) {
+                int32_t c = VOICE_COUNT(v), l = VOICE_LANES(v);
+                n = (uint32_t)(c < l ? c : l);
+                n = n < 1 ? 1 : n > CHORD ? CHORD : n;
+            } else {
+                x->qh = x->qt;          /* latest value wins */
+                if (x->open && first != x->last && now - x->on_at < CHORD_GAP)
+                    x->pend_off = 1;
+            }
+            for (k = 0; k < n; ++k)
+                if (!k || VOICE_NOTE(v, k))     /* a slot left empty on the trig reads 0 */
+                    queue(x, VOICE_NOTE(v, k) & 0x7f, VOICE_VEL(v, k) & 0x7f);
+            if (x->held < CHORD)
+                x->held = (uint8_t)(x->held + n > CHORD ? CHORD : x->held + n);
+            x->open = 1, x->late_off = 0, x->shut = 0, x->on_at = now;
             read_voice(v, x, 1);
         } else if (ev == 2 && x->open) {
-            x->open = 0;
-            if (x->pend_trig)
-                x->late_off = 1;        /* never ahead of its own trig */
-            else
-                x->pend_off = 1;
+            if (!POLY(v) || x->held <= 1) { /* a chord's last key */
+                x->open = 0, x->held = 0;
+                if (TRIGS(x))
+                    x->late_off = 1;    /* never ahead of its own trig */
+                else
+                    x->pend_off = 1;
+            } else {
+                --x->held;
+            }
         } else if (v == scan) {
             read_voice(v, x, 0);
         }
         if (x->open && ev != 1 && now - x->on_at >= GATE_MIN) {   /* its amp has closed */
-            if (VOICE_VCA_L(v) >= VCA_SHUT && VOICE_VCA_R(v) >= VCA_SHUT) {
+            if (amp_shut(v)) {
                 if (++x->shut >= GATE_SHUT) {
-                    x->open = 0, x->shut = 0;
-                    if (x->pend_trig)
+                    x->open = 0, x->shut = 0, x->held = 0;
+                    if (TRIGS(x))
                         x->late_off = 1;
                     else
                         x->pend_off = 1;
@@ -130,7 +178,7 @@ void a4_render(void)
                 x->shut = 0;
             }
         }
-        if (x->pend_trig || x->pend_off || (x->pend_params && now - x->sent_at >= REPORT_GAP && credit > CREDIT_FLOOR))
+        if (TRIGS(x) || x->pend_off || (x->pend_params && now - x->sent_at >= REPORT_GAP && credit > CREDIT_FLOOR))
             wake = 1;
     }
     scan = (scan + 1) & (A4_VOICES - 1);
@@ -154,7 +202,7 @@ static uint32_t build(uint8_t *m, uint32_t v, struct a4_voice *x, int trig)
     const struct a4_machine *d;
     uint16_t sr;
     if (!machine) {
-        x->pend_trig = 0, x->pend_params = 0;
+        x->qh = x->qt, x->pend_params = 0;
         return 0;
     }
     d = &a4_machine_of[machine - 1];
@@ -163,8 +211,8 @@ static uint32_t build(uint8_t *m, uint32_t v, struct a4_voice *x, int trig)
     m[n++] = (uint8_t)(d->flag | v);
     IRQ_OFF(sr);                                /* the snapshot whole */
     if (trig) {
-        m[n++] = x->note;
-        m[n++] = x->vel;
+        m[n++] = x->note[x->qh & (CHORD - 1)];
+        m[n++] = x->vel[x->qh & (CHORD - 1)];
     }
     for (k = 0; k < A4_ON_PAGE; ++k) {
         m[n++] = (uint8_t)(x->pend[k] >> 7) & 0x7f;
@@ -172,7 +220,7 @@ static uint32_t build(uint8_t *m, uint32_t v, struct a4_voice *x, int trig)
     }
     x->pend_params = 0;
     if (trig)
-        x->pend_trig = 0;
+        ++x->qh;
     IRQ_ON(sr);
     m[n++] = d->p16;
     m[n++] = 0;
@@ -193,15 +241,20 @@ static int report(uint32_t v, int trig)
         x->sent_at = now;
         if (trig) {
             ++a4_trigs;
-            if (x->late_off)
+            if (x->late_off && !TRIGS(x))
                 x->late_off = 0, x->pend_off = 1;
         } else {
             ++a4_reports;
         }
         return 1;
     }
-    if (trig)
-        x->pend_trig = 1;
+    if (trig) {                                 /* not sent: back in front, unless newer notes took its place */
+        uint16_t sr;
+        IRQ_OFF(sr);
+        if (TRIGS(x) < CHORD && (POLY(v) || !TRIGS(x)))
+            --x->qh;
+        IRQ_ON(sr);
+    }
     x->pend_params = 1;
     return 0;
 }
@@ -265,7 +318,7 @@ void a4_service(void)
         --left;
     for (v = 0; v < A4_VOICES; ++v) {           /* the trigs first; a voice's note-off goes ahead of its trig: it is older */
         struct a4_voice *x = &vo[v];
-        if (!x->pend_trig)
+        if (!TRIGS(x))
             continue;
         if (left < 1u + x->pend_off || credit < (int32_t)(1u + x->pend_off))
             return;

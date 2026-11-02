@@ -18,5 +18,5 @@ python3 -m elekloader.sdk.build mods/core-a4 --stock "$STOCK" --out "$OUT"
 python3 -m elekloader.sdk.build "$H/mod" --stock "$STOCK" --out "$OUT"
 python3 -m elekloader.lint "$OUT/sidecar-a4-$V.elemod" --stock "$STOCK" --with "$OUT/core-0.3.elemod"
 python3 -m elekloader.patch --stock "$STOCK" --mod "$OUT/core-0.3.elemod" --mod "$OUT/sidecar-a4-$V.elemod" \
-  --out "$OUT/a4156_sidecar.syx" --version ${STAMP:-SA04} --lockfile "$H/a4156.lock.json"
+  --out "$OUT/a4156_sidecar.syx" --version ${STAMP:-SA05} --lockfile "$H/a4156.lock.json"
 shasum -a 256 "$OUT/a4156_sidecar.syx"

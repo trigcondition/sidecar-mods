@@ -7,7 +7,7 @@ on the Mac, sidecar-firmware tools/sidecar_emu.cpp) over the Overbridge link.
 The panel is played by script: USB CONFIG > OVERBRIDGE, the SIDECAR page, a machine on T1, notes by DIN MIDI. Checked: the hello accepted (one restart of the
 Sidecar into /.a4), trigs and params and note-offs through the real profile, the voice's audio on OUT channel 2 only, that audio through the A4's analog voice model to the
 A4's output (compared with the same run with the Sidecar's voice silent), and the A4's channels back on IN. Firmware-derived outputs stay in --out."""
-import argparse, json, os, shutil, struct, subprocess, sys, time, wave
+import argparse, json, math, os, shutil, struct, subprocess, sys, time, wave
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 PORT = 7344
@@ -46,6 +46,36 @@ def page_machine(t, track_key, detents, lev0=False):
     return a, t
 
 
+def panel_poly(t):
+    """KIT > POLY CONFIG, all four voices, on the selected track."""
+    a = ["--press", f"KIT@{M(t)}"]; t += 120
+    for _ in range(5):
+        a += ["--press", f"DOWN@{M(t)}"]; t += 120
+    a += ["--press", f"YES@{M(t)}"]; t += 120
+    for i in range(4):
+        a += ["--press", f"YES@{M(t)}"]; t += 100
+        if i < 3:
+            a += ["--press", f"RIGHT@{M(t)}"]; t += 100
+    for w in (120, 120, 400):
+        a += ["--press", f"NO@{M(t)}"]; t += w
+    return a, t
+
+
+def tone(x, f, rate=48000):
+    """Goertzel: the power at f."""
+    k, a, b = 2 * math.cos(2 * math.pi * f / rate), 0.0, 0.0
+    for v in x:
+        a, b = v + k * a - b, a
+    return a * a + b * b - k * a * b
+
+
+def notes_in(x):
+    """x's power on each semitone of MIDI 36..96, the first 0.4 s from its onset, full scale 1."""
+    on = next((i for i, v in enumerate(x) if abs(v) > 2**31 * 0.001), 0)
+    w = [v / 2**31 for v in x[on:on + 19200]]
+    return {n: tone(w, 440 * 2 ** ((n - 69) / 12)) for n in range(36, 97)}
+
+
 def rms(x):
     return (sum(v * v for v in x) / max(1, len(x))) ** 0.5
 
@@ -58,7 +88,7 @@ def read_wav32(p):
     return ch, [d[c::ch] for c in range(ch)]
 
 
-def run(a, name, detents, lev0, trig=None, extra=()):
+def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False):
     out = os.path.join(a.out, name)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
@@ -75,8 +105,14 @@ def run(a, name, detents, lev0, trig=None, extra=()):
     t += 300                                    # re-enumerated, the hello met, the Sidecar restarted
     m, t = page_machine(t, "TRACK1", detents, lev0)
     args += m
+    if poly:
+        m, t = panel_poly(t)
+        args += m
     t += 100
     notes = []
+    if chord:
+        args += ["--midi", "".join(f"90{n:02x}64" for n in chord) + f"@{M(t)}", "--midi", "".join(f"80{n:02x}00" for n in chord) + f"@{M(t + 300)}"]
+        t += 500
     for k in range(a.notes):
         at, off = t + 400 * k, t + 400 * k + 200
         args += ["--midi", f"90{a.note:02x}64@{M(at)}", "--midi", f"80{a.note:02x}00@{M(off)}"]
@@ -148,6 +184,26 @@ def main():
         to_box = [l.split("to the box ")[1] for l in side.splitlines() if "to the box" in l]
         print(f"{name}: to the box {to_box}; reports {[hex(m[4]) for m in ms if m[4] in (4, 0x11)]}")
         res[name] = (to_box, [m[4] for m in ms if m[4] in (4, 0x11)])
+    # a chord on a poly track, each priority machine: its pitches on the voice's one channel. Control: the same three notes on a mono track
+    ok_chord = True
+    a.notes, a.tail = 0, 200
+    for mach, det in (("plaits", 1), ("juno", 2), ("fm6", 4)):
+        p = {}
+        for name, poly in (("poly", True), ("mono", False)):
+            out, notes, t = run(a, f"chord_{mach}_{name}", det, True, chord=(60, 64, 67), poly=poly)
+            ch, d = read_wav32(out + "/to_a4.wav")
+            ms = list(messages(open(out + "/usb.bin", "rb").read()))
+            p[name] = notes_in(d[2])
+            others = max(max(abs(v) for v in d[c]) for c in (0, 1, 3, 4, 5))
+            print(f"{name} {mach}: 04s {[m[6] for m in ms if m[4] == 4]}, 11s {sum(1 for m in ms if m[4] == 0x11)}, peak on the voice's channel {max(abs(v) for v in d[2]) / 2**31:.3f}, other channels {others / 2**31:.5f}")
+            ok_chord = ok_chord and others == 0
+        # mono plays its last note, 67, alone: its strongest partial, whatever the machine's timbre and TUN. A chord adds that same partial where 60 and 64 put it, 7 and 3 semitones down
+        q, r = p["poly"], p["mono"]
+        top = max((n for n in r if n >= 48), key=lambda n: r[n])
+        rise = [round(10 * math.log10(max(q[n], 1e-12) / max(r[n], 1e-12)), 1) for n in (top - 7, top - 3)]
+        good = min(rise) >= 6 or mach == "plaits"        # the default knobs pick engine 11 with glide: close to noise, no partial to follow. Pitch: core/tests/test_device.cpp, a tonal engine
+        print("NOT JUDGED" if mach == "plaits" else "PASS" if good else "FAIL", f"{mach}: mono's strongest partial on {top}; at -7 and -3 semitones the chord is {rise} dB over mono")
+        ok_chord = ok_chord and good
     offs = [x for x in res["all_off"][0] if x.startswith("80")]
     legal = all(int(p, 16) < 128 for x in res["all_off"][0] for p in x.split()[1:3])
     good = len(offs) == 2 and legal and {x.split()[1] for x in offs} == {"3c", "40"}
@@ -157,7 +213,7 @@ def main():
     ok = res["input_only"] > 10 * res["no_machine_lev0"]
     echo = res["seq_to_a4_trigs"]
     print("PASS" if echo == (2, 1) else "FAIL", "the sequencer's note: the A4 played it (04s: 1 DIN + 1), the engine logged the DIN trig and not that echo:", echo)
-    ok = ok and echo == (2, 1) and ok_off
+    ok = ok and echo == (2, 1) and ok_off and ok_chord
     print("PASS" if ok else "FAIL", "the Sidecar's voice through the A4's own voice and back on IN: input only", res["input_only"], "against no machine", res["no_machine_lev0"])
     return 0 if ok else 1
 
