@@ -41,12 +41,14 @@ ANALOG_EMU/tools/rehearse_flash.py $PWD/out/a4156_sidecar.syx STOCK.syx --out DI
 
 ## Install, and back to stock
 
-Only with the stock file at hand, and your projects backed up with Transfer.
+Only with the stock file at hand, your projects backed up with Transfer, and a MIDI DIN interface in hand. **OS 1.56 only. Above 1.56 this is a downgrade: stop.** The emulator's reboot does not run the bootstrap, so that it takes this image, and recovery by DIN from a torn image, are not rehearsed.
 
 1. GLOBAL > SYSTEM > USB CONFIG: USB MIDI (what the rehearsal used), connected to a computer. Back to OVERBRIDGE afterwards, for the Sidecar.
 2. Send `a4156_sidecar.syx` with Elektron Transfer, as an OS update, and press YES at UPGRADE OS NOW?. The A4 restarts.
-3. **Back to stock:** the same with `Analog-Four_MKII_OS1.56.syx`. Stock reads the same projects: it ignores what the mod stored.
+3. **Back to stock:** first set every sound's machine OFF and save (a rollback with a machine set is not rehearsed), then the same with `Analog-Four_MKII_OS1.56.syx`.
 4. **If it will not boot:** hold FUNC at power-on, TRIG 4 for OS UPGRADE, and send the stock `.syx` over MIDI DIN (Transfer's legacy mode).
+
+A computer in Overbridge also gets the reports when a machine is set: not tested. Keep every sound OFF for computer sessions.
 
 ## With a Sidecar
 
