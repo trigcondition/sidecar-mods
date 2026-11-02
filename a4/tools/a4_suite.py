@@ -234,7 +234,34 @@ def t_kit(a):
     check("kit: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
-TESTS = {"kit": t_kit, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+def t_poly(a):
+    """KIT > POLY CONFIG, all four voices: a chord on the selected track. The event block is the track's, whichever analog voices play the notes."""
+    peek = ",".join(hex(0x80003D80 + 26 * v) for v in range(4))
+    r = Run(a, "poly", env={"DTBOOT_PEEK": peek}).overbridge()
+    for t, st in ((1, 1), (2, 2), (3, 3), (4, 4)):
+        r.machine(t, st)
+    r.key("TRACK2", 150).key("KIT", 120)
+    for _ in range(5):
+        r.key("DOWN", 120)
+    r.key("YES", 120)
+    for i in range(4):
+        r.key("YES", 100)
+        if i < 3:
+            r.key("RIGHT", 100)
+    r.key("NO", 120).key("NO", 120).key("NO", 400)
+    t = r.t
+    for i, k in enumerate(("KB_C1", "KB_E1", "KB_G1")):
+        r.args += ["--press", f"{k}@{t + i * 30}M:500M"]
+    r.t += 300
+    r.go(extra=["--every", "100M"], tail=500)
+    tr = [(x[5], x[6]) for x in r.msgs if x[4] == 4]
+    check("poly: a chord on T2: three trigs on T2's event block, with T2's machine", len(tr) == 3 and {x[0] for x in tr} == {0x09}, str(tr))
+    open_ = {tuple((int(x, 16) & 0xffff) < 0x7f00 for x in re.findall(r"=([0-9a-f]{8})", l)) for l in r.log.splitlines() if "peek" in l}
+    check("poly: while the notes play, on more than one analog voice", any(sum(o) >= 3 and not o[0] for o in open_), str(sorted(open_)[:6]))
+    check("poly: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
+TESTS = {"kit": t_kit, "poly": t_poly, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():

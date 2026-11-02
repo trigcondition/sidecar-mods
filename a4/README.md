@@ -19,7 +19,7 @@ A track's sound can pick a Sidecar machine. That track's trigs and parameters go
 
 What each P means is the machine's, as on the Rytm's SRC page: PLAITS ENG HRM TIM MOR DEC LPG TUN LEV, FM FIN AUX TMD MMD VEL GLD; JUNO PAT CUT RES ENV ATK DEC REL LEN; DAISYSP ENG STR BRI DMP INP EXC TUN LEV, XTN XDC FB OUT XP4 XLV XP5; 6-OP FM PAT TIM MOR DEC LPG TUN LEV LEN; MD CT1..CT8, ENG TYP LEV.
 
-P16 is fixed per machine. **LEV is not on the list:** turn OSC1 and OSC2 LEV down for the Sidecar alone, or leave them up to layer. A voice only sounds while the A4's amp is open: the same trig opens it. The A4's own amp envelope and filters shape the machine.
+P16 is fixed per machine. **LEV is not on the list:** turn OSC1 and OSC2 LEV down for the Sidecar alone, or leave them up to layer. A voice only sounds while the A4's amp is open: the same trig opens it. **Poly (KIT > POLY CONFIG):** a chord reports on its track, with that track's machine, as one voice retrigged, and the audio returns only through the analog voice of that number, so notes the A4 gives to other voices do not carry the Sidecar. Use poly tracks for the A4's own voices. The A4's own amp envelope and filters shape the machine.
 
 With no Sidecar, or with every sound OFF, nothing changes: on USB a few short SysEx hellos at each port-up, and the page.
 
