@@ -357,6 +357,10 @@ def want_labels(machine, page):
 
 
 def same(got, want):
+    """A letter stock did not teach passes as ?; O is 0's glyph; an empty knob is hatched, no glyph of the font."""
+    if not want:
+        return set(got) <= {"?"}
+    want = want.replace("0", "O")
     return len(got) == len(want) and all(g == w or (g == "?" and w != "?") for g, w in zip(got, want))
 
 
@@ -443,10 +447,17 @@ def t_knobs(a):
                     full, bad = False, bad + [(e, lo / 128, hi / 128)]
         check(f"knobs: {page}: each knob moves its P, 0..127 (TUN 1..127)", not bad and full and rep, str(bad[:4]))
         if page == "osc1":
-            z = {min(int(v[0] / 128) * 17 >> 7, 16) for c, v in rep}
-            check("knobs: PLAITS ENG reaches all 17 engines", len(z) == 17, f"{len(z)} zones")
             lfo = [v[1] for c, v in rep if c < win[0][1]]
             check("knobs: an LFO moves its P (this kit's LFO 2 on DET)", len(set(lfo)) > 20, f"P2 {min(lfo) / 128:.1f}..{max(lfo) / 128:.1f}")
+
+
+def t_zones(a):
+    """TUN turned slowly from end to end: every one of PLAITS' 17 ENG zones (core/machines.h eng_zone) reported, in order."""
+    r = Run(a, "zones").overbridge().machine(1, 1).key("OSC2", 150).key("OSC1", 150).turn(0, -1, 500, gap=200)
+    t = r.t
+    r.turn(0, 1, 1000, every="1M", gap=1050).go(tail=100)
+    z = [min(int(v[0] / 128) * 17 >> 7, 16) for c, v in reports(r) if c > t]
+    check("zones: PLAITS ENG reaches all 17 engines, stepping up", sorted(set(z)) == list(range(17)) and z == sorted(z), f"{len(set(z))} zones, {len(z)} reports")
 
 
 def t_fin(a):
@@ -471,7 +482,7 @@ def t_lock(a):
     check("lock: a locked trig moves TIM (knob H, P3); the others keep the track's 0", 0 < sum(x > 0 for x in tr) < len(tr), str(tr))
 
 
-TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "fin": t_fin, "lock": t_lock, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():
