@@ -22,6 +22,7 @@ class Run:
     """One dtboot run, a key script with times in M instructions."""
     def __init__(self, a, name, syx=None, usb=True, strict=False, card=None, env=None, host=None):
         self.a, self.name, self.host, self.old = a, name, host, None        # host: the real engine on the link, these extra arguments
+        self.port = a.port
         self.syx = syx or a.syx
         self.dir = os.path.join(a.out, name)
         os.makedirs(self.dir, exist_ok=True)
@@ -63,10 +64,21 @@ class Run:
         return self
 
     def machine(self, track, steps):
-        """TRACKn, OSC1 > NOISE > SIDECAR, knob A, back to OSC1."""
-        self.key(f"TRACK{track}", 120).key("OSC1", 150).key("OSC1", 150)
-        self.nudge(0, 1 if steps > 0 else -1, 60, abs(steps))
+        """TRACKn on the OSC1 page, OSC1 to NOISE, knob D, back to OSC1."""
+        self.key(f"TRACK{track}", 120).key("OSC1", 150)
+        self.nudge(3, 1 if steps > 0 else -1, 200, abs(steps))     # the list's own gap, 60 ms, in blocks: with USB on the emulator gives far fewer of them a clock
         return self.key("OSC1", 150)
+
+    def os2(self, up=True):
+        """From the OSC1 page: NOISE, knob F, back."""
+        return self.key("OSC1", 150).nudge(5, 1 if up else -1, 60, 1).key("OSC1", 150)
+
+    def up_yes(self, hold=300):
+        """UP held, then YES: the Sidecar's screen, as on the Rytm. Blocks, not clocks, time the hold: long enough for the emulator on USB."""
+        t = self.t
+        self.args += ["--press", f"UP@{t}M:{hold}M", "--press", f"YES@{t + hold - 80}M:30M"]
+        self.t = t + hold + 30
+        return self
 
     def go(self, extra=None, tail=300):
         env = dict(os.environ, DTBOOT_QUIET_USB="1", DTBOOT_USB_OUT=self.usb_file, DTEMU_USB_SEND_LOG="1", **self.env)
@@ -83,10 +95,10 @@ class Run:
         else:
             shutil.rmtree(self.dir + "/sc", ignore_errors=True)
             os.makedirs(self.dir + "/sc")
-            emu = subprocess.Popen(cmd + ["--ob-link", f"127.0.0.1:{PORT}"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env)
+            emu = subprocess.Popen(cmd + ["--ob-link", f"127.0.0.1:{self.port}"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env)
             time.sleep(1)
             with open(self.dir + "/sidecar.log", "w") as f:
-                side = subprocess.Popen([os.path.join(self.old or self.a.engine, "core/build/sidecar_emu"), "--link", f"127.0.0.1:{PORT}", "--card", self.dir + "/sc", *([] if self.old else ["--frame-out", self.dir + "/frame.bin"]), *self.host], stdout=f, stderr=subprocess.STDOUT)
+                side = subprocess.Popen([os.path.join(self.old or self.a.engine, "core/build/sidecar_emu"), "--link", f"127.0.0.1:{self.port}", "--card", self.dir + "/sc", *([] if self.old else ["--frame-out", self.dir + "/frame.bin"]), *self.host], stdout=f, stderr=subprocess.STDOUT)
                 self.log = emu.communicate()[0]
                 self.rc = emu.returncode
                 time.sleep(1)
@@ -251,10 +263,10 @@ def t_kit(a):
 
 
 def t_user(a):
-    """U5 turned past the end of the list, U1 one step on from B2 (the emulator's nudges drop some steps above 4, so the counts are by test)."""
+    """U5 turned past the end of the list, U1 one step on from B2."""
     r = Run(a, "user").overbridge().machine(1, 30)
     r.midi("903c64", 100).midi("803c00", 100).go()
-    q = Run(a, "user1").overbridge().machine(1, 8)
+    q = Run(a, "user1").overbridge().machine(1, 7)
     q.midi("903c64", 100).midi("803c00", 100).go()
     tr = [x[5] for x in r.msgs + q.msgs if x[4] == 4]
     check("user: U5 past the end of the list, U1 after the last built-in, by their flags", tr == [0x70, 0x50], str(tr))
@@ -353,11 +365,29 @@ def learn_font(a):
     return font
 
 
-# P of each knob A..J on the four pages (a4_page.c's p_of_id), 0 a stock knob, and each machine's names (README).
-KNOBS = {"osc1": (1, 0, 2, 0, 0, 0, 0, 3, 4, 5), "noise": (0, 11, 12, 0, 0, 0, 0, 0, 0, 0), "osc2": (6, 0, 7, 0, 0, 0, 0, 8, 9, 10), "x": (0, 0, 0, 13, 14, 0, 0, 15, 0, 0)}
-STOCK_LABELS = {"osc1": STOCK_PAGES["OSC1"].split(), "osc2": STOCK_PAGES["OSC1"].split(), "x": STOCK_PAGES["OSC2"].split(), "noise": ["SNH", "COL", "FAD", "", "LEV", "", "", "", "", ""]}
+# P of each knob A..J (a4_page.c's a4_src_of), 0 a stock knob, and each machine's names (README). The layouts: PLTS DSY U1..U5, JUNO, FM6, MD B2.
+OSC1 = {"PLTS": (1, 7, 2, 6, 0, 8, 9, 3, 4, 5), "JUNO": (1, 0, 2, 6, 0, 7, 8, 3, 4, 5), "FM6": (1, 6, 2, 7, 0, 8, 0, 3, 4, 5), "MD": (1, 9, 2, 6, 0, 7, 8, 3, 4, 5)}
+NOISE = {"PLTS": (0, 0, 0, 0, 0, 0, 10, 11, 12, 13), "JUNO": (0,) * 10, "FM6": (0,) * 10, "MD": (0, 0, 0, 0, 0, 0, 10, 11, 0, 0)}
+OSC2 = {"PLTS": (10, 0, 11, 15, 0, 0, 0, 12, 13, 14), "MD": (10, 0, 11, 0, 0, 0, 0, 0, 0, 0)}
+LAYOUT = {"PLTS": "PLTS", "DSY": "PLTS", "U1": "PLTS", "JUNO": "JUNO", "FM6": "FM6", "MD": "MD"}
+STEPS = {"PLTS": 1, "JUNO": 2, "DSY": 3, "FM6": 4, "MD": 5, "U1": 7}
+STOCK_LABELS = {"osc1": STOCK_PAGES["OSC1"].split(), "osc2": STOCK_PAGES["OSC1"].split(), "x": STOCK_PAGES["OSC2"].split(), "noise": ["SNH", "COL", "FAD", "MCH", "LEV", "OS2", "", "", "", ""]}
 NAMES = {"PLTS": "ENG HRM TIM MOR DEC LPG TUN LEV FM FIN AUX TMD MMD VEL GLD", "JUNO": "PAT CUT RES ENV ATK DEC REL LEN", "DSY": "ENG STR BRI DMP INP EXC TUN LEV XTN XDC FB OUT XP4 XLV XP5",
          "FM6": "PAT TIM MOR DEC LPG TUN LEV LEN", "MD": "CT1 CT2 CT3 CT4 CT5 CT6 CT7 CT8 ENG TYP LEV", "U1": "P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15"}
+DEFAULTS = {"PLTS": (0, 64, 64, 64, 127, 64, 64, 100, 64, 64, 0, 0, 0, 120, 0), "JUNO": (0, 64, 0, 0, 0, 64, 64, 127), "DSY": (0, 64, 64, 64, 0, 64, 64, 100, 64, 64, 0, 0, 0, 120, 0),
+            "FM6": (0, 64, 64, 127, 64, 64, 100, 127), "MD": (64,) * 8 + (0, 0, 100), "U1": (64,) * 15}
+
+
+def knobs_of(machine, page, os2=False):
+    """P of each knob, 0 none; None: the page is stock's."""
+    l = LAYOUT[machine]
+    if page == "osc1":
+        return OSC1[l]
+    if page == "noise":
+        return (0,) * 10 if os2 else NOISE[l]
+    if page == "osc2" and os2 and l in OSC2:
+        return OSC2[l]
+    return None
 
 
 def to_page(r, page):
@@ -366,13 +396,25 @@ def to_page(r, page):
     return r
 
 
-def want_labels(machine, page):
-    """The machine's names; the three LEV and, on a list's machine, OSC1 FIN stay stock's; every other knob empty."""
+def want_labels(machine, page, os2=False):
+    """The machine's names; LEV stays stock's, OSC 1&2 stock's but AM1 where NOISE J holds it; knobs the machine leaves empty are hatched."""
     n = NAMES[machine].split()
-    keep = {4} if page != "x" else set()
-    if page == "osc1" and machine in ("JUNO", "FM6"):
-        keep.add(1)
-    return [n[p - 1] if p and p <= len(n) else s if i in keep else "" for i, (p, s) in enumerate(zip(KNOBS[page], STOCK_LABELS[page]))]
+    ps = knobs_of(machine, page, os2)
+    stock = STOCK_LABELS[page]
+    if ps is None:
+        w = list(stock)
+        if page == "x" and not os2 and NOISE[LAYOUT[machine]][9]:
+            w[0] = n[12]
+        return w
+    if page == "noise":
+        w = list(stock)
+        for i, p in enumerate(ps):
+            if p:
+                w[i] = n[p - 1]
+        if machine in ("JUNO", "FM6"):
+            w[5] = ""
+        return w
+    return [n[p - 1] if p else s if s == "LEV" else "" for p, s in zip(ps, stock)]
 
 
 def same(got, want):
@@ -386,12 +428,18 @@ def same(got, want):
 def t_labels(a):
     font = learn_font(a)
     check("labels: stock's screens teach enough letters", len(font) >= 20, "".join(sorted(font.values())))
-    for machine, steps in (("PLTS", 1), ("JUNO", 2), ("DSY", 3), ("FM6", 4), ("MD", 5), ("U1", 8)):
-        for page in KNOBS:
+    for machine, steps in STEPS.items():
+        for page in ("osc1", "noise", "osc2", "x"):
             r = to_page(Run(a, f"lab_{machine}_{page}", usb=False).machine(1, steps), page).go()
             got, want = page_text(r.dir + "/end.png", font), want_labels(machine, page)
             ok = all(same(g, w) for g, w in zip(got, want))
             check(f"labels: {machine} on {page}", ok and r.rc == 0 and not r.faults(), " ".join(x or "-" for x in got))
+        if machine in ("JUNO", "FM6"):
+            continue
+        for page in ("noise", "osc2"):
+            r = to_page(Run(a, f"lab_{machine}_{page}2", usb=False).machine(1, steps).os2(), page).go()
+            got, want = page_text(r.dir + "/end.png", font), want_labels(machine, page, True)
+            check(f"labels: {machine} on {page}, OS2 MACHINE", all(same(g, w) for g, w in zip(got, want)) and r.rc == 0 and not r.faults(), " ".join(x or "-" for x in got))
 
 
 def t_title(a):
@@ -404,26 +452,36 @@ def t_title(a):
     check("title: not stock's", bm[:9] != bs[:9])
     check("title: its value is the number the machine reads, not stock's", glyphs(bm, 2, 0) != glyphs(bs, 2, 0))
     font = learn_font(a)
-    q = Run(a, "side", usb=False).key("TRACK1", 120).key("OSC1", 150).key("OSC1", 150).go()
-    check("title: the SIDECAR knob's label is its own", page_text(q.dir + "/end.png", font)[0][0] == "M" and page_text(q.dir + "/end.png", font)[0][2] == "H", page_text(q.dir + "/end.png", font)[0])
+    q = Run(a, "side", usb=False).key("TRACK1", 120).key("OSC1", 150).go()
+    check("title: the selector's label is its own", page_text(q.dir + "/end.png", font)[3][0] == "M" and page_text(q.dir + "/end.png", font)[3][2] == "H", page_text(q.dir + "/end.png", font)[3])
+
+
+def noise_same(p, q):
+    """Two NOISE screens: equal, apart from the two knobs an OFF track has more than stock's: D MCH, F OS2. The band over them and the rest of the page are stock's."""
+    a, b = bitmap(p), bitmap(q)
+    def rest(x):
+        return [[v for i, v in enumerate(row) if not (9 <= y < 31 and 78 <= i < 104) and not (31 <= y < 53 and i < 26)] for y, row in enumerate(x)]
+    return rest(a) == rest(b)
 
 
 def t_off(a):
-    """Every sound OFF, and a track OFF beside one with a machine: the screens step by step as stock's, a turned knob's title and value too."""
+    """Every sound OFF, and a track OFF beside one with a machine: the screens step by step as stock's, a turned knob's title and value too; on NOISE all but its two knobs."""
     def script(r, track):
         r.key(f"TRACK{track}", 120).key("OSC2", 150).key("OSC2", 150).key("OSC1", 150).key("FILTERS", 150).key("AMP", 150).key("OSC2", 150).key("OSC1", 150)
-        return r.turn(2, -1, 30, every="3M", gap=100).key("OSC1", 150)
+        return r.turn(2, -1, 30, every="3M", gap=100).key("OSC1", 150).turn(1, 1, 30, every="3M", gap=100)
     def shots(r):
-        return [sha(os.path.join(r.dir, f)) for f in sorted(os.listdir(r.dir)) if f.startswith("step") and f.endswith(".png")] + [sha(r.dir + "/end.png")]
+        return [os.path.join(r.dir, f) for f in sorted(os.listdir(r.dir)) if f.startswith("step") and f.endswith(".png")] + [r.dir + "/end.png"]
     env = lambda n: {"DTBOOT_PNG_DIR": os.path.join(a.out, n), "DTBOOT_STEPS": "1"}
     s = script(Run(a, "off_s", syx=a.stock, usb=False, env=env("off_s")), 1).go(tail=50)
     m = script(Run(a, "off_m", usb=False, env=env("off_m")), 1).go(tail=50)
     x, y = shots(s), shots(m)
-    check("off: every sound OFF: each screen as stock's", x == y and len(x) >= 8, f"{len(x)} screens, {sum(p != q for p, q in zip(x, y))} differ")
+    check("off: every sound OFF: each screen as stock's", [sha(p) for p in x[:-2]] == [sha(p) for p in y[:-2]] and len(x) >= 8, f"{len(x)} screens, {sum(sha(p) != sha(q) for p, q in zip(x[:-2], y[:-2]))} differ")
+    check("off: its NOISE page is stock's but for D and F, a stock knob's turn too", all(noise_same(p, q) for p, q in zip(x[-2:], y[-2:])) and sha(x[-1]) != sha(y[-1]), "")
     s2 = script(Run(a, "off_s2", syx=a.stock, usb=False, env=env("off_s2")), 2).go(tail=50)
     m2 = script(Run(a, "off_m2", usb=False, env=env("off_m2")).machine(1, 1), 2).go(tail=50)
     x2, y2 = shots(s2), shots(m2)[-len(shots(s2)):]
-    check("off: T2 OFF beside T1 with a machine: its screens as stock's", x2 == y2, f"{len(x2)} screens, {sum(p != q for p, q in zip(x2, y2))} differ")
+    check("off: T2 OFF beside T1 with a machine: its screens as stock's", [sha(p) for p in x2[:-2]] == [sha(p) for p in y2[:-2]], f"{len(x2)} screens, {sum(sha(p) != sha(q) for p, q in zip(x2[:-2], y2[:-2]))} differ")
+    check("off: and its NOISE page, but for D and F", all(noise_same(p, q) for p, q in zip(x2[-2:], y2[-2:])), "")
 
 
 def reports(r, voice=0):
@@ -437,35 +495,51 @@ def reports(r, voice=0):
     return out
 
 
+def sweep(a, name, machine, page, os2=False):
+    """Each knob of a page down and up: (run, [(knob, P's that moved, lo, hi)])."""
+    ps = knobs_of(machine, page, os2) or (0,) * 10
+    r = Run(a, name).overbridge().machine(1, STEPS[machine])
+    if os2:
+        r.os2()
+    to_page(r, page)
+    win = []
+    cells = [e for e in range(10) if not (page == "noise" and e in (3, 5))]             # not the selector and OS2
+    for e in cells:
+        t0 = r.t
+        r.turn(e, -1, 500, gap=200).turn(e, 1, 500, gap=200)
+        win.append((t0, r.t))
+    r.go(tail=100)
+    rep, bad, full = reports(r), [], True
+    for e, (t0, t1) in zip(cells, win):
+        w = [v for c, v in rep if t0 <= c < t1]
+        moved = {k + 1 for k in range(15) if k != 1 and len({x[k] for x in w}) > 1}      # P2 is DET's, which this kit's LFO runs
+        if ps[e] == 2:
+            moved |= {2}
+        want = {ps[e]} - {0}
+        if moved != want:
+            bad.append((e, sorted(moved), sorted(want)))
+        if ps[e]:
+            lo, hi = min(x[ps[e] - 1] for x in w), max(x[ps[e] - 1] for x in w)
+            if not (lo <= 128 and hi >= 16256):
+                full, bad = False, bad + [(e, lo / 128, hi / 128)]
+    return r, rep, win, bad, full
+
+
 def t_knobs(a):
-    """Each knob the machine reads moves its P and no other, over 0..127; each stock knob none. The kit's own LFO on OSC1 DET runs through P2: left out of the moves, and proof that an LFO reaches a P."""
-    for page, ps in KNOBS.items():
-        r = to_page(Run(a, "knob_" + page).overbridge().machine(1, 1).key("OSC2", 150).key("OSC1", 150), page)
-        win = []
-        for e in range(10):
-            t0 = r.t
-            r.turn(e, -1, 500, gap=200).turn(e, 1, 500, gap=200)
-            win.append((t0, r.t))
-        r.go(tail=100)
-        rep = reports(r)
-        bad, full = [], True
-        for e, (t0, t1) in enumerate(win):
-            w = [v for c, v in rep if t0 <= c < t1]
-            moved = {k + 1 for k in range(15) if k != 1 and len({x[k] for x in w}) > 1}
-            if e == 2 and page == "osc1":                   # P2's own knob
-                moved |= {2}
-            want = {ps[e]} - {0}                            # PLAITS: FIN is empty here, it moves nothing
-            if moved != want:
-                bad.append((e, sorted(moved), sorted(want)))
-            if ps[e]:
-                lo, hi = min(x[ps[e] - 1] for x in w), max(x[ps[e] - 1] for x in w)
-                top = 16256
-                if not (lo <= 128 and hi >= top):
-                    full, bad = False, bad + [(e, lo / 128, hi / 128)]
-        check(f"knobs: {page}: each knob moves its P, 0..127 (TUN 1..127)", not bad and full and rep, str(bad[:4]))
+    """Each knob the machine reads moves its P and no other, over 0..127; each stock knob none. The kit's own LFO on OSC1 DET runs through P2: proof that an LFO reaches a P."""
+    for page in ("osc1", "noise", "osc2", "x"):
+        r, rep, win, bad, full = sweep(a, "knob_" + page, "PLTS", page)
+        check(f"knobs: {page}: each knob moves its P, 0..127", not bad and full and rep, str(bad[:4]))
         if page == "osc1":
             lfo = [v[1] for c, v in rep if c < win[0][1]]
             check("knobs: an LFO moves its P (this kit's LFO 2 on DET)", len(set(lfo)) > 20, f"P2 {min(lfo) / 128:.1f}..{max(lfo) / 128:.1f}")
+
+
+def t_map(a):
+    """Decision 8, 10: every layout's knobs on their P, 0..127, the P's meaning the machine's: the numbers of the table, in the 03s."""
+    for machine, page, os2 in (("JUNO", "osc1", 0), ("JUNO", "noise", 0), ("FM6", "osc1", 0), ("FM6", "noise", 0), ("MD", "osc1", 0), ("MD", "noise", 0), ("MD", "osc2", 1), ("PLTS", "osc2", 1), ("DSY", "osc1", 0), ("U1", "noise", 0)):
+        r, rep, win, bad, full = sweep(a, f"map_{machine}_{page}{os2}", machine, page, bool(os2))
+        check(f"map: {machine} {page}{' OS2 MACHINE' if os2 else ''}: each knob on its P, 0..127", not bad and full and rep, str(bad[:4]))
 
 
 def t_zones(a):
@@ -478,13 +552,23 @@ def t_zones(a):
 
 
 def t_fin(a):
-    """FIN under TUN's lowest: PAT 0 of a list. FIN over TUN's highest stays in range."""
-    r = Run(a, "fin").overbridge().machine(1, 2).key("OSC2", 150).key("OSC1", 150).turn(0, -1, 500, gap=200).turn(1, -1, 500, gap=200)
-    t = r.t
-    r.turn(0, 1, 500, gap=200).turn(1, 1, 500, gap=200).go(tail=100)
-    v = [x[0] for c, x in reports(r)]
-    lo, hi = [x[0] for c, x in reports(r) if c < t], [x[0] for c, x in reports(r) if c > t + 250]
-    check("fin: TUN down and FIN down: P1's integer reaches 0; both up it stays at the top, no wrap", min(lo) < 128 and hi and min(hi) > 16000, f"P1 {min(lo) / 128:.2f}, then {min(hi) / 128:.2f}..{max(hi) / 128:.2f}")
+    """TUN and FIN are one word: as a machine's two parameters each keeps to its byte, each over 0..127, and a plain 0 at the bottom: a list's first entry needs no second knob."""
+    r = Run(a, "fin").overbridge().machine(1, 1).turn(1, -1, 500, gap=200).turn(0, -1, 500, gap=200)
+    t0 = r.t
+    r.turn(1, 1, 500, gap=200)
+    t1 = r.t
+    r.turn(0, 1, 500, gap=200)
+    t2 = r.t
+    r.turn(1, -1, 500, gap=200).go(tail=100)
+    rp = reports(r)
+    down = [v for c, v in rp if c < t0][-1]
+    a0 = [v for c, v in rp if t0 <= c < t1]
+    b0 = [v for c, v in rp if t1 <= c < t2]
+    c0 = [v for c, v in rp if c >= t2]
+    check("fin: TUN down: P1 0", down[0] == 0, str(down[0]))
+    check("fin: FIN up: P7 to 127, P1 stays", a0[-1][6] >= 16256 and {x[0] for x in a0} == {0}, f"P7 {a0[-1][6] / 128}, P1 {sorted({x[0] for x in a0})[:3]}")
+    check("fin: TUN up: P1 to 127, P7 back where it was: the voice's word glides meanwhile, stock's own slew", b0[-1][0] == 16256 and b0[-1][6] == a0[-1][6], f"P1 {b0[-1][0] / 128}, P7 {b0[-1][6] / 128}")
+    check("fin: FIN down: P7 to 0, P1 stays", c0[-1][6] <= 64 and {x[0] for x in c0} == {16256}, f"P7 {c0[-1][6] / 128}")
 
 
 def cell(bm, c):
@@ -497,36 +581,35 @@ def t_hatched(a):
     """The knobs a machine has no use for are stock's own empty knob: the very pixels of stock's NOISE page's empty ones, with nothing behind them."""
     s = Run(a, "h_stock", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC1", 150).go(tail=50)
     empty = bitmap(s.dir + "/end.png")
-    for machine, steps, page, knobs in (("JUNO", 2, "osc1", (3, 5, 6)), ("U1", 8, "osc1", (1, 3, 5, 6)), ("FM6", 4, "osc2", (1, 3, 5, 6, 8, 9)), ("FM6", 4, "noise", (0, 1, 2)), ("FM6", 4, "x", (0, 1, 2, 3, 4, 5, 6, 7, 8))):
-        r = to_page(Run(a, f"h_{machine}_{page}", usb=False).machine(1, steps), page).go(tail=50)
+    ref = lambda c: 5 + c % 5 if c < 5 and c != 3 else c                # D, F..J empty there; the others by their column
+    for machine, os2, page, knobs in (("JUNO", 0, "osc1", (1,)), ("FM6", 0, "osc1", (6,)), ("JUNO", 0, "noise", (5, 6, 7, 8, 9)), ("MD", 0, "noise", (8, 9)), ("PLTS", 1, "noise", (6, 7, 8, 9)), ("PLTS", 1, "osc2", (1, 4 + 1, 6)), ("MD", 1, "osc2", (1, 3, 5, 6, 7, 8, 9))):
+        r = Run(a, f"h_{machine}_{page}{os2}", usb=False).machine(1, STEPS[machine])
+        if os2:
+            r.os2()
+        r = to_page(r, page).go(tail=50)
         bm = bitmap(r.dir + "/end.png")
-        bad = [c for c in knobs if cell(bm, c) != cell(empty, 5 + c % 5 if c < 5 and c != 3 else c)]    # D, F..J empty there; the others by their column
+        bad = [c for c in knobs if cell(bm, c) != cell(empty, ref(c))]
         check(f"hatched: {machine} on {page}: stock's empty knob", not bad and r.rc == 0 and not r.faults(), str(bad))
     def script(name, turn):
-        r = Run(a, name).overbridge().machine(1, 2)                      # JUNO, on OSC1: knob D (TRK), F (WAV), G (SUB) empty
-        before = r.t
+        r = Run(a, name).overbridge().machine(1, 2)                      # JUNO, on OSC1: knob B, FIN, empty
         if turn:
-            for e in (3, 5, 6):
-                r.turn(e, 1, 40, every="3M", gap=150)
+            r.turn(1, 1, 40, every="3M", gap=150)
         else:
-            r.t += 450
-        return r, before
-    r, t0 = script("h_idle", False)
-    r.go(tail=100)
-    q, t1 = script("h_turn", True)
-    q.go(tail=100)
+            r.t += 150
+        return r
+    r = script("h_idle", False).go(tail=100)
+    q = script("h_turn", True).go(tail=100)
     check("hatched: turned knobs: the screen stays, no title, no value", sha(r.dir + "/end.png") == sha(q.dir + "/end.png"), f"{sha(r.dir + '/end.png')} {sha(q.dir + '/end.png')}")
     x, y = [v for c, v in reports(r)][-1:], [v for c, v in reports(q)][-1:]
-    check("hatched: turned knobs: the machine's values stay", x == y and x, str(len(reports(q))))
-    def off(name, turn):                                                  # what they would have changed: back to OFF, and the page is stock's page of an untouched sound
+    check("hatched: turned knobs: the machine's values stay", [v[:1] + v[2:] for v in x] == [v[:1] + v[2:] for v in y] and x, str(len(reports(q))))
+    def off(name, turn):                                                  # what it would have changed: back to OFF, and the page is the same
         r = Run(a, name, usb=False).machine(1, 2)
         if turn:
-            for e in (3, 5, 6):
-                r.turn(e, 1, 40, every="3M", gap=150)
-        r.key("OSC1", 150).key("OSC1", 150).nudge(0, -1, 60, 4).key("OSC1", 150)
+            r.turn(1, 1, 40, every="3M", gap=150)
+        r.key("OSC1", 150).nudge(3, -1, 60, 3).key("OSC1", 150)
         return r.go(tail=50)
     u, v = off("h_off0", False), off("h_off1", True)
-    check("hatched: a turn left the sound as it was: TRK, WAV, SUB unchanged once back OFF", sha(u.dir + "/end.png") == sha(v.dir + "/end.png"), f"{sha(u.dir + '/end.png')} {sha(v.dir + '/end.png')}")
+    check("hatched: a turn left the sound as it was: FIN unchanged once back OFF", sha(u.dir + "/end.png") == sha(v.dir + "/end.png"), f"{sha(u.dir + '/end.png')} {sha(v.dir + '/end.png')}")
     l0 = Run(a, "h_lev0", usb=False).machine(1, 4).go(tail=50)
     l1 = Run(a, "h_lev1", usb=False).machine(1, 4).turn(4, 1, 40, every="3M", gap=100).go(tail=50)
     b0, b1 = bitmap(l0.dir + "/end.png"), bitmap(l1.dir + "/end.png")
@@ -543,7 +626,7 @@ def t_hatched(a):
     p.go(extra=["--power-off", f"{p.t + 100}M"], tail=800)
     b = Run(a, "h_boot", card=p.card).go(tail=300)
     bm = bitmap(b.dir + "/end.png")
-    check("hatched: on the page a boot opens, no key pressed", b.rc == 0 and not b.faults() and all(cell(bm, c) == cell(empty, c) for c in (3, 5, 6)), "; ".join(b.faults()[:2]))
+    check("hatched: on the page a boot opens, no key pressed", b.rc == 0 and not b.faults() and cell(bm, 1) == cell(empty, 6), "; ".join(b.faults()[:2]))
 
 
 def t_lock(a):
@@ -556,6 +639,352 @@ def t_lock(a):
     r.key("RECORD", 100).key("PLAY", 1200).key("STOP", 200).go()
     tr = [m[8 + 2 * 2] for m in r.msgs if m[4] == 4 and m[5] & 7 == 0]
     check("lock: a locked trig moves TIM (knob H, P3); the others keep the track's 0", 0 < sum(x > 0 for x in tr) < len(tr), str(tr))
+
+
+def voice_words(r, *words):
+    """Words of the OS to peek in a run: its env."""
+    r.env["DTBOOT_PEEK"] = ",".join(hex(w & ~3) for w in words)
+    return r
+
+
+def peeked(r, w):
+    """That word at each --every line, 16 bits."""
+    out = []
+    for l in r.log.splitlines():
+        m = re.findall(r"\[([0-9a-f]{8})\]=([0-9a-f]{8})", l)
+        for x, y in m:
+            if int(x, 16) == w & ~3:
+                v = int(y, 16)
+                out.append(v >> 16 & 0xFFFF if not w & 2 else v & 0xFFFF)
+    return out
+
+
+def t_pages(a):
+    """Decision 4: the OSC1 key cycles OSC1, NOISE; the selector on NOISE, D; no SIDECAR page; the two knobs on an OFF track, the rest of NOISE stock's."""
+    font = learn_font(a)
+    env = lambda n: {"DTBOOT_PNG_DIR": os.path.join(a.out, n), "DTBOOT_STEPS": "1"}
+    r = Run(a, "pg", usb=False, env=env("pg")).key("TRACK1", 120)
+    for _ in range(5):
+        r.key("OSC1", 150)
+    r.go(tail=50)
+    c = [sha(os.path.join(r.dir, f)) for f in sorted(os.listdir(r.dir)) if f.startswith("step") and f.endswith("_OSC1.png")]
+    check("pages: the OSC1 key cycles two pages", len(c) == 5 and len(set(c)) == 2 and c[0] == c[2] == c[4] and c[1] == c[3], str(c))
+    n = Run(a, "pg_n", usb=False).key("TRACK1", 120).key("OSC1", 150).go(tail=50)
+    got = page_text(n.dir + "/end.png", font)
+    s = Run(a, "pg_s", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC1", 150).go(tail=50)
+    check("pages: OFF: MCH on D, OS2 on F", same(got[3], "MCH") and same(got[5], "OS2"), " ".join(x or "-" for x in got))
+    check("pages: OFF: the rest of NOISE is stock's", noise_same(n.dir + "/end.png", s.dir + "/end.png"), "")
+    m = Run(a, "pg_m").overbridge().key("TRACK1", 120).key("OSC1", 150).nudge(3, 1, 60, 1).midi("903c64", 100).midi("803c00", 100).go(tail=100)
+    check("pages: knob D picks: the trig reports PLAITS", [x[5] for x in m.msgs if x[4] == 4] == [0], str([x[5] for x in m.msgs if x[4] == 4]))
+    k = Run(a, "pg_k", usb=False).key("TRACK1", 120).key("OSC1", 150).nudge(0, 1, 40, 5).nudge(1, 1, 40, 5).go(tail=50)
+    t = Run(a, "pg_t", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC1", 150).nudge(0, 1, 40, 5).nudge(1, 1, 40, 5).go(tail=50)
+    check("pages: OFF: SNH, COL turned as stock's", noise_same(k.dir + "/end.png", t.dir + "/end.png"), "")
+
+
+def t_analog2(a):
+    """Decision 2: with a machine, OS2 ANALOG: OSC2's and NOISE's stock knobs are back, none hatched, none feeds a P, on OSC 1&2 too."""
+    for page, cells in (("osc2", range(10)), ("x", range(1, 10))):
+        r = to_page(Run(a, f"an_{page}", usb=False).machine(1, 1), page).go(tail=50)
+        s = to_page(Run(a, f"an_{page}s", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC2", 150).key("OSC1", 150), page).go(tail=50)
+        bm, bs = bitmap(r.dir + "/end.png"), bitmap(s.dir + "/end.png")
+        bad = [c for c in cells if cell(bm, c) != cell(bs, c)]
+        check(f"analog2: {page}: stock's knobs, stock's pixels", not bad, str(bad))
+    q = sweep(a, "an_col", "PLTS", "noise")
+    check("analog2: NOISE A..C and E move no P (BND, SLI, FAD, COL, FAD are analog again)", not q[3] and q[4], str(q[3][:4]))
+
+
+def t_os2(a):
+    """Decision 3: OS2 MACHINE gives OSC2's page to the machine; JUNO, FM6 have nothing to give and hide the knob; back to ANALOG: stock's knobs."""
+    font = learn_font(a)
+    r, rep, win, bad, full = sweep(a, "os2_m", "PLTS", "osc2", True)
+    check("os2: MACHINE: P10..P15 on OSC2 TUN DET PW SPD PWM TRK, 0..127", not bad and full and rep, str(bad[:4]))
+    r = Run(a, "os2_j", usb=False).machine(1, 1).os2().key("OSC1", 150).nudge(3, 1, 60, 1).key("OSC2", 150).go(tail=50)
+    s = Run(a, "os2_js", usb=False).machine(1, 2).key("OSC2", 150).go(tail=50)
+    check("os2: set, then JUNO: OSC2 stays stock's", bitmap(r.dir + "/end.png") == bitmap(s.dir + "/end.png"), "")
+    b = Run(a, "os2_b", usb=False).machine(1, 1).os2().key("OSC2", 150).turn(3, 1, 500, gap=200).key("OSC1", 150).key("OSC1", 150).nudge(5, -1, 60, 1).key("OSC2", 150).go(tail=50)
+    t = Run(a, "os2_bs", usb=False).machine(1, 1).key("OSC2", 150).go(tail=50)
+    c = page_text(b.dir + "/end.png", font)
+    check("os2: back to ANALOG: OSC2's stock labels, TRK back in stock's range", same(c[3], "TRK") and cell(bitmap(b.dir + "/end.png"), 3)[:12] == cell(bitmap(t.dir + "/end.png"), 3)[:12], " ".join(c))
+    f = Run(a, "os2_f", usb=False).machine(1, 1).os2().go(tail=50)
+    q = Run(a, "os2_p").overbridge().machine(1, 1).midi("903c64", 100).midi("803c00", 100).os2().midi("903c64", 100).midi("803c00", 100).go(tail=50)
+    tr = [[x[8 + 2 * i] for i in range(15)] for x in q.msgs if x[4] == 4]
+    check("os2: the 04s change sources with it: P14 VEL default 120 in ANALOG, OSC2 PWM's 0 in MACHINE", len(tr) == 2 and tr[0][13] == 120 and tr[1][13] == 0, str([t_[9:] for t_ in tr]))
+
+
+def t_pick(a):
+    """Decision 7: a pick from OFF writes the machine's defaults and OSC1 LEV 0; one machine to another writes nothing; a pick to OFF recentres PM and FM, and TRK WAV SUB AM1 go back into stock's range."""
+    for machine, steps in STEPS.items():
+        r = voice_words(Run(a, f"pk_{machine}").overbridge(), 0x80005B38)
+        r.machine(1, steps).midi("903c64", 100).midi("803c00", 100).go(extra=["--every", "200M"], tail=60)
+        tr = [[x[8 + 2 * i] for i in range(15)] for x in r.msgs if x[4] == 4]
+        d = list(DEFAULTS[machine])
+        ok = tr and all(tr[0][i] == d[i] for i in range(len(d)) if i != 1)
+        check(f"pick: {machine}: the defaults in the trig's P (P2 under this kit's LFO)", ok, str(tr[:1]))
+        lev = peeked(r, 0x80005B38)
+        check(f"pick: {machine}: OSC1 LEV 0", lev and lev[-1] == 0, str(lev[-1:]))
+    r = Run(a, "pk_mm").overbridge().machine(1, 1).turn(7, 1, 300, gap=120).key("OSC1", 150).nudge(3, 1, 60, 1).key("OSC1", 150).midi("903c64", 100).midi("803c00", 100).go(tail=60)
+    tr = [[x[8 + 2 * i] for i in range(15)] for x in r.msgs if x[4] == 4]
+    check("pick: PLTS to JUNO: no defaults, the turned P3 stays", tr and tr[0][2] == 127, str(tr[:1]))
+    r = voice_words(Run(a, "pk_off").overbridge(), 0x80005B68, 0x80005B78).machine(1, 1).key("OSC1", 150)
+    r.turn(6, 1, 300, gap=120).turn(7, -1, 300, gap=120)
+    t = r.t
+    r.nudge(3, -1, 60, 2)
+    r.go(extra=["--every", "100M"], tail=100)
+    pm, fm = peeked(r, 0x80005B68), peeked(r, 0x80005B78)
+    i = int(t // 100) - 2
+    check("pick: PM1, FM1 moved on the machine", pm[i] != 0x4000 and fm[i] != 0x4000, f"{pm[i]:04x} {fm[i]:04x}")
+    check("pick: to OFF: PM1, FM1 centre", pm[-1] == 0x4000 and fm[-1] == 0x4000, f"{pm[-1]:04x} {fm[-1]:04x}")
+    o = Run(a, "pk_st", usb=False).machine(1, 1).turn(3, 1, 500, gap=200).turn(5, 1, 500, gap=200).turn(6, 1, 500, gap=200).key("OSC1", 150).nudge(3, -1, 60, 2).key("OSC1", 150).go(tail=50)
+    w = voice_words(Run(a, "pk_st2", usb=False), 0x80005E78, 0x80005E88, 0x80005E98).machine(1, 1).turn(3, 1, 500, gap=200).turn(5, 1, 500, gap=200).turn(6, 1, 500, gap=200).key("OSC1", 150).nudge(3, -1, 60, 2).go(extra=["--every", "100M"], tail=60)
+    v = [peeked(w, x)[-1] for x in (0x80005E78, 0x80005E88, 0x80005E98)]
+    check("pick: to OFF: TRK, WAV, SUB back in stock's range", v[0] <= 0x100 and v[1] <= 0x700 and v[2] <= 0x400, str([hex(x) for x in v]))
+    check("pick: no fault", o.rc == 0 and not o.faults() and w.rc == 0, "")
+
+
+LOCKS = ((1, "osc1", 2, 7, 127), (2, "osc1", 3, 2, 127), (3, "osc1", 4, 6, 127), (5, "osc1", 5, 8, 127), (6, "osc1", 6, 9, 127), (7, "osc1", 7, 3, 127), (8, "osc1", 8, 4, 127), (9, "osc1", 9, 5, 0),
+         (6, "noise", 10, 10, 127), (7, "noise", 11, 11, 127), (8, "noise", 12, 12, 127), (9, "noise", 13, 13, 127))
+
+
+def t_locks(a):
+    """Decision 1, 6: a lock on each OSC1 knob and each NOISE slot reaches its P on its trig, and that P alone; AM1's whole range among them."""
+    r = Run(a, "locks").overbridge().machine(1, 1)
+    r.key("BANK_H", 120).key("T16", 500).key("RECORD", 150)
+    for s in range(1, 16):
+        r.key(f"T{s}", 60)
+    page = "osc1"
+    for e, p, step, want_p, to in LOCKS:
+        if p != page:
+            r.key("OSC1", 150)
+            page = p
+        n = 700
+        r.args += ["--press", f"T{step}@{r.t}M:{n + 80}M"]
+        r.t += 40
+        r.turn(e, 1 if to else -1, n, every="1M", gap=n + 60)
+    r.key("RECORD", 150)
+    t = r.t
+    r.key("PLAY", 1800).key("STOP", 100).go(tail=60)
+    it = iter(m for m in r.msgs if m[4] == 4)
+    tr = [[m[8 + 2 * i] for i in range(15)] for c, k in r.sent() if k == 4 for m in [next(it, None)] if m and c / 1e6 >= t][15:30]   # the second bar
+    base = tr[0]
+    for e, p, step, want_p, to in LOCKS:
+        got = tr[step - 1]
+        others = [k + 1 for k in range(15) if k != 1 and k != want_p - 1 and got[k] != base[k]]
+        check(f"locks: {p} knob {'ABCDEFGHIJ'[e]}: P{want_p} to {to} on its trig, no other", abs(got[want_p - 1] - to) <= 27 and got[want_p - 1] != base[want_p - 1] and not others, f"{base[want_p - 1]} > {got[want_p - 1]}, others {others}")
+    check("locks: no fault", r.rc == 0 and not r.faults() and len(tr) == 15, f"{len(tr)} trigs; " + "; ".join(r.faults()[:2]))
+    q = Run(a, "locks1").overbridge().machine(1, 1)                     # TUN alone: after its lock the voice's word glides back over steps, stock's slew
+    q.key("BANK_H", 120).key("T16", 500).key("RECORD", 150).key("T1", 60).key("T9", 60)
+    q.args += ["--press", f"T9@{q.t}M:780M"]
+    q.t += 40
+    q.turn(0, 1, 700, every="1M", gap=760)
+    q.key("RECORD", 150)
+    t = q.t
+    q.key("PLAY", 1000).key("STOP", 100).go(tail=60)
+    it = iter(m for m in q.msgs if m[4] == 4)
+    p1 = [m[8] for c, k in q.sent() if k == 4 for m in [next(it, None)] if m and c / 1e6 >= t]
+    check("locks: TUN: P1 on its trig, the other trig's stays", 127 in p1 and p1[:1] == [0], str(p1))
+
+
+LFOS = (("DET", 4, 2), ("TRK", 5, 6), ("WAV", 7, 8), ("SUB", 8, 9), ("PW", 9, 3), ("SPD", 10, 4), ("PWM", 11, 5), ("PM1", 2, 10), ("FM1", 3, 11), ("AM1", 12, 13), ("ACC", 58, 12))
+
+
+def t_lfos(a):
+    """Decision 1, 6: an LFO on each knob stock's lists have reaches its P. TUN and FIN are in no list [measured, a4osc], so an LFO cannot jump ENG."""
+    from concurrent.futures import ThreadPoolExecutor
+    def one(e):
+        name, k, p = e
+        r = Run(a, "lfo_" + name).overbridge().machine(1, 1)
+        r.key("BANK_H", 120).key("T16", 500).key("RECORD", 150)
+        for s in ("T1", "T5", "T9", "T13"):
+            r.key(s, 100)
+        r.key("RECORD", 150).key("LFO", 150).key("LFO", 150).key("LFO", 150)
+        r.nudge(6, -1, 14, 70)
+        r.nudge(6, 1, 14, k)
+        r.key("PUSH_G", 120).turn(7, 1, 140, every="1M", gap=170).key("PLAY", 500).key("STOP", 100).go(tail=30)
+        return name, p, [v[p - 1] for c, v in reports(r)][-60:], r
+    with ThreadPoolExecutor(4) as x:
+        for name, p, v, r in x.map(one, LFOS):
+            check(f"lfos: {name} moves P{p}", len(set(v)) > 3 and r.rc == 0 and not r.faults(), f"{min(v) / 128 if v else None}..{max(v) / 128 if v else None}, {len(set(v))} values")
+
+
+def noise_set(r):
+    """On OSC1: NOISE's four turned to known values, all moved from the defaults."""
+    r.key("OSC1", 150).turn(6, 1, 500, gap=200).turn(7, -1, 500, gap=200).turn(8, 1, 500, gap=200).turn(9, 1, 500, gap=200)
+    return r
+
+
+def t_power2(a):
+    """Decision 6: NOISE's four over a power cycle: the load site. An OFF sound keeps stock's centre; stock boots it, no fault."""
+    r = noise_set(Run(a, "pw_n").overbridge().machine(1, 1)).midi("903c64", 100).midi("803c00", 100)
+    r.go(extra=["--power-off", f"{r.t + 100}M"], tail=800)
+    before = [[x[8 + 2 * i] for i in range(15)] for x in r.msgs if x[4] == 4][-1:]
+    check("power2: the values before", before and before[0][9:13] == [127, 0, 127, 127], str(before))
+    b = Run(a, "pw_b", card=r.card).overbridge()
+    b.midi("903c64", 100).midi("803c00", 100).go(tail=100)
+    after = [[x[8 + 2 * i] for i in range(15)] for x in b.msgs if x[4] == 4]
+    check("power2: PM1 FM1 ACC AM1 back after a power cycle, the mod", after and after[0][9:13] == before[0][9:13], str(after[:1]))
+    s = Run(a, "pw_s", syx=a.stock, usb=False, card=r.card, strict=True)
+    s.key("TRACK1", 100).midi("903c64", 100).midi("803c00", 100).go(tail=50)
+    check("power2: stock boots that state, plays, no fault", s.rc == 0 and not s.faults(), "; ".join(s.faults()[:2]))
+    o = voice_words(Run(a, "pw_o"), 0x80005B70, 0x80005B68).machine(2, 1)
+    o.go(extra=["--every", "100M", "--power-off", f"{o.t + 100}M"], tail=800)
+    w = voice_words(Run(a, "pw_oo", card=o.card), 0x80005B68)
+    w.go(extra=["--every", "100M"], tail=100)
+    pm = peeked(w, 0x80005B68)
+    check("power2: an OFF track's PM1 centre after a load", pm and pm[-1] == 0x4000, f"{pm[-1:]}")
+
+
+def t_am1(a):
+    """Decision 6: AM1 over its whole range, stock's a switch. With OSC1 LEV 0 only osc1's own words may move: nothing of the filters, drive, amp or OSC2's level and frequency words, stock's render takes the value, no fault."""
+    F = 0x80003D6C
+    W = (3, 5, 6, 7, 8, 9, 10, 11, 12, 72, 73, 74, 75)
+    def peeks(r):
+        r.env["DTBOOT_PEEK"] = ",".join(hex(F + 2 * w & ~3) for w in W)
+        return r
+    r = peeks(Run(a, "am1").overbridge().machine(1, 1)).key("OSC1", 150).key("OSC2", 150).key("OSC1", 150).key("OSC1", 150)
+    idle = r.t
+    r.t += 300
+    t0 = r.t
+    r.turn(9, 1, 400, gap=200).turn(9, -1, 400, gap=200).go(extra=["--every", "8M"], tail=50)
+    v = [m[6 + 24] * 128 + m[7 + 24] for m in r.msgs if m[4] == 3 and m[5] & 7 == 0]
+    check("am1: P13 0..127", v and min(v) == 0 and max(v) >= 16256, f"{min(v) / 128 if v else None}..{max(v) / 128 if v else None}")
+    moved = []
+    for w in W:
+        x = peeked(r, F + 2 * w)
+        i = int((idle + 100) // 8)
+        j = int(t0 // 8)
+        if set(x[j:]) - set(x[i:j]):
+            moved.append(w)
+    check("am1: filters, drive, amp, OSC2's words unmoved by the sweep", not moved and len(peeked(r, F + 6)) > 50, str(moved))
+    check("am1: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+
+
+def t_rollback(a):
+    """SA09's state on the build before: the layout's new, so the machines read OFF, stock's pages over what the knobs hold: it boots, plays, reports nothing. And a machine set on the build before reads on here: fresh."""
+    if not a.prev:
+        check("rollback: needs --prev", False)
+        return
+    r = Run(a, "rb0", usb=False).machine(1, 1).turn(3, 1, 500, gap=200).turn(5, 1, 500, gap=200).turn(6, 1, 500, gap=200)
+    r.go(extra=["--power-off", f"{r.t + 100}M"], tail=800)
+    b = Run(a, "rb1", syx=a.prev, card=r.card, strict=True).overbridge()
+    b.key("TRACK1", 100).key("OSC2", 150).key("OSC1", 150).midi("903c64", 100).midi("803c00", 100).turn(3, -1, 30, gap=60).go(tail=100)
+    check("rollback: the build before boots SA09's state, strict, no fault", b.rc == 0 and not b.faults(), "; ".join(b.faults()[:2]))
+    check("rollback: the machines read OFF there: no report", not [x for x in b.msgs if x[4] in (3, 4)], f"{len([x for x in b.msgs if x[4] in (3, 4)])}")
+    s = Run(a, "rb2", syx=a.stock, card=r.card, usb=False, strict=True)
+    s.key("TRACK1", 100).key("OSC2", 150).key("OSC1", 150).midi("903c64", 100).midi("803c00", 100).go(tail=100)
+    check("rollback: stock boots it, strict, no fault", s.rc == 0 and not s.faults(), "; ".join(s.faults()[:2]))
+
+
+def t_fresh(a):
+    """Decision 5: kits made on the last build: the machines stay, OS2 reads ANALOG, the sound's knobs change meaning."""
+    if not a.prev:
+        check("fresh: needs --prev", False)
+        return
+    font = learn_font(a)
+    r = Run(a, "fr0", syx=a.prev, usb=False).key("TRACK1", 120).key("OSC1", 150).key("OSC1", 150).nudge(0, 1, 60, 2).key("OSC1", 150)
+    r.go(extra=["--power-off", f"{r.t + 100}M"], tail=800)
+    b = Run(a, "fr1", card=r.card).overbridge()
+    b.midi("903c64", 100).midi("803c00", 100).go(tail=100)
+    check("fresh: SA08's JUNO reads on: the trig reports it", [x[5] for x in b.msgs if x[4] == 4] == [8], str([x[5] for x in b.msgs if x[4] == 4]))
+    n = Run(a, "fr2", usb=False, card=r.card).key("TRACK1", 120).key("OSC1", 150).go(tail=50)
+    got = page_text(n.dir + "/end.png", font)
+    check("fresh: the machine's NOISE: MCH, the rest stock's", same(got[3], "MCH") and b.rc == 0 and not b.faults(), " ".join(x or "-" for x in got))
+
+
+def t_upyes(a):
+    """Decision 9: UP + YES opens and leaves the pages as on the Rytm; a roll of UP into YES stays stock's; with no Sidecar stock's, step by step on the pages and menus that use YES."""
+    r = open_page(Run(a, "uy_open", host=[]))
+    r.t += 400
+    r.go()
+    bm, fr = bitmap(r.dir + "/end.png"), frame_rows(r.dir + "/frame.bin")
+    check("upyes: opens, the engine's frame", bm == fr and [list(x[6:9]) for x in r.msgs if x[4] == 0x30] == [[0, 1, 0]], str([list(x[6:9]) for x in r.msgs if x[4] == 0x30]))
+    check("upyes: YES itself reaches neither stock nor the host", not [x for x in r.msgs if x[4] == 0x31 and x[7] == 0x44], "")
+    c = open_page(Run(a, "uy_close", host=[]))
+    c.t += 300
+    c.up_yes()
+    c.t += 300
+    c.go()
+    check("upyes: again: leaves, told", [list(x[6:9]) for x in c.msgs if x[4] == 0x30] == [[0, 1, 0], [0, 0, 3]], str([list(x[6:9]) for x in c.msgs if x[4] == 0x30]))
+    q = Run(a, "uy_roll", host=[]).overbridge()
+    q.t += SHOWN
+    t = q.t
+    q.args += ["--press", f"UP@{t}M:40M", "--press", f"YES@{t + 10}M:20M"]
+    q.t += 300
+    q.go()
+    check("upyes: UP rolled into YES, 50 ms: stock's", not [x for x in q.msgs if x[4] == 0x30], "")
+    def chord(r):
+        t = r.t
+        r.args += ["--press", f"UP@{t}M:300M", "--press", f"YES@{t + 220}M:30M"]
+        r.t = t + 400
+        return r
+    def session(r):
+        r.key("TRACK1", 120)
+        for k in ("AMP", "OSC2", "LFO", "KIT", "GLOBAL", "NOTE", "PERF"):
+            r.key(k, 200)
+            chord(r)
+            r.key("NO", 150).key("NO", 150)
+        return r
+    env = lambda n: {"DTBOOT_PNG_DIR": os.path.join(a.out, n), "DTBOOT_STEPS": "1"}
+    s = session(Run(a, "uy_s", syx=a.stock, env=env("uy_s"))).go(tail=50)
+    m = session(Run(a, "uy_m", env=env("uy_m"))).go(tail=50)
+    x, y = [[sha(os.path.join(d.dir, f)) for f in sorted(os.listdir(d.dir)) if f.startswith("step") and f.endswith(".png")] + [sha(d.dir + "/end.png")] for d in (s, m)]
+    check("upyes: no Sidecar: stock's screens on each page and menu, UP and YES stock's", x == y and len(x) > 10, f"{len(x)} screens, {sum(p != q for p, q in zip(x, y))} differ")
+
+
+def sx(b):
+    """A Sidecar SysEx, as hex for --usb-midi."""
+    return "f07d5254" + b + "f7"
+
+
+def t_low(a):
+    """The review's LOW items and a4sa08's open one, by bytes on the USB port: bad SysEx; a one-frame popup between ticks; a dead Pi; a knob the mask does not name."""
+    bad = ("3801000010" + "01" * 3, "38" + "01" + "0f" + "00" + "02" + "08" + "00" * 8, "38" + "01" + "00" + "07" + "01" + "03" + "00" * 8, "380100000108", "3801" + "00" * 4, "3701", "37", "3a01", "3a", "4f", "4f01", "4f0100", "36", "3601", "", "3c", "3b", "30")
+    r = Run(a, "lo_bad").overbridge()
+    t = r.t
+    for i, h in enumerate(bad):
+        r.args += ["--usb-midi", f"{sx(h)}@{t + i * 20}M"]
+    r.args += ["--usb-midi", f"f07df7@{t + 400}M", "--usb-midi", f"f07d52f7@{t + 420}M"]
+    r.t += 500
+    r.key("AMP", 200).go(tail=100)
+    s = Run(a, "lo_bad0").overbridge()
+    s.t = r.t - 200
+    s.key("AMP", 200).go(tail=100)
+    check("low: short, cut, out of range SysEx: no fault, stock's screen", r.rc == 0 and not r.faults() and bitmap(r.dir + "/end.png") == bitmap(s.dir + "/end.png"), "; ".join(r.faults()[:2]))
+    rect = "38" + "01" + "00" + "00" + "02" + "08" + "".join("007f" for _ in range(0)) + ("00" + "7f" * 7) * 2 + ("00" + "7f" * 1)
+    p = Run(a, "lo_pop").overbridge()
+    t = p.t
+    p.args += ["--usb-midi", f"{sx(rect)}@{t}M", "--usb-midi", f"{sx('3901')}@{t + 5}M", "--usb-midi", f"{sx('360110')}@{t + 16}M"]
+    p.t += 30
+    p.go(tail=0)
+    q = Run(a, "lo_pop0").overbridge()
+    q.t = p.t
+    q.go(tail=0)
+    check("low: a popup's 36 a tick after its commit: on the screen at once", bitmap(p.dir + "/end.png") != bitmap(q.dir + "/end.png"), "")
+    def maskrun(name, turn):
+        r = Run(a, name).overbridge().machine(1, 1)
+        t = r.t + 50
+        r.t += 60
+        r.up_yes()
+        r.args += ["--usb-midi", f"{sx('3901')}@{t}M", "--usb-midi", f"{sx('3701' + '00' * 40)}@{t + 170}M"]
+        for i in range(5):
+            r.args += ["--usb-midi", f"{sx('3c01')}@{t + i * 60}M"]
+        r.t += 80
+        if turn:
+            r.turn(7, 1, 30, every="1M", gap=40)
+        return r.go(tail=20)
+    x, y = maskrun("lo_m0", False), maskrun("lo_m1", True)
+    v0, v1 = [v[2] for c, v in reports(x)][-1:], [v[2] for c, v in reports(y)][-1:]
+    check("low: page open, a knob the mask does not name: nothing under it", v0 and v0 == v1, f"P3 {v0} {v1}")
+    d = open_page(Run(a, "lo_dead", host=[])).go()
+    secs = float(re.search(r"end: .*?, ([\d.]+) s,", d.side).group(1))
+    k = Run(a, "lo_dead1", host=["--seconds", f"{secs:.2f}"]).overbridge()     # gone by the first try, the USB port up
+    k.t += SHOWN + 1000
+    k.up_yes()
+    k.t += 1600
+    k.up_yes()
+    k.t += 300
+    k.go()
+    o = [list(x[6:9]) for x in k.msgs if x[4] == 0x30]
+    check("low: a dead Pi, the port up: one try at the most, then the way in waits for a live answer", len([x for x in o if x[1]]) == 1 and k.rc == 0 and not k.faults(), str(o))
 
 
 def poly_kit(r, track, voices=4):
@@ -815,17 +1244,25 @@ CODE = "9173 2046"      # sidecar_emu --pair-at's, made up for this test: a real
 
 
 def open_page(r):
-    """OVERBRIDGE, the splash let go by, OSC1 past the SIDECAR page."""
+    """OVERBRIDGE, the splash let go by, UP + YES."""
     r.overbridge()
     r.t += SHOWN
-    return r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400)
+    r.up_yes()
+    r.t += 250
+    return r
 
 
-def closed_ref(a, name, keys=()):
-    """The same keys with no Sidecar at all: the OSC1 cycle comes round to OSC1."""
+def closed_ref(a, name, keys=(), yes=False):
+    """The same keys with no Sidecar at all: UP pressed, stock's; YES only where it reached stock under test."""
     r = Run(a, name).overbridge()
     r.t += SHOWN
-    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400)
+    if yes:
+        r.up_yes()
+    else:
+        t = r.t
+        r.args += ["--press", f"UP@{t}M:300M"]
+        r.t = t + 330
+    r.t += 250
     r.t += 400
     for k in keys:
         r.key(k, 300)
@@ -850,7 +1287,7 @@ def t_remote_open(a):
     q.env = dict(q.env, DTBOOT_PNG_DIR=q.dir, DTBOOT_STEPS="1")
     q.key("OSC1", 150).key("OSC1", 150).key("OSC1", 150).key("OSC1", 150).go()
     c = [sha(os.path.join(q.dir, f)) for f in sorted(os.listdir(q.dir)) if f.startswith("step") and f.endswith("_OSC1.png")]
-    check("remote_open: no Sidecar: the OSC1 key's cycle as it was, no stop added: 3 steps round", len(c) >= 4 and c[-1] == c[-4] and len({*c[-4:]}) == 3 and not [x for x in q.msgs if x[4] == 0x30], str(c[-4:]))
+    check("remote_open: no Sidecar: the OSC1 key's cycle, two pages, no SIDECAR page", len(c) >= 4 and c[-1] == c[-3] and c[-2] == c[-4] and len({*c[-4:]}) == 2 and not [x for x in q.msgs if x[4] == 0x30], str(c[-4:]))
 
 
 def nav(a, name, keys, gap=300, **kw):
@@ -908,7 +1345,8 @@ def t_remote_play(a):
     r = Run(a, "rui_play", host=[]).overbridge().machine(1, 1)
     r.key("RECORD", 100).key("T1", 60).key("T9", 60).key("RECORD", 100)
     r.t += SHOWN
-    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400)
+    r.up_yes()
+    r.t += 250
     t = r.t
     r.key("PLAY", 1200).key("STOP", 300).go(tail=200)
     sent = r.sent()
@@ -1003,9 +1441,9 @@ def t_remote_link(a):
     p.go(extra=["--power-off", f"{at}M"], tail=800)
     check("remote_link: a power cut while open: the mod's power-off", p.rc == 0 and not p.faults(), "; ".join(p.faults()[:2]))
     b = Run(a, "rui_lk4", card=p.card, usb=False)
-    b.key("OSC1", 300).go()
+    b.key("AMP", 300).go()
     s = Run(a, "rui_lk5", card=p.card, syx=a.stock, usb=False)
-    s.key("OSC1", 300).go()
+    s.key("AMP", 300).go()
     check("remote_link: and the next boot is stock's screen", bitmap(b.dir + "/end.png") == bitmap(s.dir + "/end.png"), "")
 
 
@@ -1015,7 +1453,9 @@ def t_remote_voice(a):
     r.env["DTBOOT_PNG_DIR"] = r.dir
     r.t += SHOWN
     r.midi("903c64", 100).midi("803c00", 200)
-    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400).key("RIGHT", 300).key("RIGHT", 400)
+    r.up_yes()
+    r.t += 250
+    r.key("RIGHT", 300).key("RIGHT", 400)
     b0 = r.t
     r.turn(0, 1, 6, every="20M", gap=300).go(tail=200)
     bm, fr = bitmap(r.dir + "/end.png"), frame_rows(r.dir + "/frame.bin")
@@ -1033,8 +1473,10 @@ def t_remote_old(a):
     r = Run(a, "rui_old", host=[]).overbridge()
     r.old = a.old_engine
     r.t += SHOWN
-    r.key("OSC1", 150).key("OSC1", 150).key("OSC1", 400).key("RIGHT", 300).go(tail=300)
-    ref = closed_ref(a, "rui_ref7", ("RIGHT",))
+    r.up_yes()
+    r.t += 250
+    r.key("RIGHT", 300).go(tail=300)
+    ref = closed_ref(a, "rui_ref7", ("RIGHT",), yes=True)
     check("remote_old: one restart, the box served", r.side.count(": restart:") == 1 and "end: Analog Four" in r.side, f"{r.side.count(': restart:')} restarts")
     check("remote_old: nothing opens, stock's screen", bitmap(r.dir + "/end.png") == bitmap(ref.dir + "/end.png") and not [x for x in r.msgs if x[4] == 0x30], "")
     check("remote_old: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
@@ -1056,7 +1498,7 @@ def t_remote_off(a):
     m.env["DTBOOT_PNG_DIR"] = m.dir
     m.go(tail=50)
     x, y = shots(s)[-13:], shots(m)[-13:]
-    check("remote_off: engine connected, closed: each screen as stock's", x == y and len(x) == 13, f"{len(x)} screens, {sum(p != q for p, q in zip(x, y))} differ")
+    check("remote_off: engine connected, closed: each screen as stock's, NOISE's last but for its two knobs", x[:-2] == y[:-2] and len(x) == 13 and noise_same(s.dir + "/end.png", m.dir + "/end.png"), f"{len(x)} screens, {sum(p != q for p, q in zip(x[:-2], y[:-2]))} differ")
     check("remote_off: nothing of the page on the wire", not [z for z in m.msgs if z[4] in (0x30, 0x31, 0x32)], "")
 
 
@@ -1066,7 +1508,7 @@ def t_remote_kit(a):
     r.t += SHOWN
     r.midi("903c64", 100).midi("803c00", 200)
     r.key("KIT", 200).key("DOWN", 120).key("YES", 300).key("DOWN", 120).key("YES", 400).key("NO", 200)
-    r.machine(1, 1).key("NO", 200)
+    r.machine(1, 1)
     r.midi("903c64", 100).midi("803c00", 200).go(tail=400)
     said = [bytes(m) for m in r.msgs if m[4] == 0x3b]
     kits = [m[6] for m in said if len(m) == 8 and m[5] == 1]
@@ -1079,10 +1521,14 @@ def t_remote_kit(a):
 
 def t_remote_pages(a):
     """The pages and the screen together: chords and a preview under an open page; a hatched knob with the page closed; open and close leave the hatched knobs right."""
-    def picked(name, steps, **kw):                                      # the hello over, a machine on T1, still on SIDECAR: one more OSC1 opens the page; with no Sidecar it comes round to OSC1
+    def picked(name, steps, **kw):                                      # the hello over, a machine on T1, still on NOISE
         r = Run(a, name, **kw).overbridge()
         r.t += SHOWN
-        return r.key("TRACK1", 120).key("OSC1", 150).key("OSC1", 150).nudge(0, 1, 60, steps)
+        return r.key("TRACK1", 120).key("OSC1", 150).nudge(3, 1, 60, steps)
+    def opened(r):
+        r.up_yes()
+        r.t += 250
+        return r
     def since(r, t):
         it = iter(m for m in r.msgs if m[4] in (4, 0x11))
         return [(4, m[6]) if k == 4 else (0x11,) for c, k in r.sent() if k in (4, 0x11) for m in [next(it, None)] if m and c / 1e6 >= t]
@@ -1090,10 +1536,10 @@ def t_remote_pages(a):
         return bitmap(r.dir + "/end.png") == frame_rows(r.dir + "/frame.bin")
     def opens(r):
         return [list(x[6:9]) for x in r.msgs if x[4] == 0x30]
-    def chord(name, stay):                                              # 6-OP FM, a mono track; four notes on its first step, on the SIDECAR page yet
+    def chord(name, stay):                                              # 6-OP FM, a mono track; four notes on its first step, on NOISE yet
         return grid_chord(picked(name, 4, host=[]), notes=FOUR, stay=stay)
 
-    r = chord("rp_seq", False).key("OSC1", 400)
+    r = opened(chord("rp_seq", False))
     t = r.t
     r.key("PLAY", 1200).key("STOP", 300).go(tail=200)
     ev = [e for e in since(r, t) if e[0] == 4]
@@ -1105,34 +1551,38 @@ def t_remote_pages(a):
         r.args += ["--press", f"T1@{t}M:{ms}M", "--press", f"YES@{t + 150}M:100M"]
         r.t = t + ms + 100
         return t
-    p = chord("rp_prev", True)                                          # a preview ringing when the page opens. Held, OSC1 steps no page [measured], and with the page up YES is the page's: below
+    p = chord("rp_prev", True)                                          # a preview ringing when the page opens. With the page up YES is the page's: below
     t = held(p, 280)
-    p.key("OSC1", 500).go(tail=300)
+    opened(p).go(tail=300)
     ev = since(p, t)
     check("remote_pages: a preview as the page opens: all four notes, one 11", ev == [(4, n) for n in (60, 64, 67, 71)] + [(0x11,)], str(ev))
     check("remote_pages: and the page opened over it, the engine's frame", opens(p) == [[0, 1, 0]] and frame(p) and p.rc == 0 and not p.faults(), str(opens(p)))
-    y = chord("rp_yes", True).key("OSC1", 400)                          # the page open first: YES is the page's, so a held trig previews nothing
+    y = opened(chord("rp_yes", True))                                   # the page open first: YES is the page's, so a held trig previews nothing
     t = held(y)
     y.go(tail=300)
     check("remote_pages: page open, YES on a held trig is the page's: no preview", not since(y, t) and [x for x in y.msgs if x[4] == 0x31 and x[7] == 0x44] and y.rc == 0 and not y.faults(), str(since(y, t)))
-    c = chord("rp_after", True).key("OSC1", 400).key("NO", 300)
+    c = opened(chord("rp_after", True)).key("NO", 300)
     t = held(c)
     c.go(tail=300)
     ev = since(c, t)
     check("remote_pages: the page closed again: the same trig previews whole", ev == [(4, n) for n in (60, 64, 67, 71)] + [(0x11,)] and opens(c) == [[0, 1, 0], [0, 0, 1]], str(ev))
 
-    i, q = picked("rp_idle", 2, host=[]).key("OSC2", 150), picked("rp_turn", 2, host=[]).key("OSC2", 150)   # JUNO, never opened: OSC2's B, D, F, G, I, J empty
-    i.t += 450
-    for e in (3, 5, 6):
-        q.turn(e, 1, 40, every="3M", gap=150)
+    i, q = picked("rp_idle", 2, host=[]).key("OSC1", 150), picked("rp_turn", 2, host=[]).key("OSC1", 150)   # JUNO, never opened: OSC1's B empty
+    i.t += 150
+    q.turn(1, 1, 40, every="3M", gap=150)
     i.go(tail=100), q.go(tail=100)
     check("remote_pages: closed, an engine there: a hatched knob's turn leaves the screen", sha(i.dir + "/end.png") == sha(q.dir + "/end.png"), f"{sha(i.dir + '/end.png')} {sha(q.dir + '/end.png')}")
     check("remote_pages: closed: no 32 for it, the machine's values stay", not [x for x in q.msgs if x[4] == 0x32] and reports(q) and [v for c, v in reports(i)][-1:] == [v for c, v in reports(q)][-1:], f"{len(reports(q))} reports, 32s {len([x for x in q.msgs if x[4] == 0x32])}")
 
     s = Run(a, "rp_stock", syx=a.stock, usb=False).key("TRACK1", 120).key("OSC1", 150).go(tail=50)
     empty = bitmap(s.dir + "/end.png")
-    def juno(name, keys=(), **kw):                                      # one OSC1, and the keys: a Sidecar's page and out of it, or with none stock's own steps to the same page
-        r = picked(name, 2, **kw).key("OSC1", 400)
+    def juno(name, keys=(), **kw):                                      # to OSC1, the page, and the keys: a Sidecar's page and out of it, or with none stock's UP alone
+        r = picked(name, 2, **kw).key("OSC1", 300)
+        if kw.get("host") is None:
+            r.args += ["--press", f"UP@{r.t}M:300M"]
+            r.t += 330 + 250
+        else:
+            opened(r)
         r.t += 300
         for k in keys:
             r.key(k, 300)
@@ -1140,33 +1590,33 @@ def t_remote_pages(a):
     x, w = juno("rp_x", ("NO",), host=[]).go(tail=100), juno("rp_w").go(tail=100)
     bx = bitmap(x.dir + "/end.png")
     check("remote_pages: open, NO: JUNO's OSC1 page as with no Sidecar", bx == bitmap(w.dir + "/end.png"), "")
-    check("remote_pages: its empty knobs are stock's empty knob", all(cell(bx, c) == cell(empty, c) for c in (5, 6)) and cell(bx, 3) == cell(empty, 8), "")
+    check("remote_pages: its empty knob is stock's empty knob", cell(bx, 1) == cell(empty, 6), "")
     check("remote_pages: both ways: opened, and NO on SIDECAR: the engine closes it", opens(x) == [[0, 1, 0], [0, 0, 1]], str(opens(x)))
     y, z = juno("rp_y", ("OSC2",), host=[]).go(tail=100), juno("rp_z", ("OSC2",)).go(tail=100)
-    check("remote_pages: a page key out: OSC2 hatched as with no Sidecar", bitmap(y.dir + "/end.png") == bitmap(z.dir + "/end.png") and opens(y) == [[0, 1, 0], [0, 0, 3]], str(opens(y)))
+    check("remote_pages: a page key out: OSC2 stock's, as with no Sidecar", bitmap(y.dir + "/end.png") == bitmap(z.dir + "/end.png") and opens(y) == [[0, 1, 0], [0, 0, 3]], str(opens(y)))
     m, n = juno("rp_m", ("TRACK2", "NO"), host=[]), juno("rp_n", ("TRACK2",))
     n.t += 300                                                          # the sound's name leaves the band as long after TRACK2 as NO's press
     m.go(tail=100), n.go(tail=100)
     check("remote_pages: TRACK2 chosen under the page, OFF: stock's knobs after it, no hatching left", bitmap(m.dir + "/end.png") == bitmap(n.dir + "/end.png"), str(opens(m)))
     u, v = juno("rp_u", ("NO",), host=[]), juno("rp_v", ("NO",), host=[])
-    v.turn(3, 1, 40, every="3M", gap=150)
+    v.turn(1, 1, 40, every="3M", gap=150)
     u.t += 150
     u.go(tail=100), v.go(tail=100)
     check("remote_pages: after a close a hatched knob is still dead", sha(u.dir + "/end.png") == sha(v.dir + "/end.png") and not [z for z in v.msgs if z[4] == 0x32], "")
 
 
-TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "hatched": t_hatched, "preview": t_preview, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after,
-         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off, "remote_kit": t_remote_kit, "remote_pages": t_remote_pages}
+TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "map": t_map, "fin": t_fin, "lock": t_lock, "pages": t_pages, "analog2": t_analog2, "os2": t_os2, "pick": t_pick, "locks": t_locks, "lfos": t_lfos, "power2": t_power2, "fresh": t_fresh, "am1": t_am1, "rollback": t_rollback, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "hatched": t_hatched, "preview": t_preview, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after,
+         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off, "remote_kit": t_remote_kit, "remote_pages": t_remote_pages, "upyes": t_upyes, "low": t_low}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--emu", required=True); ap.add_argument("--stock", required=True); ap.add_argument("--syx", required=True)
-    ap.add_argument("--card", required=True); ap.add_argument("--out", required=True); ap.add_argument("--engine"); ap.add_argument("--old-engine"); ap.add_argument("names", nargs="*")
+    ap.add_argument("--card", required=True); ap.add_argument("--out", required=True); ap.add_argument("--engine"); ap.add_argument("--old-engine"); ap.add_argument("--prev", help="the build before: its kits, for the fresh test"); ap.add_argument("--port", type=int, default=PORT); ap.add_argument("names", nargs="*")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     for n in a.names or TESTS:
-        if n.startswith("remote_") and not a.engine:
+        if (n.startswith("remote_") or n in ("upyes", "low")) and not a.engine:
             check(f"{n}: needs --engine", False)
             continue
         print(n, flush=True)

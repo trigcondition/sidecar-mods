@@ -12,8 +12,15 @@
 #define A4_MACHINES 11         /* PLTS..B2 and U1..U5; the sound's field is 4 bits: 0 OFF, 1..11 */
 #define A4_MACHINE_BITS 15u
 #define A4_CHORD    4u          /* the notes of a trig [read: four slots, 0x40101b80]: the queue, a power of two */
-#define A4_ID_FIRST 40         /* the stock parameter ids a machine reads, OSC1 TUN .. NOISE FAD */
-#define A4_ID_LAST  76
+#define A4_LAYOUTS  4           /* which knob feeds which P: a4_src_of */
+#define A4_ID_TUN   40          /* the stock ids with something special: OSC1 TUN and FIN are one word, its high and low byte; OSC2 TUN its high byte */
+#define A4_ID_FIN   41
+#define A4_ID_TUN2  53
+
+/* The stock words a machine can read: a4_source, a4_src_of. */
+enum { S_TUN, S_DET, S_PW, S_SPD, S_PWM, S_FIN, S_TRK, S_WAV, S_SUB, S_PM1, S_FM1, S_ACC, S_AM1, S_TUN2, S_DET2, S_PW2, S_SPD2, S_PWM2, S_TRK2, A4_SOURCES, S_NONE = 0xFF };
+struct a4_source { uint32_t at; uint8_t step, id; };   /* the OS's working value for voice 0, 8.8, after locks and LFOs; the step to voice 1; the parameter id */
+extern const struct a4_source a4_source[A4_SOURCES];
 
 /* A machine: what its reports say to the Sidecar (core/machines.h). */
 struct a4_machine {
@@ -23,7 +30,11 @@ struct a4_machine {
     uint16_t tag;               /* the sound tag: MD's page, else 0 */
 };
 extern const struct a4_machine a4_machine_of[A4_MACHINES];
+extern const uint8_t a4_layout_of[A4_MACHINES];                     /* its row of a4_src_of */
+extern const uint8_t a4_src_of[A4_LAYOUTS * 2][A4_ON_PAGE];         /* layout x 2 + OS2: P1..P15's source */
+extern const uint8_t a4_defaults[A4_MACHINES][A4_ON_PAGE];          /* a pick from OFF writes them; a P with no knob sends its own */
 extern volatile uint8_t a4_machine_now[A4_VOICES];      /* each track's machine + 1, 0 none */
+extern volatile uint8_t a4_os2_now[A4_VOICES];          /* its OS2, 1 MACHINE: only where it has parameters to give OSC2's page */
 extern volatile uint32_t a4_now;                        /* blocks since boot */
 
 int a4_usb_up(void);                                    /* a host has the port */
@@ -31,8 +42,6 @@ int a4_usb_send(const uint8_t *m, uint32_t n);          /* 1 gone; 0 not now, no
 void a4_wake(void);                                     /* the render: the task has work */
 void a4_service(void);                                  /* the task */
 void a4_remote_service(void);                           /* the task, after the trigs: a4_remote.c */
-int a4_screen_can_open(void);                           /* a Sidecar answers: a4_remote.c */
-void a4_screen_open(void);                              /* the user asked, on the UI task */
 
 /* Every interrupt masked, and back. */
 #define IRQ_OFF(sr) __asm__ volatile ("move.w %%sr,%0\n\tmove.w #0x2700,%%sr" : "=d"(sr) :: "memory")
@@ -82,6 +91,19 @@ typedef char *(*a4_model_fn)(void);
 #define KIT_INDEX       (*(const volatile uint32_t *)0x405F5CA4u)
 #define KIT_SOUND(k, t) ((void *)(0x411E9936u + 0x960u * (k) + 0x1Cu + 0x152u * (t)))
 #define PAGE_ENTRY(p) ((const int32_t *)(0x401B31E8u + 44u * (p)))  /* stock's page table: the name, then ten knob ids, 0 an empty knob */
+#define SOUND_WORD(s, k) (*(volatile int16_t *)((char *)(s) + 0x14 + 2 * (k)))  /* a sound's slot k, 104 of them [read: 0x40023db6, 0x40007632 maps an id to its slot] */
+
+/* The parameter table, 56 B an id [read]: its clamp is read on each turn (0x40025ec0, 0x400a00a6) and by no audio code; and each id's knob: step, accel, text, widget, 84 B, RAM.
+ * The table is image RAM: ACR0 0x4007C020 covers it with W clear, no MMU [read]. A model's set: (this, id, value, 0, 0, 0): the sound's word and the voices' [read: 0x400a0046, called at 0x40025ea2]. */
+#define PARAM_SLOT(id) (*(volatile int32_t *)(0x40186AF4u + 56u * (id) + 4u))
+#define PARAM_MIN(id) (*(volatile int32_t *)(0x40186AF4u + 56u * (id) + 8u))
+#define PARAM_MAX(id) (*(volatile int32_t *)(0x40186AF4u + 56u * (id) + 12u))
+#define KNOB_DESC(id) ((volatile uint32_t *)(0x41856C44u + 84u * (id)))
+#define KNOB_WORDS  21
+typedef void *(*a4_model_of_fn)(void *view, int32_t lock);
+typedef void (*a4_model_set_fn)(void *model, int32_t id, int32_t value, int32_t a, int32_t b, int32_t c);
+#define VIEW_MODEL(view) ((*(a4_model_of_fn *)(*(char **)(view) + 168))((view), -1))
+#define MODEL_SET(model, id, value) ((*(a4_model_set_fn *)(*(char **)(model) + 48))((model), (id), (value), 0, 0, 0))
 
 /* A trig's notes as stock's preview gets them, a deque of bytes [read: 0x400b9e16]; what is here is what it reads. */
 struct a4_notes {

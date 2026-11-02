@@ -4,7 +4,7 @@ on the Mac, sidecar-firmware tools/sidecar_emu.cpp) over the Overbridge link.
 
     a4_e2e.py --emu DIR --engine DIR --syx OS.syx --out DIR [--base 4G]
 
-The panel is played by script: USB CONFIG > OVERBRIDGE, the SIDECAR page, a machine on T1, notes by DIN MIDI. Checked: the hello accepted (one restart of the
+The panel is played by script: USB CONFIG > OVERBRIDGE, the NOISE page, a machine on T1, notes by DIN MIDI. Checked: the hello accepted (one restart of the
 Sidecar into /.a4), trigs and params and note-offs through the real profile, the voice's audio on OUT channel 2 only, that audio through the A4's analog voice model to the
 A4's output (compared with the same run with the Sidecar's voice silent), and the A4's channels back on IN. Firmware-derived outputs stay in --out."""
 import argparse, json, math, os, shutil, struct, subprocess, sys, time, wave
@@ -36,13 +36,12 @@ def panel_overbridge(t):
 
 
 def page_machine(t, track_key, detents, lev0=False):
-    """The SIDECAR page, knob A up by `detents` steps. Boot page: OSC1. OSC1 steps OSC1 > NOISE > SIDECAR. lev0: OSC1's LEV down first, so all that sounds is the input."""
+    """NOISE, knob D up by `detents` steps. Boot page: OSC1, and OSC1 steps to NOISE. lev0: OSC1's LEV down first: a track that stays OFF; a pick from OFF sets it 0 itself."""
     a = ["--press", f"{track_key}@{M(t)}"]; t += 100
     if lev0:
         a += ["--turn", f"4:-1@{M(t)}x1400/300k"]; t += 520
     a += ["--press", f"OSC1@{M(t)}"]; t += 150
-    a += ["--press", f"OSC1@{M(t)}"]; t += 150
-    a += ["--nudge", f"0:1@{M(t)}x{detents}/40M"]; t += detents * 40 + 100
+    a += ["--nudge", f"3:1@{M(t)}x{detents}/200M"]; t += detents * 200 + 100
     return a, t
 
 
@@ -130,10 +129,10 @@ def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False, ste
     if step:
         m, t, a.played = panel_step(t)
         args += m
-    if screen is not None:                      # a note, so the voice reports; past the SIDECAR page with OSC1; the keys
+    if screen is not None:                      # a note, so the voice reports; UP + YES; the keys
         args += ["--midi", f"90{a.note:02x}64@{M(t)}", "--midi", f"80{a.note:02x}00@{M(t + 100)}"]
         t += 300
-        args += ["--press", f"OSC1@{M(t)}"]; t += 400
+        args += ["--press", f"UP@{M(t)}:300M", "--press", f"YES@{M(t + 220)}:30M"]; t += 650
         for k in screen:
             args += ["--press", f"{k}@{M(t)}"]; t += 200
     if chord:

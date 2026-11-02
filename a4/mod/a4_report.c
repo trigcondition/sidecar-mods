@@ -34,24 +34,27 @@
 #define CHORD_GAP  30u          /* blocks, 20 ms: core/device/device.h kChordMs. A mono track's two events closer than it get an 11 between them, or the Sidecar would take a chord */
 #define NO_NOTE    0xFFu
 
-/* The stock words a machine's P1..P15 read: the OS's working values for voice v, 8.8, after locks and LFOs [measured: each knob
- * moved in an emulator; a4 docs]. Each entry: its address for voice 0 and the step to voice 1. */
-static const struct { uint32_t at; uint8_t step; } source[A4_ON_PAGE] = {
-    {0x80005B18u, 2},   /* OSC1 TUN + FIN */
-    {0x80005B28u, 2},   /* OSC1 DET */
-    {0x80005B48u, 4},   /* OSC1 PW */
-    {0x80005E00u, 4},   /* OSC1 SPD */
-    {0x80005B58u, 4},   /* OSC1 PWM */
-    {0x80005B20u, 2},   /* OSC2 TUN + FIN */
-    {0x80005B30u, 2},   /* OSC2 DET */
-    {0x80005B4Au, 4},   /* OSC2 PW */
-    {0x80005E02u, 4},   /* OSC2 SPD */
-    {0x80005B5Au, 4},   /* OSC2 PWM */
-    {0x80005BA8u, 2},   /* NOISE COL */
-    {0x80005E18u, 2},   /* NOISE FAD */
-    {0x80005E38u, 2},   /* OSC 1&2 BND */
-    {0x80005E40u, 2},   /* OSC 1&2 SLI */
-    {0x80005E30u, 2},   /* OSC 1&2 FAD */
+/* The stock words a machine reads [measured: each knob moved in an emulator; a4 docs]. Which P each feeds: a4_src_of (a4_page.c). */
+const struct a4_source a4_source[A4_SOURCES] = {
+    [S_TUN]  = {0x80005B18u, 2, 40},    /* its high byte: FIN is the low */
+    [S_DET]  = {0x80005B28u, 2, 42},
+    [S_PW]   = {0x80005B48u, 4, 47},
+    [S_SPD]  = {0x80005E00u, 4, 48},
+    [S_PWM]  = {0x80005B58u, 4, 49},
+    [S_FIN]  = {0x80005B18u, 2, 41},    /* TUN's word: its low byte, 0..255 for 0..127.5 */
+    [S_TRK]  = {0x80005E78u, 2, 43},
+    [S_WAV]  = {0x80005E88u, 2, 45},
+    [S_SUB]  = {0x80005E98u, 2, 46},
+    [S_PM1]  = {0x80005B68u, 2, 38},
+    [S_FM1]  = {0x80005B78u, 2, 39},
+    [S_ACC]  = {0x80005C08u, 2, 99},
+    [S_AM1]  = {0x80005EA8u, 2, 50},
+    [S_TUN2] = {0x80005B20u, 2, 53},    /* its high byte */
+    [S_DET2] = {0x80005B30u, 2, 55},
+    [S_PW2]  = {0x80005B4Au, 4, 60},
+    [S_SPD2] = {0x80005E02u, 4, 61},
+    [S_PWM2] = {0x80005B5Au, 4, 62},
+    [S_TRK2] = {0x80005E80u, 2, 56},
 };
 
 struct a4_voice {
@@ -61,12 +64,12 @@ struct a4_voice {
     uint8_t note[CHORD], vel[CHORD];    /* the trigs to send, a ring: the task takes qh, the render adds at qt, each under no lock but the mask */
     uint8_t qh, qt, last, held;         /* last: the newest trig's note, NO_NOTE after a chord; held: a poly track's keys down */
     uint8_t event, took;                /* a mono track's events, and the one the task took its note from */
-    uint8_t machine;            /* its machine + 1, 0 none */
+    uint8_t machine, os2;       /* its machine + 1, 0 none; which of its layout's two rows */
     uint8_t pend_params, pend_off, late_off, open, shut;
 };
 static struct a4_voice vo[A4_VOICES];
 static struct { uint32_t at; uint8_t n, base, note[CHORD]; } extra[A4_VOICES];  /* a note preview's notes the OS will not play: the next trig brings them, shifted as it is */
-volatile uint8_t a4_machine_now[A4_VOICES];
+volatile uint8_t a4_machine_now[A4_VOICES], a4_os2_now[A4_VOICES];
 volatile uint32_t a4_now;
 static uint32_t hello_at, resend_at;
 #define now a4_now
@@ -117,13 +120,21 @@ void a4_preview_notes(uint32_t v, const uint8_t *note, uint32_t n)
     IRQ_ON(sr);
 }
 
+/* P as 14 bits, value << 7 | fraction, from what the layout says; a P no knob feeds sends the machine's default. */
 static void read_voice(uint32_t v, struct a4_voice *x, int trig)
 {
+    const uint8_t *src = a4_src_of[a4_layout_of[x->machine - 1] * 2u + x->os2], *def = a4_defaults[x->machine - 1];
     uint32_t k;
     int changed = 0;
     for (k = 0; k < A4_ON_PAGE; ++k) {
-        int32_t w = *(const volatile int16_t *)(source[k].at + v * source[k].step);
-        uint16_t p = w < 0 ? 0 : (uint16_t)(w >> 1);
+        uint32_t s = src[k];
+        uint16_t p;
+        if (s == S_NONE) {
+            p = (uint16_t)(def[k] << 7);
+        } else {
+            int32_t w = *(const volatile int16_t *)(a4_source[s].at + v * a4_source[s].step);
+            p = w < 0 ? 0 : s == S_TUN || s == S_TUN2 ? (uint16_t)((w >> 1) & 0x3F80) : s == S_FIN ? (uint16_t)((w & 0xFF) << 6) : (uint16_t)(w >> 1);
+        }
         if (p != x->seen[k])
             x->seen[k] = p, changed = 1;
     }
@@ -151,11 +162,16 @@ void a4_render(void)
             if (x->machine)
                 x->pend_off = 1, x->open = 0, x->qh = x->qt, x->late_off = 0, x->held = 0, wake = 1;  /* it left a machine: its note ends */
             x->machine = (uint8_t)m;
+            x->os2 = a4_os2_now[v];
             if (m)
                 read_voice(v, x, 1);
         }
         if (!m)
             continue;
+        if (x->os2 != a4_os2_now[v]) {
+            x->os2 = a4_os2_now[v];
+            read_voice(v, x, 1);
+        }
         ev = VOICE_EVENT(v);
         if (ev == 1) {
             int32_t c = VOICE_COUNT(v);

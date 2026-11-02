@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* a4_remote.c - the Sidecar's pages on the A4's screen: the Rytm's remote UI (mods/0026-remote-ui, its messages and rules) cut to what a 128 x 64 terminal needs.
- * The way in: the OSC1 key, past the SIDECAR page, while a Sidecar answers: core's page step asks a view that is never shown (a4_page.c). The way out: NO, a stock page key,
- * 1 s with no host message, the USB port going. Nothing is saved: a power cut leaves stock's screen. Closed, a key and a turn cost one flag test and the frame one more.
+ * The way in and out: UP held, then YES, as on the Rytm, while a Sidecar answers: stock tests no held UP anywhere [read: 0x400647a2's callers], and with none answering YES is
+ * stock's. UP stays stock's: on a parameter page its press is the keyboard's octave up [measured]. The way out: NO, a stock page key, 1 s with no host message, the USB port going. Nothing is saved: a power cut leaves stock's screen. Closed, a key and a turn cost one flag test and the frame one more.
  *   host -> A4  38 a tile rectangle into staging, 39 commit, 3A 0 close, 3C alive, 37 the catch mask, 36 the last frame as a splash for ticks x 50 ms, 4F the hello's answer
  *   A4 -> host  30 opened or closed, 31 a key, 32 a turn, 36 hello: never the Rytm's 35, which asks a Sidecar for /.rytm: an engine with no pages restarts on it, and drops a 36
  * The engine draws text into the frame for a box (core/ui/remote.cpp), so no font lives here. Its 34, 3D, 3E and 3F are filtered by the profile, never sent.
@@ -23,6 +23,9 @@
 #define NQ         32
 #define NENC       8
 #define K_PAGE     0x84
+#define K_UP       0x42
+#define K_YES      0x44
+#define UP_HELD    150u         /* blocks, 100 ms: the Rytm's UP_YES_TICKS. A menu's UP then YES rolled over stays stock's */
 
 enum { R_USER, R_HOST, R_TIMEOUT, R_ESCAPE };
 
@@ -36,8 +39,8 @@ static volatile uint32_t rx_at;                         /* a4_now of the last ho
 volatile uint32_t a4_rx_msgs, a4_rx_bad, a4_rui_torn, a4_rui_drop;   /* to look at in the emulator */
 
 /* The UI task's */
-static uint8_t open, shown, was_up, hellos, open_req;
-static uint32_t splash_until, hello_at, seen_frame, opened_frame;
+static uint8_t open, shown, was_up, hellos, open_req, up_down, yes_eaten;
+static uint32_t splash_until, hello_at, seen_frame, opened_frame, up_at;
 static void *ui_ctrl;
 static uint8_t owner[32];                               /* a key's press was the host's: its release too */
 static struct { uint8_t cmd, a, b, c; } q[NQ];
@@ -166,7 +169,7 @@ void a4_ui_tick(void *ctrl)
     ui_ctrl = ctrl;
     if (!up) {
         if (was_up) {
-            was_up = 0, link_ok = 0, host_seen = 0, hellos = 0, splash_until = 0;
+            was_up = 0, link_ok = 0, host_seen = 0, hellos = 0, splash_until = 0, open_req = 0;
             if (open)
                 leave(R_TIMEOUT, 0);
             qt = qh;
@@ -184,13 +187,16 @@ void a4_ui_tick(void *ctrl)
     if (splash_new) {
         splash_new = 0;
         splash_until = !open && splash_ticks ? a4_now + splash_ticks * SPLASH_TICK : 0;
-        if (!splash_until && !open)
+        if (!open)                                      /* a one-frame popup: its commit may have come a tick ahead of this */
             REDRAW();
     }
     if (open && want_close)
         leave(R_HOST, 1);
-    else if (open && a4_now - rx_at >= TIMEOUT)
+    else if (open && a4_now - rx_at >= TIMEOUT) {
+        if (!shown)                                     /* it never drew: a dead Pi with the port still up. The way in needs a live answer again */
+            host_seen = 0, hellos = 0;
         leave(R_TIMEOUT, 1);
+    }
     want_close = 0;
     if (splash_until && ((int32_t)(a4_now - splash_until) >= 0 || a4_now - rx_at >= TIMEOUT)) {
         splash_until = 0;
@@ -244,6 +250,15 @@ int32_t a4_ui_key(void *brain, void *ev)
     (void)brain;
     if (c > 255)
         return 0;
+    if (c == K_UP) {
+        if (down && !up_down)                           /* a held key comes again and again */
+            up_at = a4_now;
+        up_down = (uint8_t)down;
+    }
+    if (c == K_YES && !down && yes_eaten) {
+        yes_eaten = 0;
+        return 1;
+    }
     if (!down) {
         if (owner[c / 8] >> (c & 7) & 1) {
             owner[c / 8] &= (uint8_t)~(1u << (c & 7));
@@ -251,6 +266,14 @@ int32_t a4_ui_key(void *brain, void *ev)
             return 1;
         }
         return 0;
+    }
+    if (c == K_YES && up_down && host_seen && a4_now - up_at >= UP_HELD) {
+        yes_eaten = 1;
+        if (open)
+            leave(R_ESCAPE, 1);
+        else
+            open_req = 1, splash_until = 0;
+        return 1;
     }
     if (splash_until) {                                 /* it ends on a key, and the key is stock's; the host hears, its popup ends too */
         put(0x31, c >> 7, c & 0x7F, 1);
@@ -286,8 +309,8 @@ int32_t a4_ui_enc(void *brain, void *ev)
         return 0;
     if (e >= NENC)                                      /* I, J and LEVEL: no meaning on a page, nothing under the status pages */
         return mask_valid && (mask[1] & 2);
-    if (mask_valid && !(mask[e / 7] >> (e % 7) & 1))
-        return 0;
+    if (mask_valid && !(mask[e / 7] >> (e % 7) & 1))    /* no meaning on this page: nothing under it either, or it turns a knob unseen */
+        return 1;
     IRQ_OFF(sr);
     t = turned[e] + d;
     turned[e] = (int8_t)(t < -63 ? -63 : t > 63 ? 63 : t);
@@ -296,9 +319,6 @@ int32_t a4_ui_enc(void *brain, void *ev)
     a4_wake();
     return 1;
 }
-
-int a4_screen_can_open(void) { return host_seen; }
-void a4_screen_open(void) { open_req = !open; }
 
 /* ---- the mod's task ---- */
 
