@@ -58,7 +58,7 @@ def read_wav32(p):
     return ch, [d[c::ch] for c in range(ch)]
 
 
-def run(a, name, detents, lev0, trig=None):
+def run(a, name, detents, lev0, trig=None, extra=()):
     out = os.path.join(a.out, name)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
@@ -81,13 +81,14 @@ def run(a, name, detents, lev0, trig=None):
         at, off = t + 400 * k, t + 400 * k + 200
         args += ["--midi", f"90{a.note:02x}64@{M(at)}", "--midi", f"80{a.note:02x}00@{M(off)}"]
         notes.append((at, off))
-    t += 400 * a.notes + 200
+    t += 400 * a.notes + 200 + getattr(a, "tail", 0)
     cmd = [dtboot, a.syx, "--card", img, "--usb-host", "--usb-midi-real", "--ob-link", f"127.0.0.1:{PORT}", "--analog-wav", out + "/a4_out.wav", "--instr", M(t), "--every", "1G", *args]
     emu = subprocess.Popen(cmd, stdout=emu_log, stderr=subprocess.STDOUT, env=env)
     time.sleep(1)
     sc = [os.path.join(a.engine, "core/build/sidecar_emu"), "--link", f"127.0.0.1:{PORT}", "--card", card, "--out-wav", out + "/to_a4.wav", "--in-wav", out + "/from_a4.wav"]
-    if trig:
-        sc += ["--trig", trig]
+    for tr in (trig.split(",") if trig else ()):
+        sc += ["--trig", tr]
+    sc += list(extra)
     side = subprocess.Popen(sc, stdout=sc_log, stderr=subprocess.STDOUT)
     emu.wait()
     time.sleep(1)
@@ -125,7 +126,7 @@ def main():
     for name, det, lev, seq in (("machine", 1, False, False), ("input_only", 1, True, False), ("no_machine_lev0", 0, True, False), ("seq_to_a4", 1, True, True)):
         trig = None
         if seq:
-            a.notes = 3                                  # the sequencer plays between the A4's own trigs
+            a.notes, a.tail = 1, 800                     # one A4 trig, then the sequencer's note, on its own
             trig = "11.5:0.3:0:60"
         out, notes, t = run(a, name, det, lev, trig)
         ch, d = read_wav32(out + "/to_a4.wav")
@@ -137,10 +138,26 @@ def main():
         print(f"{name}: to A4 peaks {[round(max(abs(x) for x in c) / 2**31, 3) for c in d]}; voice 1 back on IN by the second {[round(v, 4) for v in peaks(r[2])]}; 04 from the A4 {tr}")
         print("   ", [l for l in side.splitlines() if l.startswith("sidecar_emu: end")], "voice trigs in the engine:", sum(1 for l in side.splitlines() if "core: trig voice" in l))
         res[name + "_trigs"] = (tr, sum(1 for l in side.splitlines() if "core: trig voice" in l))
+    # a stop with notes held: two notes on voice 1, held on past the end, then the sequencer's all-off. Control: the same with no all-off.
+    a.notes, a.tail = 1, 800                         # one A4 trig, then only the Sidecar's notes
+    held = "11.5:100:0:60,11.6:100:0:64"
+    for name, ex in (("held", ()), ("all_off", ("--all-off", "13.0"))):
+        out, notes, t = run(a, name, 1, True, held, ex)
+        ms = list(messages(open(out + "/usb.bin", "rb").read()))
+        side = open(out + "/sidecar.log").read()
+        to_box = [l.split("to the box ")[1] for l in side.splitlines() if "to the box" in l]
+        print(f"{name}: to the box {to_box}; reports {[hex(m[4]) for m in ms if m[4] in (4, 0x11)]}")
+        res[name] = (to_box, [m[4] for m in ms if m[4] in (4, 0x11)])
+    offs = [x for x in res["all_off"][0] if x.startswith("80")]
+    legal = all(int(p, 16) < 128 for x in res["all_off"][0] for p in x.split()[1:3])
+    good = len(offs) == 2 and legal and {x.split()[1] for x in offs} == {"3c", "40"}
+    last = res["all_off"][1][-1] == 0x11 and res["held"][1][-1] == 4
+    print("PASS" if good and last else "FAIL", "a stop with two notes held: an off for each, legal bytes, the A4's voice let go: its report ends in an 11, with no stop in a 04")
+    ok_off = good and last
     ok = res["input_only"] > 10 * res["no_machine_lev0"]
     echo = res["seq_to_a4_trigs"]
-    print("PASS" if echo[0] == 4 and echo[1] == 3 else "FAIL", "the sequencer's note: the A4 played it (04s: 3 DIN + 1), the engine logged the 3 DIN trigs and not that echo:", echo)
-    ok = ok and echo[0] == 4 and echo[1] == 3
+    print("PASS" if echo == (2, 1) else "FAIL", "the sequencer's note: the A4 played it (04s: 1 DIN + 1), the engine logged the DIN trig and not that echo:", echo)
+    ok = ok and echo == (2, 1) and ok_off
     print("PASS" if ok else "FAIL", "the Sidecar's voice through the A4's own voice and back on IN: input only", res["input_only"], "against no machine", res["no_machine_lev0"])
     return 0 if ok else 1
 
