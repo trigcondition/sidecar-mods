@@ -4,7 +4,8 @@
  *   - latest value wins: one pending snapshot a voice, overwritten by every change; no queue of changes
  *   - a parameter-only 03 at most every REPORT_GAP blocks of a voice
  *   - a trig 04 at once, with the current values; a chord is one 04 a note, in order: a sequencer chord comes as one event with all
- *     its notes, a keyboard's or MIDI's one note a block, so a poly track queues them; a mono track stays latest value wins
+ *     its notes, on a mono track too, a keyboard's or MIDI's one note a block, so a poly track queues them; on a mono track a new event
+ *     takes the place of whatever is left of the last, latest value wins
  *   - no answer per message; one voice in turn is sent again every RESEND blocks, which repairs a lost message
  *   - at most MAX_PASS messages a pass, trigs first, and one message every RATE blocks in all with a burst of CREDIT_MAX
  *   - a note's end 11 from the OS's own note-off event (a key, MIDI), or when the voice's amp has closed (the sequencer's LEN), never ahead of its trig;
@@ -28,7 +29,8 @@
 #define GATE_SHUT  8u           /* blocks closed in a row */
 #define DEVICE_ID  3            /* core/device/a4.h */
 #define CHORD      4u           /* the notes of a trig [read: four slots, 0x40101b80]: the queue, a power of two */
-#define CHORD_GAP  30u          /* blocks, 20 ms: core/device/device.h kChordMs. A mono track's two trigs closer than it get an 11 between them, or the Sidecar would take a chord */
+#define CHORD_GAP  30u          /* blocks, 20 ms: core/device/device.h kChordMs. A mono track's two events closer than it get an 11 between them, or the Sidecar would take a chord */
+#define NO_NOTE    0xFFu
 
 /* The stock words a machine's P1..P15 read: the OS's working values for voice v, 8.8, after locks and LFOs [measured: each knob
  * moved in an emulator; a4 docs]. Each entry: its address for voice 0 and the step to voice 1. */
@@ -55,7 +57,8 @@ struct a4_voice {
     uint16_t pend[A4_ON_PAGE];  /* what goes out next */
     uint32_t sent_at, on_at;
     uint8_t note[CHORD], vel[CHORD];    /* the trigs to send, a ring: the task takes qh, the render adds at qt, each under no lock but the mask */
-    uint8_t qh, qt, last, held;         /* last: the newest trig's note; held: a poly track's keys down */
+    uint8_t qh, qt, last, held;         /* last: the newest trig's note, NO_NOTE after a chord; held: a poly track's keys down */
+    uint8_t event, took;                /* a mono track's events, and the one the task took its note from */
     uint8_t machine;            /* its machine + 1, 0 none */
     uint8_t pend_params, pend_off, late_off, open, shut;
 };
@@ -135,19 +138,18 @@ void a4_render(void)
             continue;
         ev = VOICE_EVENT(v);
         if (ev == 1) {
-            uint32_t n = 1, k, first = VOICE_NOTE(v, 0) & 0x7f, poly = POLY(v);
-            if (poly) {
-                int32_t c = VOICE_COUNT(v), l = VOICE_LANES(v);
-                n = (uint32_t)(c < l ? c : l);
-                n = n < 1 ? 1 : n > CHORD ? CHORD : n;
-            } else {
-                x->qh = x->qt;          /* latest value wins */
-                if (x->open && first != x->last && now - x->on_at < CHORD_GAP)
+            int32_t c = VOICE_COUNT(v);
+            uint32_t n = c < 1 ? 1 : c > (int32_t)CHORD ? CHORD : (uint32_t)c, k, first = VOICE_NOTE(v, 0) & 0x7f;
+            if (!POLY(v)) {
+                x->qh = x->qt, ++x->event;      /* latest value wins */
+                if (x->open && (n > 1 || first != x->last) && now - x->on_at < CHORD_GAP)
                     x->pend_off = 1;
             }
             for (k = 0; k < n; ++k)
                 if (!k || VOICE_NOTE(v, k))     /* a slot left empty on the trig reads 0 */
                     queue(x, VOICE_NOTE(v, k) & 0x7f, VOICE_VEL(v, k) & 0x7f);
+            if (n > 1)
+                x->last = NO_NOTE;      /* the next trig differs, whatever its note */
             if (x->held < CHORD)
                 x->held = (uint8_t)(x->held + n > CHORD ? CHORD : x->held + n);
             x->open = 1, x->late_off = 0, x->shut = 0, x->on_at = now;
@@ -213,6 +215,7 @@ static uint32_t build(uint8_t *m, uint32_t v, struct a4_voice *x, int trig)
     if (trig) {
         m[n++] = x->note[x->qh & (CHORD - 1)];
         m[n++] = x->vel[x->qh & (CHORD - 1)];
+        x->took = x->event;
     }
     for (k = 0; k < A4_ON_PAGE; ++k) {
         m[n++] = (uint8_t)(x->pend[k] >> 7) & 0x7f;
@@ -251,7 +254,7 @@ static int report(uint32_t v, int trig)
     if (trig) {                                 /* not sent: back in front, unless newer notes took its place */
         uint16_t sr;
         IRQ_OFF(sr);
-        if (TRIGS(x) < CHORD && (POLY(v) || !TRIGS(x)))
+        if (TRIGS(x) < CHORD && (POLY(v) || x->took == x->event))
             --x->qh;
         IRQ_ON(sr);
     }

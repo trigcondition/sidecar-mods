@@ -61,8 +61,7 @@ typedef void (*a4_sem_fn)(void *sem);
 #define VOICE_EVENT(v)  (*(const volatile uint32_t *)(0x428799ACu + 76u * (v)))     /* 1 note on, 2 note off, 0 nothing */
 #define VOICE_NOTE(v, k) (*(const volatile uint32_t *)(0x428799B8u + 76u * (v) + 4u * (k)))    /* a trig's notes: all of a sequencer chord are here, in the one event [measured] */
 #define VOICE_VEL(v, k)  (*(const volatile uint8_t *)(0x428799C8u + 76u * (v) + 2u * (k)))
-#define VOICE_COUNT(v)  (*(const volatile int32_t *)(0x428799A4u + 76u * (v)))      /* notes in the event; the OS reads the slots up to it [read: 0x4010249a] */
-#define VOICE_LANES(v)  (*(const volatile int32_t *)(0x428799A8u + 76u * (v)))      /* the voices it gave the track this block: a note on past them does not play [read: 0x401024b0] */
+#define VOICE_COUNT(v)  (*(const volatile int32_t *)(0x428799A4u + 76u * (v)))      /* notes in the event, whatever POLY CONFIG gives the track [measured]; the OS itself plays no more than the track's voices, +0x08 [read: 0x4010249a, 0x401024b0] */
 #define POLY_MASK       (*(const volatile uint32_t *)0x800047E8u)                   /* the tracks in KIT > POLY CONFIG [read: 0x401022d6; measured] */
 #define VOICE_OWNER(w)  (*(const volatile int32_t *)(0x80006008u + 4u * (w)))       /* the track analog voice w last played for [read: 0x401024ea; measured] */
 

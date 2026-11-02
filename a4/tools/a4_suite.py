@@ -482,15 +482,15 @@ def t_lock(a):
     check("lock: a locked trig moves TIM (knob H, P3); the others keep the track's 0", 0 < sum(x > 0 for x in tr) < len(tr), str(tr))
 
 
-def poly_kit(r, track):
-    """TRACKn, KIT > POLY CONFIG, all four voices."""
+def poly_kit(r, track, voices=4):
+    """TRACKn, KIT > POLY CONFIG, the first `voices` voices."""
     r.key(f"TRACK{track}", 150).key("KIT", 120)
     for _ in range(5):
         r.key("DOWN", 120)
     r.key("YES", 120)
-    for i in range(4):
+    for i in range(voices):
         r.key("YES", 100)
-        if i < 3:
+        if i < voices - 1:
             r.key("RIGHT", 100)
     return r.key("NO", 120).key("NO", 120).key("NO", 400)
 
@@ -509,6 +509,45 @@ def grid_chord(r, step="T1", notes=("KB_C1", "KB_E1", "KB_G1")):
 def seq_trigs(r):
     """(note, voice byte) of the 04s after PLAY: the grid's own key presses come before."""
     return [(x[6], x[5]) for x in r.msgs if x[4] == 4]
+
+
+FOUR = ("KB_C1", "KB_E1", "KB_G1", "KB_B1")
+
+
+def step_chord(a, name, voices=0, notes=FOUR, env=None, play=lambda r: None, extra=None):
+    """FM6 on T1, a chord on its first step, played. (the run, its 04s and 11s after PLAY.)"""
+    def prog():
+        r = Run(a, name, env=env).overbridge().machine(1, 4)
+        if voices:
+            poly_kit(r, 1, voices)
+        return grid_chord(r, notes=notes)
+    t0 = len(seq_trigs(prog().go(tail=1)))
+    r = prog()
+    at = r.t
+    r.key("PLAY", 1000)
+    play(r)
+    r.key("STOP", 300).go(extra=extra and extra(at), tail=500)
+    ev, n = [], 0
+    for m in r.msgs:
+        n += m[4] == 4
+        if m[4] == 4 and n > t0:
+            ev.append((4, m[6], m[5]))
+        elif m[4] == 0x11 and n >= t0 and ev:
+            ev.append((0x11,))
+    r.first = t0
+    return r, ev
+
+
+def whole_chords(ev, want):
+    """ev splits into runs of 04s by its 11s and a new first note: every run is the chord, in order, on FM6's T1."""
+    w, cut, cur = [(4, n, 0x48) for n in want], [], []
+    for e in ev:
+        if e[0] == 0x11 or (cur and e[1] == want[0]):
+            cut.append(cur) if cur else None
+            cur = []
+        if e[0] == 4:
+            cur.append(e)
+    return (cut + [cur] if cur else cut), w
 
 
 def t_chord(a):
@@ -549,7 +588,7 @@ def t_chord_keys(a):
 
 
 def t_mono(a):
-    """No POLY CONFIG: a trig is one 04 and its end one 11, what it always was; a chord on a mono track's step plays its first note, as the A4 does; two notes closer than 20 ms get an 11 between them."""
+    """No POLY CONFIG: a trig is one 04 and its end one 11, what it always was; two notes closer than 20 ms get an 11 between them; keys and MIDI stay one note each."""
     r = Run(a, "mono").overbridge().machine(1, 1)
     r.midi("903c64", 200).midi("803c00", 300)
     t = r.t
@@ -561,10 +600,61 @@ def t_mono(a):
     ev = [(x[4], x[6] if x[4] == 4 else None) for x in r.msgs if x[4] in (4, 0x11)]
     check("mono: one 04, one 11; then two at once with an 11 between, so that the Sidecar never takes a chord", ev == [(4, 60), (0x11, None), (4, 64), (0x11, None), (4, 67), (0x11, None)], str(ev))
     q = Run(a, "mono_step").overbridge().machine(1, 1)
-    grid_chord(q)
-    q.key("PLAY", 800).key("STOP", 300).go(tail=300)
-    tr = [x for x in seq_trigs(q)][-1:]
-    check("mono: a chord on a mono track's step: its first note", tr == [(60, 0)], str(seq_trigs(q)[-4:]))
+    q.key("BANK_H", 120).key("T16", 500).key("RECORD", 150).key("T1", 60).key("T5", 60).key("T9", 60).key("RECORD", 200)
+    q.key("PLAY", 1000).key("STOP", 300).go(tail=300)
+    ev = [(x[4], x[6] if x[4] == 4 else None) for x in q.msgs if x[4] in (4, 0x11)]
+    check("mono: single trigs from the sequencer: a 04 a step, its note, an 11 after each", len(ev) >= 8 and ev == [(4, 48), (0x11, None)] * (len(ev) // 2), str(ev[:6]))
+
+
+def t_mono_chord(a):
+    """The owner's case: no POLY CONFIG, a chord on a step: all of it reaches the Sidecar, each bar."""
+    r, ev = step_chord(a, "mono_chord")
+    bars, want = whole_chords(ev, (60, 64, 67, 71))
+    check("mono_chord: four notes on a mono track's step: four 04s, in order, every bar, one voice and machine", len(bars) >= 2 and all(b == want for b in bars), str(ev[:10]))
+    tr = [e[0] for e in ev]
+    inside = any(0x11 in tr[i + 1:i + 4] for i in range(0, len(tr) - 3) if ev[i][:2] == (4, 60))
+    check("mono_chord: no 11 inside a chord, one after it", not inside and tr.count(0x11) >= 2 and tr.count(0x11) <= len(bars), str(tr[:12]))
+    sent = [c for c, k in r.sent() if k == 4][r.first:]
+    gap = max((sent[i + 3] - sent[i]) / 200000 for i in range(0, len(sent) - 3, 4)) if len(sent) >= 4 else 1e9
+    check("mono_chord: the four within the engine's 20 ms", gap < 20, f"longest {gap:.2f} ms")
+    check("mono_chord: each note's velocity, no fault", {x[7] for x in r.msgs if x[4] == 4} == {100} and r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
+    t3, ev3 = step_chord(a, "mono_chord3", notes=FOUR[:3])
+    bars, want = whole_chords(ev3, (60, 64, 67))
+    check("mono_chord: three notes: three 04s, the empty slot none", len(bars) >= 2 and all(b == want for b in bars), str(ev3[:8]))
+
+
+def t_poly_voices(a):
+    """POLY CONFIG with one voice and with two: all the notes all the same (four voices: the chord test). The event's +0x08 is 1 and 2 here."""
+    for voices in (1, 2):
+        r, ev = step_chord(a, f"polyv{voices}", voices=voices)
+        bars, want = whole_chords(ev, (60, 64, 67, 71))
+        check(f"poly_voices: {voices}: four notes, in order, every bar", len(bars) >= 2 and all(b == want for b in bars) and r.rc == 0 and not r.faults(), str(ev[:10]))
+
+
+def t_mono_gap(a):
+    """A mono track's different events closer than 20 ms stay apart, a chord being one of them: a note on MIDI just after the chord, the chord's last note at that, and one just before it."""
+    r, ev = step_chord(a, "gap0")
+    sent = [c for c, k in r.sent() if k == 4][r.first:]
+    at = [sent[i] / 1e6 for i in (4, 8)]                            # the second chord, and the third, in M instructions
+    check("mono_gap: the chord's times", len(sent) >= 12, str(at))
+    def late(q):
+        q.args += ["--midi", f"904764@{at[0] + 1:.0f}M", "--midi", f"804700@{at[0] + 100:.0f}M"]
+    r, ev = step_chord(a, "gap1", play=late)
+    i = next((k for k, e in enumerate(ev) if k >= 5 and e[:2] == (4, 71) and ev[k - 1][:2] == (0x11,)), None)
+    check("mono_gap: the chord's own last note just after it comes after an 11, or the Sidecar would swallow it", i is not None and [e[:2] for e in ev[i - 5:i]] == [(4, 60), (4, 64), (4, 67), (4, 71), (0x11,)], str(ev[:14]))
+    def early(q):
+        q.args += ["--midi", f"903c64@{at[0] - 2:.0f}M", "--midi", f"803c00@{at[0] + 100:.0f}M"]
+    r, ev = step_chord(a, "gap2", play=early)
+    tr = [e[:2] for e in ev]
+    i = next((k for k in range(1, len(tr) - 1) if tr[k - 1] == (4, 60) and tr[k] == (0x11,) and tr[k + 1:k + 5] == [(4, 60), (4, 64), (4, 67), (4, 71)]), None)
+    check("mono_gap: a trig just ahead of the chord: an 11 between them, the chord whole", i is not None, str(tr[:14]))
+
+
+def t_mono_stall(a):
+    """A host that stops reading across chords: the emulator's port goes down meanwhile, so no send fails here, but the chord waits and stays whole after it."""
+    r, ev = step_chord(a, "mstall", play=lambda q: setattr(q, "t", q.t + 1400), extra=lambda t: ["--usb-host-noread", f"{t + 100}M:{t + 900}M"])
+    bars, want = whole_chords(ev, (60, 64, 67, 71))
+    check("mono_stall: the chords after it are whole, no fault", len(bars) >= 2 and all(b == want for b in bars) and r.rc == 0 and not r.faults(), str([[e[1] for e in b] for b in bars]))
 
 
 def t_chord_labels(a):
@@ -587,7 +677,7 @@ def t_chord_labels(a):
     check("chord_labels: no fault", r.rc == 0 and not r.faults(), "; ".join(r.faults()[:2]))
 
 
-TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "chord_labels": t_chord_labels, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
+TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "fin": t_fin, "lock": t_lock, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after}
 
 
 def main():

@@ -61,6 +61,20 @@ def panel_poly(t):
     return a, t
 
 
+def panel_step(t, keys=("KB_C1", "KB_E1", "KB_G1")):
+    """An empty pattern, a chord on T1's step by GRID RECORD, the keys' sound let go, PLAY. Returns (args, t, PLAY's time)."""
+    a = ["--press", f"BANK_H@{M(t)}"]; t += 120
+    a += ["--press", f"T16@{M(t)}"]; t += 500
+    a += ["--press", f"RECORD@{M(t)}"]; t += 150
+    a += ["--press", f"T1@{M(t)}:700M"]
+    for i, k in enumerate(keys):
+        a += ["--press", f"{k}@{M(t + 100 + i * 60)}:{400 - i * 60}M"]
+    t += 900
+    a += ["--press", f"RECORD@{M(t)}"]; t += 600
+    a += ["--press", f"PLAY@{M(t)}"]
+    return a, t + 1000, t
+
+
 def tone(x, f, rate=48000):
     """Goertzel: the power at f."""
     k, a, b = 2 * math.cos(2 * math.pi * f / rate), 0.0, 0.0
@@ -88,7 +102,7 @@ def read_wav32(p):
     return ch, [d[c::ch] for c in range(ch)]
 
 
-def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False):
+def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False, step=False):
     out = os.path.join(a.out, name)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
@@ -110,6 +124,9 @@ def run(a, name, detents, lev0, trig=None, extra=(), chord=None, poly=False):
         args += m
     t += 100
     notes = []
+    if step:
+        m, t, a.played = panel_step(t)
+        args += m
     if chord:
         args += ["--midi", "".join(f"90{n:02x}64" for n in chord) + f"@{M(t)}", "--midi", "".join(f"80{n:02x}00" for n in chord) + f"@{M(t + 300)}"]
         t += 500
@@ -203,6 +220,19 @@ def main():
         rise = [round(10 * math.log10(max(q[n], 1e-12) / max(r[n], 1e-12)), 1) for n in (top - 7, top - 3)]
         good = min(rise) >= 6 or mach == "plaits"        # the default knobs pick engine 11 with glide: close to noise, no partial to follow. Pitch: core/tests/test_device.cpp, a tonal engine
         print("NOT JUDGED" if mach == "plaits" else "PASS" if good else "FAIL", f"{mach}: mono's strongest partial on {top}; at -7 and -3 semitones the chord is {rise} dB over mono")
+        ok_chord = ok_chord and good
+        if mach == "plaits":
+            continue
+        # the same chord on a mono track's step: what POLY CONFIG leaves to the Sidecar. The keys' mono line above is the control, and the chord's first bar is what is heard
+        out, notes, t = run(a, f"chord_{mach}_step", det, True, step=True)
+        ch, d = read_wav32(out + "/to_a4.wav")
+        ms = list(messages(open(out + "/usb.bin", "rb").read()))
+        s = notes_in(window(d[2], a.played, 1.5, t))
+        rise = [round(10 * math.log10(max(s[n], 1e-12) / max(r[n], 1e-12)), 1) for n in (top - 7, top - 3)]
+        tr = [m[6] for m in ms if m[4] == 4][-6:]
+        others = max(max(abs(v) for v in d[c]) for c in (0, 1, 3, 4, 5))
+        good = min(rise) >= 6 and tr == [60, 64, 67] * 2 and others == 0
+        print("PASS" if good else "FAIL", f"{mach}: a chord on a mono track's step: last 04s {tr}, at -7 and -3 semitones {rise} dB over the mono line, other channels {others / 2**31:.5f}")
         ok_chord = ok_chord and good
     offs = [x for x in res["all_off"][0] if x.startswith("80")]
     legal = all(int(p, 16) < 128 for x in res["all_off"][0] for p in x.split()[1:3])
