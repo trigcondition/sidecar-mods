@@ -524,8 +524,8 @@ def sweep(a, name, machine, page, os2=False):
         if moved != want:
             bad.append((e, sorted(moved), sorted(want)))
         if ps[e]:
-            lo, hi = min(x[ps[e] - 1] for x in w), max(x[ps[e] - 1] for x in w)
-            if not (lo <= 128 and hi >= 16256):
+            lo, hi = min((x[ps[e] - 1] for x in w), default=-1), max((x[ps[e] - 1] for x in w), default=-1)
+            if not (0 <= lo <= 128 and hi >= 16256):
                 full, bad = False, bad + [(e, lo / 128, hi / 128)]
     return r, rep, win, bad, full
 
