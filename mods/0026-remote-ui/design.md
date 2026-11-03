@@ -512,7 +512,9 @@ drawAll 0x40079086 draws the view controller's (ev_tick's ctrl) views from `*(ct
 PatternGridView, KeyboardView, **SynthPageView (vtable 0x401e34fc)**, PatternSelectionView (0x401cca04), HelpBubbleView,
 QuickPerformanceView, **SamplerLedView (0x40234cfc)**. SMPL and FLTR swap the page view (SamplePageView 0x401e3170,
 SoundPageView 0x401e32c4); the machine list (MachineListView 0x401e5bf4), TRK held, TEMPO and PERF add a view after
-SamplerLedView; GLOBAL and the SOUND menu replace the list. PatternSelectionView's byte +0x84 is 1 while BANK is held.
+SamplerLedView; GLOBAL and the SOUND menu replace the list. PatternSelectionView's byte +0x7f holds the BANK keys held (a
+bit a key). (Its byte +0x84, used here until fix/popup-covered, is set by a BANK key and cleared only when a pattern is
+picked: a BANK tapped and left kept the view covered until a restart; sv_emu.py `bank`.)
 So: SRC = SynthPageView in the list; covered = the last view is not SamplerLedView, or that byte is set. Value turns on
 SRC add no view (the value replaces the label in place). Not handled: HelpBubbleView / QuickPerformanceView's own
 states (no flag found; neither drew over SRC in the walks tried). The selected track: 0x41318982 (0021's).

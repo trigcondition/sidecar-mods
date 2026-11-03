@@ -668,7 +668,10 @@ static int32_t mr_tick(void) {   /* 1: nothing left to send */
  * KeyboardView, SynthPageView (vtable 0x401e34fc), PatternSelectionView (0x401cca04), HelpBubbleView, QuickPerformanceView,
  * SamplerLedView (0x40234cfc) - the last drawn. SMPL / FLTR swap the page view (SamplePageView / SoundPageView); the
  * machine list, TRK held, TEMPO, PERF add a view after SamplerLedView; a menu (GLOBAL, the SOUND menu) replaces the list.
- * PatternSelectionView's byte +0x84 is 1 while a BANK key is held (the [A01] selection in the bottom bar). */
+ * PatternSelectionView's byte +0x7f holds the BANK keys held, a bit a key (BANK_E 0x10, BANK_H 0x80); its byte +0x84 is
+ * set by a BANK key and cleared only when a pattern is picked, so a BANK tapped and left (its menu, BankSelectMenuView,
+ * goes after ~3.5 s) kept it 1 for good: 1027d's cover on +0x84 then hid the view until a restart [measured, rytm-emu
+ * mfxdev, sv_emu.py bank; hardware report 2026-11-03: 2B "on covered", 9 views, SamplerLedView on top]. */
 #define SEL_TRACK    (*(const volatile uint8_t *)0x41318982u)   /* the selected track (0021's US_SEL_TRACK) */
 #define VT_SYNTHPAGE 0x401e34fcu
 #define VT_PATSEL    0x401cca04u
@@ -796,7 +799,7 @@ static int32_t sv_page(void *ctrl) {
     top = v;
     if (last == VT_SYNTHPAGE) { found = 1; sv.view = (void *)v; }
     if (last == VT_SAMPLEPAGE) found |= 2;   /* 1045: the SMPL page */
-    if (last == VT_PATSEL && ((const uint8_t *)v)[0x84]) cov = 1;
+    if (last == VT_PATSEL && ((const uint8_t *)v)[0x7f]) cov = 1;   /* a BANK key held (not +0x84: above) */
     if (after) {
       for (j = 0; j < (int32_t)(sizeof sv_covers / 4) && sv_covers[j] != last; ++j) ;
       if (j < (int32_t)(sizeof sv_covers / 4) || overlay(last)) cov = 1; else unknown = 1;   /* 1042: any overlay */
