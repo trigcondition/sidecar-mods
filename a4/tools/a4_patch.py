@@ -13,7 +13,7 @@ This tool reads the two .syx files only (stock and our build) and decodes them w
 No checksum, header, table or framing byte is stored. The tool refuses unless (a) the records, elekloader's packer and
 writer reproduce our .syx byte for byte, and (b) no literal holds 4 consecutive bytes of any decoded stock section.
 
-    a4/tools/a4_patch.py --tag a4-sa09 --dir BUILD --commit <sidecar-mods commit> --elekloader DIR -o OUT.json
+    a4/tools/a4_patch.py --tag a4-sa10 --dir BUILD --commit <sidecar-mods commit> --elekloader DIR -o OUT.json
 
 --dir holds Analog-Four_MKII_OS1.56.syx and our Analog-Four_MKII_OS1.56_<tag>.syx. Neither ever goes into a repository.
 """
@@ -116,7 +116,7 @@ def apply_ops(stock, ops, out_len, others):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--tag", required=True, help="the build tag, e.g. a4-sa09")
+    ap.add_argument("--tag", required=True, help="the build tag, e.g. a4-sa10")
     ap.add_argument("--dir", required=True, help="folder with %s and our <stock name>_<tag>.syx" % STOCK_NAME)
     ap.add_argument("--stock", help="the stock .syx (default: <dir>/%s)" % STOCK_NAME)
     ap.add_argument("--built", help="our .syx (default: <dir>/Analog-Four_MKII_OS1.56_<tag>.syx)")

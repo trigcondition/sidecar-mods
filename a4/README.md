@@ -2,7 +2,7 @@
 
 **Runs on the owner's unit, OS 1.56, on Overbridge: machines heard through filter, drive and FX.** A mod for OS 1.56, built with [elekloader](https://github.com/irpina/elekloader)'s core-a4. Unofficial: not affiliated with, endorsed by or supported by Elektron. No Elektron firmware is in this repository: you supply the stock `.syx`, and neither it nor anything built from it may be committed.
 
-Released on its own, under tags `a4-v...`, as `.elemod` files only: [RELEASE.md](RELEASE.md). The source here is 0.9 (SA09): it passes the suites and rehearsals in the emulators and **has not run on a real A4 yet**. What this page says was heard or seen on a unit comes from 0.8 and earlier.
+Released on its own, under tags `a4-v...`, as `.elemod` files only: [RELEASE.md](RELEASE.md). The source here is 0.10 (SA10): it passes the suites and rehearsals in the emulators and **has not run on a real A4 yet**. What this page says was heard or seen on a unit comes from 0.8 and earlier.
 
 ## What it does
 
