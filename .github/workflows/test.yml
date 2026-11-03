@@ -1,6 +1,15 @@
-# The required status check "test": the build tools' unit tests and the calibration self-tests, which need no stock
-# firmware and no hardware, and the check that the registry holds no stock bytes (tools/hash_expect.py --check).
-# A full build needs your own stock .syx, so it is not run here.
+# The required status check "test": it runs on every change and passes when the sides that ran passed, so a change on one
+# side never waits for the other side's jobs. (A workflow-level paths filter would leave a required check pending for
+# ever, hence the jobs below.)
+#
+# Rytm job: the build tools' unit tests and the calibration self-tests, which need no stock firmware and no hardware, and
+# the check that the registry holds no stock bytes (tools/hash_expect.py --check). A full build needs your own stock .syx,
+# so it is not run here.
+#
+# A4 job: what needs no stock firmware: the tools parse, the release check's own tests, the mod's and lock file's JSON, no
+# firmware tracked, and the mod's C sources through the compiler. The A4's suites are NOT run here: a4/tools/a4_suite.py,
+# a4_e2e.py and the flash rehearsals need a stock Analog-Four_MKII_OS1.56.syx, analog-emu and a build of the mod. Elektron's
+# OS file may not be in this repository or in CI, so they stay local, like the Rytm's emulator suites (a4/RELEASE.md).
 name: test
 on:
   push:
@@ -9,7 +18,25 @@ on:
 permissions:
   contents: read
 jobs:
-  test:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      rytm: ${{ steps.sides.outputs.rytm }}
+      a4: ${{ steps.sides.outputs.a4 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: sides
+        name: Which sides changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: .github/ci_sides.sh "$BASE" "$HEAD" | tee -a "$GITHUB_OUTPUT"
+
+  rytm:
+    needs: changes
+    if: needs.changes.outputs.rytm == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -34,3 +61,50 @@ jobs:
           python tools/comp/calframes_selftest.py
           python tools/comp/verify_selftest.py > /dev/null && echo "verify: PASS"
           python tools/comp/preflight_selftest.py
+
+  a4:
+    needs: changes
+    if: needs.changes.outputs.a4 == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: No firmware tracked
+        run: |
+          if git ls-files | grep -iE '\.(syx|bin|img|hex|snap|elemod|elf)$'; then exit 1; fi
+      - name: Tools and the mod's files parse
+        run: |
+          python -m py_compile a4/tools/*.py
+          bash -n a4/build.sh
+          bash -n a4/tools/pack_release.sh
+          python -c "import json; [json.load(open(f)) for f in ('a4/mod/mod.json', 'a4/a4156.lock.json')]"
+      - name: The release check's tests
+        run: python a4/tools/test_release_assets.py
+      - name: The mod's C sources compile (elekloader's headers, its release commit)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq gcc-m68k-linux-gnu
+          git init -q elekloader
+          git -C elekloader fetch -q --depth 1 https://github.com/irpina/elekloader c150ac583a4b7e6d64680d5592f4a40f409193f7
+          git -C elekloader checkout -q FETCH_HEAD
+          for f in a4/mod/*.c; do
+            m68k-linux-gnu-gcc -mcpu=54455 -O2 -ffreestanding -fno-builtin -nostdlib -fsyntax-only \
+              -I a4/mod -I elekloader/elekloader/sdk/include "$f"
+          done
+
+  test:
+    needs: [changes, rytm, a4]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The sides that ran passed
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RYTM: ${{ needs.rytm.result }}
+          A4: ${{ needs.a4.result }}
+        run: |
+          echo "changes $CHANGES, rytm $RYTM, a4 $A4"
+          [ "$CHANGES" = success ]
+          [ "$RYTM" = success ] || [ "$RYTM" = skipped ]
+          [ "$A4" = success ] || [ "$A4" = skipped ]
