@@ -943,6 +943,75 @@ def t_upyes(a):
     check("upyes: no Sidecar: stock's screens on each page and menu, UP and YES stock's", x == y and len(x) > 10, f"{len(x)} screens, {sum(p != q for p, q in zip(x, y))} differ")
 
 
+def steps(d):
+    """The run's step shots in the order taken: step9 before step10."""
+    return [os.path.join(d, f) for f in sorted((f for f in os.listdir(d) if f.startswith("step") and f.endswith(".png")), key=lambda f: int(re.match(r"step(\d+)", f).group(1)))]
+
+
+def t_octave(a):
+    """While a Sidecar answers, UP and DOWN on a parameter page leave the keyboard's octave: KeyboardView's handler gets no code for them (0x400bd3e8). OCT+ and OCT-
+    still step it. With none, stock's: an octave a press. Menus and lists keep UP and DOWN either way. KB_C1 on a track with a machine says the octave: its 04's note."""
+    notes = lambda r: [x[6] for x in r.msgs if x[4] == 4]
+    ok = lambda r: r.rc == 0 and not r.faults()
+    def kb(name, keys, host, page="AMP", held=None):
+        r = Run(a, name, host=host).overbridge()
+        r.t += SHOWN
+        r.machine(1, 1).key(page, 200).key("KB_C1", 200)
+        for k in keys:
+            if k == "UP+YES":
+                r.up_yes()
+                r.t += 400
+            elif held:
+                r.key(k, held + 200, hold=held)
+            else:
+                r.key(k, 250)
+            r.key("KB_C1", 200)
+        return r.go(tail=200)
+    ud = ("UP", "UP", "DOWN", "DOWN", "DOWN")
+    h, n = kb("oc_h", ud, []), kb("oc_n", ud, None)
+    nh, nn = notes(h), notes(n)
+    check("octave: a Sidecar: UP, UP, DOWN, DOWN, DOWN on AMP leave the octave", len(nh) == 6 and len(set(nh)) == 1 and ok(h), str(nh))
+    b = nn[0] if nn else 0
+    check("octave: no Sidecar: each UP and DOWN on AMP an octave, as stock", nn == [b, b + 12, b + 24, b + 12, b, b - 12] and ok(n), str(nn))
+    o = kb("oc_h1", ("UP", "DOWN"), [], page="OSC1")
+    check("octave: a Sidecar: on OSC1 with its machine too", len(notes(o)) == 3 and len(set(notes(o))) == 1 and ok(o), str(notes(o)))
+    q = kb("oc_held", ("UP", "DOWN"), [], held=1500)
+    check("octave: a Sidecar: UP held past stock's repeat, then DOWN held: still the octave", len(notes(q)) == 3 and len(set(notes(q))) == 1 and ok(q), str(notes(q)))
+    k = kb("oc_keys", ("OCT_UP", "OCT_UP", "OCT_DOWN"), [])
+    c = notes(k)[0] if notes(k) else 0
+    check("octave: a Sidecar: OCT+ and OCT- still step it", notes(k) == [c, c + 12, c + 24, c + 12] and ok(k), str(notes(k)))
+    y = kb("oc_upyes", ("UP+YES", "UP+YES"), [])
+    oy = [list(x[6:9]) for x in y.msgs if x[4] == 0x30]
+    check("octave: UP + YES opens, UP + YES closes", oy == [[0, 1, 0], [0, 0, 3]], str(oy))
+    check("octave: and the octave is where it was", len(notes(y)) == 3 and len(set(notes(y))) == 1 and ok(y), str(notes(y)))
+    def amp(name, up):
+        r = Run(a, name, host=[]).overbridge()
+        r.t += SHOWN
+        r.machine(1, 1).key("AMP", 200)
+        if up:
+            r.key("UP", 400)
+        else:
+            r.t += 400
+        return r.go(tail=100)
+    s0, s1 = amp("oc_s0", False), amp("oc_s1", True)
+    check("octave: a Sidecar: UP on AMP leaves stock's screen as no key does: no OCTAVE in the band", sha(s0.dir + "/end.png") == sha(s1.dir + "/end.png"), f"{sha(s0.dir + '/end.png')} {sha(s1.dir + '/end.png')}")
+
+    def menu(name, keys, host, syx=None):
+        r = Run(a, name, syx=syx, host=host, env={"DTBOOT_STEPS": "1"}).overbridge()
+        r.env["DTBOOT_PNG_DIR"] = r.dir
+        r.t += SHOWN
+        r.key("TRACK1", 150)
+        for k in keys:
+            r.key(k, 300)
+        r.go(tail=200)
+        return [sha(p) for p in steps(r.dir)[-len(keys):]], r
+    for m, keys in (("global", ("GLOBAL", "UP", "UP", "DOWN")), ("sound", ("SND", "DOWN", "DOWN", "UP")), ("browser", ("SND", "YES", "DOWN", "DOWN", "UP")), ("kit", ("KIT", "DOWN", "DOWN", "UP"))):
+        (x, rx), (z, rz), (w, rw) = menu(f"oc_{m}_h", keys, []), menu(f"oc_{m}_n", keys, None), menu(f"oc_{m}_s", keys, None, syx=a.stock)
+        moves = len(x) == len(keys) and x[-3] != x[-4] and x[-2] != x[-3] and x[-1] == x[-3]
+        check(f"octave: {m}: {', '.join(keys[-3:])} move its cursor, a Sidecar there", moves and ok(rx) and not [v for v in rx.msgs if v[4] == 0x30], str(x[-4:]))
+        check(f"octave: {m}: the same screens with no Sidecar, and on stock", x == z == w and ok(rz), f"{sum(p != q for p, q in zip(x, z))} differ from no Sidecar, {sum(p != q for p, q in zip(x, w))} from stock")
+
+
 def sx(b):
     """A Sidecar SysEx, as hex for --usb-midi."""
     return "f07d5254" + b + "f7"
@@ -1619,7 +1688,7 @@ def t_remote_pages(a):
 
 
 TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "map": t_map, "fin": t_fin, "lock": t_lock, "pages": t_pages, "analog2": t_analog2, "os2": t_os2, "pick": t_pick, "locks": t_locks, "lfos": t_lfos, "power2": t_power2, "fresh": t_fresh, "am1": t_am1, "rollback": t_rollback, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "hatched": t_hatched, "preview": t_preview, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after,
-         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off, "remote_kit": t_remote_kit, "remote_pages": t_remote_pages, "upyes": t_upyes, "low": t_low}
+         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off, "remote_kit": t_remote_kit, "remote_pages": t_remote_pages, "upyes": t_upyes, "octave": t_octave, "low": t_low}
 
 
 def main():
@@ -1629,7 +1698,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     for n in a.names or TESTS:
-        if (n.startswith("remote_") or n in ("upyes", "low")) and not a.engine:
+        if (n.startswith("remote_") or n in ("upyes", "octave", "low")) and not a.engine:
             check(f"{n}: needs --engine", False)
             continue
         print(n, flush=True)

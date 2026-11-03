@@ -7,7 +7,7 @@
 | [read: 0x40008870]: a2 live, a3 the stored sound, +8 from live. A sound with a machine gets PM1 and FM1 back: its NOISE G and H. The load's own call goes on, by a jmp: a jsr would
 | shift its arguments. No machine, no copy: a stored word stock never reads stays out of an analog voice.
         .text
-        .globl  a4_label_call, a4_title_call, a4_notes_call, a4_widget_call, a4_sound_loaded
+        .globl  a4_label_call, a4_title_call, a4_notes_call, a4_widget_call, a4_sound_loaded, a4_kbd_key_call
         .align  2
 a4_label_call:
         move.l  %a0,-(%sp)
@@ -64,3 +64,11 @@ a4_sound_loaded:
         move.w  64(%a3),56(%a2)           | slot 18 PM1
         move.w  222(%a3),214(%a2)         | slot 97 FM1
 1:      jmp     0x40095988
+
+| KeyboardView's key handler (0x400bd3d2) asks the event's code at 0x400bd3e8: `move.l %d2,-(%sp); jsr (%a3); addq.l #4,%sp`, a3 the getter 0x4005b6f0, d2 the
+| event. The six bytes become this jsr: the code in d0, or none, as a4_kbd_key says (a4_remote.c). a3 stays the getter: the handler calls it again further on.
+a4_kbd_key_call:
+        move.l  %d2,-(%sp)
+        jsr     a4_kbd_key
+        addq.l  #4,%sp
+        rts

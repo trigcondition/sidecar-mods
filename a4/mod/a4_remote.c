@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* a4_remote.c - the Sidecar's pages on the A4's screen: the Rytm's remote UI (mods/0026-remote-ui, its messages and rules) cut to what a 128 x 64 terminal needs.
  * The way in and out: UP held, then YES, as on the Rytm, while a Sidecar answers: stock tests no held UP anywhere [read: 0x400647a2's callers], and with none answering YES is
- * stock's. UP stays stock's: on a parameter page its press is the keyboard's octave up [measured]. The way out: NO, a stock page key, 1 s with no host message, the USB port going. Nothing is saved: a power cut leaves stock's screen. Closed, a key and a turn cost one flag test and the frame one more.
+ * stock's. UP stays stock's, but for the octave: while a Sidecar answers, UP and DOWN no longer step the keyboard's octave (a4_kbd_key); OCT+ and OCT- do. The way out: NO, a stock page key, 1 s with no host message, the USB port going. Nothing is saved: a power cut leaves stock's screen. Closed, a key and a turn cost one flag test and the frame one more.
  *   host -> A4  38 a tile rectangle into staging, 39 commit, 3A 0 close, 3C alive, 37 the catch mask, 36 the last frame as a splash for ticks x 50 ms, 4F the hello's answer
  *   A4 -> host  30 opened or closed, 31 a key, 32 a turn, 36 hello: never the Rytm's 35, which asks a Sidecar for /.rytm: an engine with no pages restarts on it, and drops a 36
  * The engine draws text into the frame for a box (core/ui/remote.cpp), so no font lives here. Its 34, 3D, 3E and 3F are filtered by the profile, never sent.
@@ -24,7 +24,9 @@
 #define NENC       8
 #define K_PAGE     0x84
 #define K_UP       0x42
+#define K_DOWN     0x43
 #define K_YES      0x44
+#define K_NONE     0xFFFFu      /* a code KeyboardView's handler has no case for */
 #define UP_HELD    150u         /* blocks, 100 ms: the Rytm's UP_YES_TICKS. A menu's UP then YES rolled over stays stock's */
 
 enum { R_USER, R_HOST, R_TIMEOUT, R_ESCAPE };
@@ -292,6 +294,18 @@ int32_t a4_ui_key(void *brain, void *ev)
     owner[c / 8] |= (uint8_t)(1u << (c & 7));
     put(0x31, c >> 7, c & 0x7F, 1);
     return 1;
+}
+
+/* KeyboardView's key handler (0x400bd3d2), called for a key no view above it took: menus and lists keep their UP and DOWN, they never come here. Its UP case (0x42 and
+ * OCT+ 0xA4) and DOWN case (0x43, OCT- 0xA5) step the octave and nothing else [read: 0x400bd4e2, 0x400bd58c]. Stock skips UP there when bit 20 of 0x401ff54c is set,
+ * to the base view's handler with the event untouched [read: 0x400bd510]; while a Sidecar answers UP and DOWN go that way here, by a code with no case. So UP + YES
+ * no longer moves the octave; OCT+ and OCT- still do. "Answers": host_seen with the port up, the state the way in waits for. No Sidecar: the code as it is. */
+uint32_t a4_kbd_key(void *ev)
+{
+    uint32_t c = *(uint32_t *)((uint8_t *)ev + 12);
+    if ((c == K_UP || c == K_DOWN) && host_seen && a4_usb_up())
+        return K_NONE;
+    return c;
 }
 
 int32_t a4_ui_enc(void *brain, void *ev)

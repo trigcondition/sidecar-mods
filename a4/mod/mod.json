@@ -1,6 +1,6 @@
 {
  "id": "sidecar-a4",
- "version": "0.10",
+ "version": "0.11",
  "title": "Sidecar",
  "category": "Sidecar",
  "license": "GPL-2.0-or-later",
@@ -15,7 +15,8 @@
   {"addr": "0x40066320", "stock": "4feffff048d7041c", "op": "jmp", "target": "a4_router"},
   {"addr": "0x400291cc", "stock": "4eb9400b9e16", "op": "jsr", "target": "a4_notes_call"},
   {"addr": "0x40023532", "stock": "206800844e90", "op": "jsr", "target": "a4_widget_call"},
-  {"addr": "0x40008b58", "stock": "4eb940095988", "op": "jsr", "target": "a4_sound_loaded"}
+  {"addr": "0x40008b58", "stock": "4eb940095988", "op": "jsr", "target": "a4_sound_loaded"},
+  {"addr": "0x400bd3e8", "stock": "2f024e93588f", "op": "jsr", "target": "a4_kbd_key_call"}
  ],
  "storage": [{"sym": "a4_machine", "scope": "sound", "bits": 4}, {"sym": "a4_osc2", "scope": "sound", "bits": 1}],
  "subscribe": [
