@@ -988,11 +988,11 @@ def t_octave(a):
         r = Run(a, name, host=[]).overbridge()
         r.t += SHOWN
         r.machine(1, 1).key("AMP", 200)
-        if up:
-            r.key("UP", 400)
+        if up:                                                          # 100M after UP: SA10's band still says OCTAVE: 2 here
+            r.key("UP", 80)
         else:
-            r.t += 400
-        return r.go(tail=100)
+            r.t += 80
+        return r.go(tail=20)
     s0, s1 = amp("oc_s0", False), amp("oc_s1", True)
     check("octave: a Sidecar: UP on AMP leaves stock's screen as no key does: no OCTAVE in the band", sha(s0.dir + "/end.png") == sha(s1.dir + "/end.png"), f"{sha(s0.dir + '/end.png')} {sha(s1.dir + '/end.png')}")
 
