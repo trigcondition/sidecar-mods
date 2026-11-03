@@ -10,6 +10,7 @@
  * in the render. */
 #include "a4.h"
 
+#define BARRIER() __asm__ volatile("" ::: "memory")  /* a compiler barrier: the A4's ColdFire is one core */
 #define W 128
 #define PAGES 8
 #define BYTES (W * PAGES)
@@ -80,8 +81,10 @@ static void commit(void)
     const uint32_t *s = (const uint32_t *)staging;
     uint32_t *o = (uint32_t *)shadow, i;
     ++sh_seq;
+    BARRIER();                                          /* the plain stores stay between the two increments */
     for (i = 0; i < BYTES / 4; ++i)
         o[i] = s[i];
+    BARRIER();
     ++sh_seq;
     ++committed;
 }
@@ -213,23 +216,38 @@ void a4_ui_tick(void *ctrl)
     }
 }
 
-/* On top of stock's frame: stock has drawn under it and keeps nothing of this. */
+/* On top of stock's frame: stock has drawn under it and keeps nothing of this, so a draw always puts a whole frame there. The shadow is copied into the
+ * buffer not drawn last and taken only when the seqlock held over the copy (the Rytm's compose, mods/0026-remote-ui). Before, it was copied into the screen and checked
+ * after, so a commit landing mid-copy (the MIDI task's 39 preempting this draw) left a frame half old, half new on the glass. A copy that fails, or a commit in
+ * progress, draws the last whole frame; only before the first whole frame is there nothing to draw, and stock's stays. */
+static uint32_t frame[2][BYTES / 4];
+static uint8_t cur, have;                               /* frame[cur]: the last whole frame, have: there is one */
+
 void a4_ui_draw(void *bmp, void *ctrl)
 {
-    uint32_t *px, s, i;
+    uint32_t *px, *o, s, i;
     (void)ctrl;
     if (!shown && !splash_until)
         return;
     px = *(uint32_t **)((uint8_t *)bmp + 16);
     s = sh_seq;
-    if (s & 1) {                                        /* the next tick shows it */
+    BARRIER();                                          /* the shadow's loads after this read of sh_seq, and before the next */
+    if (!(s & 1)) {
+        o = frame[cur ^ 1];
+        for (i = 0; i < BYTES / 4; ++i)
+            o[i] = ((const uint32_t *)shadow)[i];
+        BARRIER();
+        if (s == sh_seq)
+            cur ^= 1, have = 1;
+        else
+            ++a4_rui_torn;
+    } else
         ++a4_rui_torn;
+    if (!have)
         return;
-    }
+    o = frame[cur];
     for (i = 0; i < BYTES / 4; ++i)
-        px[i] = ((const uint32_t *)shadow)[i];
-    if (s != sh_seq)
-        ++a4_rui_torn;
+        px[i] = o[i];
 }
 
 /* The page's: the keys stock's page would change under it. */
