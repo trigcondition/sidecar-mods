@@ -1020,9 +1020,13 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
   case 0x39:
     if (n < 1) { rx_bad++; return 1; }
     if (st_valid && b[0] == st_seq) {
+      /* the barriers keep the plain stores to shadow / txt_sh between the two increments even if copy32 is ever
+         inlined (today the call itself is the barrier); ColdFire is one core, so a compiler barrier is enough */
       sh_seq++;
+      __asm__ volatile("" ::: "memory");
       copy32((uint32_t *)shadow, (const volatile uint32_t *)staging, 256);
       copy32((uint32_t *)txt_sh, (const volatile uint32_t *)txt_st, sizeof txt_sh / 4);
+      __asm__ volatile("" ::: "memory");
       sh_seq++;
       commits++;
       t_commit = TIMER;
