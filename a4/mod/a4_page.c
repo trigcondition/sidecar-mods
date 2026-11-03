@@ -3,7 +3,7 @@
  * are fields of the sound (mod storage: 0 OFF, 0 ANALOG), so every sound of every project starts off and a track stays the analog voice it always was. Their ids 51 and 52 are
  * stock parameters no page shows [read]; core_params answers for them, on a page view only, so stock's own PM2 and FM2 are as they were. And a machine's page: OSC1's knobs are its
  * parameters, plain 0..127 dials with its names; NOISE G..J four more; OSC2's page too with OS2: MACHINE. LEV stays analog everywhere, and OSC2, NOISE and OSC 1&2 are stock's
- * otherwise. The ranges and dials follow the selected track by writes to stock's parameter table and knob descriptors (a4_knobs_follow), which only the UI reads. */
+ * otherwise. The ranges and dials follow the selected track by writes to stock's parameter table and knob descriptors (knobs_follow): the UI and stock's MIDI CC path read them, no audio code. */
 #include "analog-four-mk2/pages.h"
 #include "analog-four-mk2/store.h"
 #include "a4.h"
@@ -21,6 +21,7 @@
 #define ID_AM1 50
 #define ID_MAX 99
 #define CENTRE 16384
+#define ACC_STOCK 8192          /* stock's default: the table's +16 */
 #define PAGE_OSC1 6
 #define PAGE_NOISE 7
 #define PAGE_OSC2 8
@@ -251,7 +252,7 @@ static int delta(void *view, int32_t id, int32_t d, int32_t func)
     if (a4_now - stepped_at < STEP_GAP)         /* a list, not a value: a turn's size says nothing, an accelerated turn would skip machines */
         return 1;
     stepped_at = a4_now;
-    was = (int32_t)(core_store_get(STORE(a4_machine), ui_sound(), 0) & A4_MACHINE_BITS);
+    was = (int32_t)machine_of(ui_sound());
     m = was + (d > 0 ? 1 : -1);
     m = m < 0 ? 0 : m > A4_MACHINES ? A4_MACHINES : m;
     if (m == was)
@@ -262,8 +263,8 @@ static int delta(void *view, int32_t id, int32_t d, int32_t func)
     model = VIEW_MODEL(view);
     if (m && fresh)
         defaults(model, (uint32_t)m, 1);
-    if (!m)                                     /* an analog voice must not stay detuned on a word no knob of stock's reaches */
-        MODEL_SET(model, ID_PM1, CENTRE), MODEL_SET(model, ID_FM1, CENTRE);
+    if (!m)                                     /* an analog voice must not stay detuned, or without its accent, on a word no knob of stock's reaches */
+        MODEL_SET(model, ID_PM1, CENTRE), MODEL_SET(model, ID_FM1, CENTRE), MODEL_SET(model, ID_ACC, ACC_STOCK);
     stock_again(model);
     return 1;
 }

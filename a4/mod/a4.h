@@ -93,8 +93,8 @@ typedef char *(*a4_model_fn)(void);
 #define PAGE_ENTRY(p) ((const int32_t *)(0x401B31E8u + 44u * (p)))  /* stock's page table: the name, then ten knob ids, 0 an empty knob */
 #define SOUND_WORD(s, k) (*(volatile int16_t *)((char *)(s) + 0x14 + 2 * (k)))  /* a sound's slot k, 104 of them [read: 0x40023db6, 0x40007632 maps an id to its slot] */
 
-/* The parameter table, 56 B an id [read]: its clamp is read on each turn (0x40025ec0, 0x400a00a6) and by no audio code; and each id's knob: step, accel, text, widget, 84 B, RAM.
- * The table is image RAM: ACR0 0x4007C020 covers it with W clear, no MMU [read]. A model's set: (this, id, value, 0, 0, 0): the sound's word and the voices' [read: 0x400a0046, called at 0x40025ea2]. */
+/* The parameter table, 56 B an id [read]: its clamp is read on each turn (0x40025ec0, 0x400a00a6), by the MIDI task's CC path (0x4006818e, the model's set) and by no audio code: a CC on another track takes the selected track's range; and each id's knob: step, accel, text, widget, 84 B, RAM.
+ * The table is image RAM: ACR0 0x4007E020 covers it with W clear, no MMU [read]. A model's set: (this, id, value, 0, 0, 0): the sound's word and the voices' [read: 0x400a0046, called at 0x40025ea2]. */
 #define PARAM_SLOT(id) (*(volatile int32_t *)(0x40186AF4u + 56u * (id) + 4u))
 #define PARAM_MIN(id) (*(volatile int32_t *)(0x40186AF4u + 56u * (id) + 8u))
 #define PARAM_MAX(id) (*(volatile int32_t *)(0x40186AF4u + 56u * (id) + 12u))

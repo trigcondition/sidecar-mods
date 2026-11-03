@@ -255,8 +255,8 @@ int32_t a4_ui_key(void *brain, void *ev)
             up_at = a4_now;
         up_down = (uint8_t)down;
     }
-    if (c == K_YES && !down && yes_eaten) {
-        yes_eaten = 0;
+    if (c == K_YES && yes_eaten) {                      /* a held YES repeats with its press bit set [read: 0x40064b6e; measured]: one chord, one open */
+        yes_eaten = (uint8_t)down;
         return 1;
     }
     if (!down) {

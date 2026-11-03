@@ -730,8 +730,8 @@ def t_pick(a):
     r = Run(a, "pk_mm").overbridge().machine(1, 1).turn(7, 1, 300, gap=120).key("OSC1", 150).nudge(3, 1, 60, 1).key("OSC1", 150).midi("903c64", 100).midi("803c00", 100).go(tail=60)
     tr = [[x[8 + 2 * i] for i in range(15)] for x in r.msgs if x[4] == 4]
     check("pick: PLTS to JUNO: no defaults, the turned P3 stays", tr and tr[0][2] == 127, str(tr[:1]))
-    r = voice_words(Run(a, "pk_off").overbridge(), 0x80005B68, 0x80005B78).machine(1, 1).key("OSC1", 150)
-    r.turn(6, 1, 300, gap=120).turn(7, -1, 300, gap=120)
+    r = voice_words(Run(a, "pk_off").overbridge(), 0x80005B68, 0x80005B78, 0x80005C08).machine(1, 1).key("OSC1", 150)
+    r.turn(6, 1, 300, gap=120).turn(7, -1, 300, gap=120).turn(8, 1, 300, gap=120)
     t = r.t
     r.nudge(3, -1, 60, 2)
     r.go(extra=["--every", "100M"], tail=100)
@@ -739,6 +739,8 @@ def t_pick(a):
     i = int(t // 100) - 2
     check("pick: PM1, FM1 moved on the machine", pm[i] != 0x4000 and fm[i] != 0x4000, f"{pm[i]:04x} {fm[i]:04x}")
     check("pick: to OFF: PM1, FM1 centre", pm[-1] == 0x4000 and fm[-1] == 0x4000, f"{pm[-1]:04x} {fm[-1]:04x}")
+    ac = peeked(r, 0x80005C08)
+    check("pick: to OFF: ACC back to stock's 8192", ac[-1] == 0x2000 and ac[i] != 0x2000, f"{ac[i]:04x} {ac[-1]:04x}")
     o = Run(a, "pk_st", usb=False).machine(1, 1).turn(3, 1, 500, gap=200).turn(5, 1, 500, gap=200).turn(6, 1, 500, gap=200).key("OSC1", 150).nudge(3, -1, 60, 2).key("OSC1", 150).go(tail=50)
     w = voice_words(Run(a, "pk_st2", usb=False), 0x80005E78, 0x80005E88, 0x80005E98).machine(1, 1).turn(3, 1, 500, gap=200).turn(5, 1, 500, gap=200).turn(6, 1, 500, gap=200).key("OSC1", 150).nudge(3, -1, 60, 2).go(extra=["--every", "100M"], tail=60)
     v = [peeked(w, x)[-1] for x in (0x80005E78, 0x80005E88, 0x80005E98)]
@@ -907,6 +909,14 @@ def t_upyes(a):
     c.t += 300
     c.go()
     check("upyes: again: leaves, told", [list(x[6:9]) for x in c.msgs if x[4] == 0x30] == [[0, 1, 0], [0, 0, 3]], str([list(x[6:9]) for x in c.msgs if x[4] == 0x30]))
+    h = Run(a, "uy_long", host=[]).overbridge()
+    h.t += SHOWN
+    t = h.t
+    h.args += ["--press", f"UP@{t}M:1800M", "--press", f"YES@{t + 220}M:1500M"]         # stock repeats a held key with its press bit set
+    h.t = t + 2100
+    h.go()
+    o = [list(x[6:9]) for x in h.msgs if x[4] == 0x30]
+    check("upyes: YES held long, 1500M: one open, no flapping, the page up", o == [[0, 1, 0]] and bitmap(h.dir + "/end.png") == frame_rows(h.dir + "/frame.bin") and h.rc == 0 and not h.faults(), f"{sum(x[1] for x in o)} opens, {sum(not x[1] for x in o)} closes")
     q = Run(a, "uy_roll", host=[]).overbridge()
     q.t += SHOWN
     t = q.t
