@@ -140,6 +140,7 @@ enum { S_TIME = 1, S_HOST, S_IDLE, S_KEY, S_ENC, S_OPEN };   /* why the splash e
 static uint8_t shadow[1024] __attribute__((aligned(4)));
 static uint8_t staging[1024] __attribute__((aligned(4)));
 static uint8_t comp[1024] __attribute__((aligned(4)));      /* UI task: the shadow with the text drawn over it */
+static uint8_t comp_in[1024] __attribute__((aligned(4)));   /* UI task: the shadow's copy, checked before comp takes it */
 
 /* A text slot (3D): glass x, top y, font 0..16, flags (bits 0-1 align, bit 2 inverted), len, the characters. */
 struct txt { uint8_t x, y, font, flags, len, pad[3]; char s[TXTLEN + 4]; };   /* 44 B */
@@ -2573,7 +2574,12 @@ static void draw_txt(const struct txt *t, const char *str) {
   st.texts_drawn++;
 }
 
-/* 1: comp holds the newest committed frame with its text (and the echoes); 0: the MIDI task was copying */
+/* 1: comp holds the newest committed frame with its text (and the echoes); 0: the MIDI task was copying, comp is the
+   last whole frame still. fix/popup-covered: the shadow is copied into comp_in and taken only when the seqlock held over
+   the copy. Before, it was copied into comp itself, so a commit landing mid-copy (the MIDI task's 39 preempting this
+   draw) left comp half old, half new and without its text, and the torn path blitted that: one frame of the page
+   without its labels and values, as often as commits meet draws - an animated page (a playhead, a moving value) commits
+   at up to 40 Hz [read; not reproduced in rytm-emu: torn 0 over thousands of frames, see the popup report]. */
 static int32_t compose(uint32_t c) {
   static struct txt tl[NTXT];
   char eb[TXTLEN + 4];
@@ -2581,9 +2587,10 @@ static int32_t compose(uint32_t c) {
   int32_t i, e;
   s0 = sh_seq;
   if (s0 & 1) return 0;
-  copy32((uint32_t *)comp, (const volatile uint32_t *)shadow, 256);
+  copy32((uint32_t *)comp_in, (const volatile uint32_t *)shadow, 256);
   copy32((uint32_t *)tl, (const volatile uint32_t *)txt_sh, sizeof tl / 4);
   if (sh_seq != s0) return 0;
+  copy32((uint32_t *)comp, (const volatile uint32_t *)comp_in, 256);
   if (!st.bm[0]) BITMAP_CTOR(st.bm, 128, 64, comp, 0);
   for (i = 0; i < NTXT; ++i) {
     const char *str = tl[i].s;
