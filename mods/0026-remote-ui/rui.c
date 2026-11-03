@@ -140,6 +140,7 @@ enum { S_TIME = 1, S_HOST, S_IDLE, S_KEY, S_ENC, S_OPEN };   /* why the splash e
 static uint8_t shadow[1024] __attribute__((aligned(4)));
 static uint8_t staging[1024] __attribute__((aligned(4)));
 static uint8_t comp[1024] __attribute__((aligned(4)));      /* UI task: the shadow with the text drawn over it */
+static uint8_t comp_in[1024] __attribute__((aligned(4)));   /* UI task: the shadow's copy, checked before comp takes it */
 
 /* A text slot (3D): glass x, top y, font 0..16, flags (bits 0-1 align, bit 2 inverted), len, the characters. */
 struct txt { uint8_t x, y, font, flags, len, pad[3]; char s[TXTLEN + 4]; };   /* 44 B */
@@ -668,7 +669,10 @@ static int32_t mr_tick(void) {   /* 1: nothing left to send */
  * KeyboardView, SynthPageView (vtable 0x401e34fc), PatternSelectionView (0x401cca04), HelpBubbleView, QuickPerformanceView,
  * SamplerLedView (0x40234cfc) - the last drawn. SMPL / FLTR swap the page view (SamplePageView / SoundPageView); the
  * machine list, TRK held, TEMPO, PERF add a view after SamplerLedView; a menu (GLOBAL, the SOUND menu) replaces the list.
- * PatternSelectionView's byte +0x84 is 1 while a BANK key is held (the [A01] selection in the bottom bar). */
+ * PatternSelectionView's byte +0x7f holds the BANK keys held, a bit a key (BANK_E 0x10, BANK_H 0x80); its byte +0x84 is
+ * set by a BANK key and cleared only when a pattern is picked, so a BANK tapped and left (its menu, BankSelectMenuView,
+ * goes after ~3.5 s) kept it 1 for good: 1027d's cover on +0x84 then hid the view until a restart [measured, rytm-emu
+ * mfxdev, sv_emu.py bank; hardware report 2026-11-03: 2B "on covered", 9 views, SamplerLedView on top]. */
 #define SEL_TRACK    (*(const volatile uint8_t *)0x41318982u)   /* the selected track (0021's US_SEL_TRACK) */
 #define VT_SYNTHPAGE 0x401e34fcu
 #define VT_PATSEL    0x401cca04u
@@ -796,7 +800,7 @@ static int32_t sv_page(void *ctrl) {
     top = v;
     if (last == VT_SYNTHPAGE) { found = 1; sv.view = (void *)v; }
     if (last == VT_SAMPLEPAGE) found |= 2;   /* 1045: the SMPL page */
-    if (last == VT_PATSEL && ((const uint8_t *)v)[0x84]) cov = 1;
+    if (last == VT_PATSEL && ((const uint8_t *)v)[0x7f]) cov = 1;   /* a BANK key held (not +0x84: above) */
     if (after) {
       for (j = 0; j < (int32_t)(sizeof sv_covers / 4) && sv_covers[j] != last; ++j) ;
       if (j < (int32_t)(sizeof sv_covers / 4) || overlay(last)) cov = 1; else unknown = 1;   /* 1042: any overlay */
@@ -1016,9 +1020,13 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
   case 0x39:
     if (n < 1) { rx_bad++; return 1; }
     if (st_valid && b[0] == st_seq) {
+      /* the barriers keep the plain stores to shadow / txt_sh between the two increments even if copy32 is ever
+         inlined (today the call itself is the barrier); ColdFire is one core, so a compiler barrier is enough */
       sh_seq++;
+      __asm__ volatile("" ::: "memory");
       copy32((uint32_t *)shadow, (const volatile uint32_t *)staging, 256);
       copy32((uint32_t *)txt_sh, (const volatile uint32_t *)txt_st, sizeof txt_sh / 4);
+      __asm__ volatile("" ::: "memory");
       sh_seq++;
       commits++;
       t_commit = TIMER;
@@ -2570,7 +2578,12 @@ static void draw_txt(const struct txt *t, const char *str) {
   st.texts_drawn++;
 }
 
-/* 1: comp holds the newest committed frame with its text (and the echoes); 0: the MIDI task was copying */
+/* 1: comp holds the newest committed frame with its text (and the echoes); 0: the MIDI task was copying, comp is the
+   last whole frame still. fix/popup-covered: the shadow is copied into comp_in and taken only when the seqlock held over
+   the copy. Before, it was copied into comp itself, so a commit landing mid-copy (the MIDI task's 39 preempting this
+   draw) left comp half old, half new and without its text, and the torn path blitted that: one frame of the page
+   without its labels and values, as often as commits meet draws - an animated page (a playhead, a moving value) commits
+   at up to 40 Hz [read; not reproduced in rytm-emu: torn 0 over thousands of frames, see the popup report]. */
 static int32_t compose(uint32_t c) {
   static struct txt tl[NTXT];
   char eb[TXTLEN + 4];
@@ -2578,9 +2591,10 @@ static int32_t compose(uint32_t c) {
   int32_t i, e;
   s0 = sh_seq;
   if (s0 & 1) return 0;
-  copy32((uint32_t *)comp, (const volatile uint32_t *)shadow, 256);
+  copy32((uint32_t *)comp_in, (const volatile uint32_t *)shadow, 256);
   copy32((uint32_t *)tl, (const volatile uint32_t *)txt_sh, sizeof tl / 4);
   if (sh_seq != s0) return 0;
+  copy32((uint32_t *)comp, (const volatile uint32_t *)comp_in, 256);
   if (!st.bm[0]) BITMAP_CTOR(st.bm, 128, 64, comp, 0);
   for (i = 0; i < NTXT; ++i) {
     const char *str = tl[i].s;

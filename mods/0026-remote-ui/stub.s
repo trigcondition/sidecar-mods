@@ -3084,7 +3084,7 @@ pj_push:
 	move.l 20(%sp),%d1
 	move.l 24(%sp),%a1
 #APP
-| 4295 "rui.c" 1
+| 4309 "rui.c" 1
 	tas pj+136
 	smi %d2
 | 0 "" 2
@@ -3340,20 +3340,20 @@ rui_sysex:
 	mvz.b st_seq,%d0
 	cmp.l %d1,%d0
 	jne .L492
+	addq.l #1,sh_seq
 	pea 256.w
 	pea staging
 	pea shadow
 	lea copy32,%a2
-	addq.l #1,sh_seq
 	jsr (%a2)
 	pea 704.w
 	pea txt_st
 	pea txt_sh
 	jsr (%a2)
+	move.l #-66650100,%a0
 	lea (24,%sp),%sp
 	addq.l #1,sh_seq
 	addq.l #1,commits
-	move.l #-66650100,%a0
 	move.l (%a0),t_commit
 .L492:
 	clr.b %d0
@@ -4411,7 +4411,7 @@ sv_tick:
 	jne .L668
 	move.l %d7,%a0
 	move.l %a6,%d4
-	tst.b 132(%a0)
+	tst.b 127(%a0)
 	sne %d0
 	mvs.b %d0,%d0
 	neg.l %d0
@@ -4936,7 +4936,7 @@ isr_send:
 	rts
 .L789:
 #APP
-| 1601 "rui.c" 1
+| 1609 "rui.c" 1
 	move.w %sr,%d0
 | 0 "" 2
 #NO_APP
@@ -4949,7 +4949,7 @@ isr_send:
 	and.l #63743,%d0
 	or.l #1280,%d0
 #APP
-| 1605 "rui.c" 1
+| 1613 "rui.c" 1
 	move.w %d0,%sr
 | 0 "" 2
 #NO_APP
@@ -4958,7 +4958,7 @@ isr_send:
 	jeq .L792
 .L794:
 #APP
-| 1610 "rui.c" 1
+| 1618 "rui.c" 1
 	move.w %d2,%sr
 | 0 "" 2
 #NO_APP
@@ -4982,7 +4982,7 @@ isr_send:
 	move.l %d1,-(%sp)
 	jsr 1073752544
 #APP
-| 1610 "rui.c" 1
+| 1618 "rui.c" 1
 	move.w %d2,%sr
 | 0 "" 2
 #NO_APP
@@ -5334,7 +5334,7 @@ sq_fire:
 	moveq #127,%d0
 .L872:
 #APP
-| 1601 "rui.c" 1
+| 1609 "rui.c" 1
 	move.w %sr,%d1
 | 0 "" 2
 #NO_APP
@@ -5347,7 +5347,7 @@ sq_fire:
 	and.l #63743,%d1
 	or.l #1792,%d1
 #APP
-| 1605 "rui.c" 1
+| 1613 "rui.c" 1
 	move.w %d1,%sr
 | 0 "" 2
 #NO_APP
@@ -5359,7 +5359,7 @@ sq_fire:
 	addq.l #1,sq+380
 .L876:
 #APP
-| 1610 "rui.c" 1
+| 1618 "rui.c" 1
 	move.w %d4,%sr
 | 0 "" 2
 #NO_APP
@@ -9132,7 +9132,7 @@ rui_draw:
 	jne .L1629
 	pea 256.w
 	pea shadow
-	pea comp
+	pea comp_in
 	jsr (%a2)
 	pea 704.w
 	pea txt_sh
@@ -9141,6 +9141,11 @@ rui_draw:
 	lea (24,%sp),%sp
 	cmp.l sh_seq.l,%d4
 	jne .L1629
+	pea 256.w
+	pea comp_in
+	pea comp
+	jsr (%a2)
+	lea (12,%sp),%sp
 	tst.l st+872
 	jne .L1630
 	clr.l -(%sp)
@@ -12804,6 +12809,8 @@ u46:
 	.comm	txt_sh,2816,4
 	.local	txt_st
 	.comm	txt_st,2816,4
+	.local	comp_in
+	.comm	comp_in,1024,4
 	.local	comp
 	.comm	comp,1024,4
 	.local	staging
