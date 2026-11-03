@@ -133,9 +133,12 @@ def addr(a: int, root=ROOT) -> int:
 
 # ------------------------------------------------------------------------------------------------- the port
 
-HEX = re.compile(r"(?<![\w.])0[xX]([0-9a-fA-F]{8})([uUlL]*)\b")
-DEC = re.compile(r"(?<![\w.$-])(1\d{9})(?![\w.])")
+HEX = re.compile(r"(?<![\w])(?<![^.]\.)0[xX]([0-9a-fA-F]{8})([uUlL]*)\b")   # also after "..", a range
+DEC = re.compile(r"(?<![\w.$-])(1\d{9})(?!\w)(?!\.\d)")   # also `1075551828.l` (gas absolute long)
 BARE = re.compile(r"(?<![0-9a-fA-Fx_.])(40[0-2][0-9a-fA-F]{5})(?![0-9a-fA-F])")
+# any number that could be an image address, in whatever form: what the forms above missed is refused (an address left
+# as 1.73's would be the same word in both builds, which no comparison of the two builds can see)
+ANY = re.compile(r"(?<![0-9a-zA-Z_])(?:0[xX]([0-9a-fA-F]{8})|(1\d{9}))(?![0-9a-zA-Z_])")
 HEXU = re.compile(r"(?<![\w.])0x(40[0-2][0-9a-fA-F]_[0-9a-fA-F]{4})\b")      # Python's 0x4012_119a
 
 
@@ -175,6 +178,17 @@ class Translator:
             if bare:
                 line = BARE.sub(lambda mm: self._one(int(mm.group(1), 16), w, lambda t: f"{t:08x}") or mm.group(0),
                                 line)
+            made = {b for ww, _a, b in self.log[-64:] if ww == w}
+            for mm in ANY.finditer(line):
+                v = int(mm.group(1), 16) if mm.group(1) else int(mm.group(2))
+                if v in made or not self.m.in_image(v) or (mm.group(2) and not dec):
+                    continue
+                try:
+                    if self.m.tr(v) != v:
+                        self.refused.append(f"{w}: {mm.group(0)} looks like a moved image address in a form the port "
+                                            f"does not translate")
+                except Refused:
+                    pass
             out.append(line)
         return "".join(out)
 
@@ -808,7 +822,24 @@ def crosscheck(os_ver: str, from_syx: Path, to_syx: Path, built_from: Path, buil
         else:
             bad.append(f"block +0x{i:x}: {ta[i:i + 4].hex()} / {tb[i:i + 4].hex()} not a translation")
         i += 2
-    print(f"crosscheck {os_ver}: {len(ra)} site runs in 1.73's image, {len(rb)} in the target's; appended block "
+    # the other way round: an image address in 1.73's block that moves must have moved in the target's (an
+    # untranslated literal is the same word in both, so the loop above cannot see it)
+    stale = []
+    for i in range(0, len(ta) - 3, 2):
+        va = struct.unpack_from(">I", ta, i)[0]
+        if not m.in_image(va) or va < BASE + 0x100:
+            continue
+        try:
+            t = m.tr(va)
+        except Refused:
+            continue
+        if t != va and struct.unpack_from(">I", tb, i)[0] == va:
+            stale.append(i)
+    for i in stale:
+        print(f"  LOOK block +0x{i:x}: 0x{struct.unpack_from('>I', ta, i)[0]:08x} reads as a moved image address and "
+              f"is the same in both: instruction or table bytes, or an address the port missed (the port refuses "
+              f"every literal form it does not translate, so normally the former)")
+    print(f"crosscheck {os_ver}: {len(stale)} LOOK words; {len(ra)} site runs in 1.73's image, {len(rb)} in the target's; appended block "
           f"{len(ta)} B, {words} differing words, {expl} of them translated addresses; {len(bad)} problems")
     for w in bad[:30]:
         print("  FAIL", w)

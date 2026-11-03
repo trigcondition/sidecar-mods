@@ -17,7 +17,7 @@ recovery section included.
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.74.syx` | the stock OS 1.74, in Elektron's `Analog-Rytm_MKII_OS1.74_dist.zip` | `cb0f99d620edde994fb860c0e79cc2464e427d06882828cfdfb00fc53700e123` |
 | `core-0.1-os1.74.elemod` | elekloader's core-ar2 0.1 for OS 1.74: the boot copier and hook bus every elekloader mod builds on | `89c00065e8f83ce839978c45a32200e09879682b8b95cbff0bdb71ca09dc3c8a` |
-| `rytm-sidecar-0.4.0-os1.74.elemod` | the Sidecar mods, all in one module, for OS 1.74 | `e926bc398d11db5eb41d13f6e8cef68bb6837cef41fcd575007f39858fee75b2` |
+| `rytm-sidecar-0.4.0-os1.74.elemod` | the Sidecar mods, all in one module, for OS 1.74 | `794448662bb11fd2b9ece677640a431e2a6d9e169952aa3378cd0e3d9834e545` |
 
 **OS 1.73:**
 
@@ -68,7 +68,7 @@ and they call each other at fixed addresses.
    2.0a, and going back to stock from there is untested: the OS carries "Downgrade not possible" and the bootstrap a
    VERSION CHECK (`docs/FLASHING.md`, "Downgrades"), so either route, USB or the STARTUP menu, may refuse it.
 6. Build, and download the `.syx`. Its sha256, as built from this branch:
-   - version 1.74: `cf118f6c6ccde059cf70d27077a516127400af64fb3b8b42d05f0ea520ff0a3f`;
+   - version 1.74: `538ae6fa1a66dfb72141743036c40b4f3845ed73a4ea59f7e3b6aa9e51fab337`;
    - version 1.73: `07780e9eb4bce7f71c83da3134ede4782f7ea7af211eb6787c670607707bff18`.
 
    If yours differs, do not flash it: see the next section.
@@ -147,8 +147,8 @@ carries "Downgrade not possible". Once on 1.74, recover with stock 1.74, and bac
 
 This snapshot's release files above have not been run on a unit. The 1.74 build has run only in the emulator (its
 suites, as the 1.73 build's, and flash rehearsals from stock 1.74, from the 1.73 build and back to stock 1.74); no
-unit has run any Sidecar build on 1.74 yet. For 1.73: A test build from the same source has passed the emulator suites and a flash
-rehearsal and has run on a unit. The emulator enters MAIN OS directly with its own depacker, so it does not run the Rytm bootstrap's depacker on this
+unit has run any Sidecar build on 1.74 yet. On 1.73, a test build from the same source has passed the emulator suites
+and a flash rehearsal and has run on a unit. The emulator enters MAIN OS directly with its own depacker, so it does not run the Rytm bootstrap's depacker on this
 file. Two things are new against the rui1051 image the Sidecar's own unit runs: the MAIN OS lacks 0028-elek-hello
 (a test counter), and the packed stream comes from elekloader's new packer. The new stream uses only what Elektron's own stock 1.73 stream
 already uses (reuse of the last offset, also right after a match; offsets up to just under 1 MiB; counts up to 2048),
