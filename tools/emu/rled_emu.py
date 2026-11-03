@@ -22,7 +22,11 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
-STOCK = os.path.join(ROOT, "stock", "Analog-Rytm_MKII_OS1.73.syx")
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+import ostarget  # noqa: E402  the tree's OS (1.73, or a port's: tools/ostarget.py)
+STOCK = str(ostarget.info()["stock_path"])
+# the stock base's files in rytm-emu: 1.73's as always, another OS's beside them
+STOCK_BASE = "rled_stock" + ("" if ostarget.tree_os() == "1.73" else "_os" + ostarget.tree_os())
 K_TRK, K_LFO, K_T3 = 0x86, 0x35, 0x02
 BLUE, ORANGE = 47, 52        # palette: (0, 0, 31) and (11, 6, 0) [measured, the OS's palette in rytm-emu]
 # struct rui (rui.c) after splash_why (988): pend_hello 992, pend_page 993, then these (m68k: ints on 2-byte bounds)
@@ -216,7 +220,8 @@ def t_stockcombo(e):
 
 def stock_kw(e):
     """The stock 1.73 image's base (rled_stock: a fresh card, the startup dialogs answered) as run() keywords."""
-    fw, card, snap = "fw/AR173_rled_stock.syx", os.path.join(EMU, "sections/rled_stock.img"), "sections/rled_stock.snap"
+    fw, card, snap = (f"fw/AR173_{STOCK_BASE}.syx", os.path.join(EMU, f"sections/{STOCK_BASE}.img"),
+                      f"sections/{STOCK_BASE}.snap")
     if not os.path.exists(os.path.join(EMU, snap)):
         shutil.copy(STOCK, os.path.join(EMU, fw))
         subprocess.run(["cp", "-c", os.path.join(EMU, "sections/led.img"), card], check=True)   # an APFS clone

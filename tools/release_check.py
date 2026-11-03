@@ -11,12 +11,17 @@ at the pinned vendor/elekloader:
 - the web page: web/bridge.py, the module the page's worker runs under Pyodide (gui.LoaderModel,
   gui.with_requirements, patch.build / patch.save), run here in CPython on a scratch folder in place of
   its in-memory /work. The files are added as the page adds a user's own files (add_mod: the page lists
-  no Rytm core for OS 1.73), the bundle is ticked (its requirements tick the core), checked and built,
-  once with version 1.73 (what the docs say to type) and once with the page's default version.
+  no Rytm core for OS 1.73; on 1.74 its own cores are newer ones, which the bundle refuses), the bundle is ticked
+  (its requirements tick the core), checked and built, once with the OS's version (what the docs say to type) and
+  once with the page's default version.
 
 Each image must have our build's MAIN OS byte for byte (--expect), and sections 1, 2 (the bootstrap,
 also by its pinned sha256, docs/HAZARDS.md), 5 and 8 as stock. Then the refusals: the bundle without a
-core, and with core-ar2 0.2 (built from upstream's 92a99c9, the last 1.73 core) are refused.
+core, and with each core of re/os/<os>.toml refuse_cores (core-ar2 0.2 from upstream's 92a99c9, the last 1.73 core;
+on 1.74 also the pinned elekloader's own, 0.6) are refused, by the storage guard.
+
+The OS is the tree's (re/symbols.toml [meta] target): run it in build/os/1.74 for the 1.74 release (make release-check
+OS=1.74 does).
 
 Writes only under --work (default build/release_check). Exit status 0: every check passed.
 """
@@ -32,17 +37,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ELEK_DIR = ROOT / "vendor" / "elekloader"
 EFT = ROOT / "vendor" / "elektron-firmware-tool" / "elektron-firmware-tool"
-STOCK_SYX = ROOT / "stock" / "Analog-Rytm_MKII_OS1.73.syx"
-BOOTSTRAP_SHA256 = "1b8d3b7288df118512740ac7c59d8dd9f71f44e6633a29628bcb068d756e2ed8"   # docs/HAZARDS.md
-# core-ar2 0.1 as elekloader 8972d70 built it and as the rui builds since rui1051 carry it
-CORE_SHA256 = "33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825"
-CORE02_REV = "92a99c9"          # upstream's last core-ar2 for OS 1.73: 0.2, with mod storage (docs/CORES.md)
+sys.path.insert(0, str(ROOT / "tools"))
+import ostarget                                          # noqa: E402
+OS = ostarget.info()
+OSV = OS["os"]
+STOCK_SYX = OS["stock_path"]
+BOOTSTRAP_SHA256 = OS["bootstrap_sha256"]               # docs/HAZARDS.md; 1.73's and 1.74's are the same
+# core-ar2 0.1 as elekloader built it from core_rev (on 1.73 8972d70, as the rui builds since rui1051 carry it)
+CORE_SHA256 = OS["core_sha256"]
+REFUSE_CORES = OS["refuse_cores"]   # [(upstream commit, version)]: cores with mod storage (docs/CORES.md)
 STOCK_SECTIONS = (1, 2, 5, 8)
 MAIN_SECTION = 3
 
 failures = []
 
-sys.path.insert(0, str(ROOT / "tools"))
 from build import CORE_STORE_GUARD                       # noqa: E402  the guard's addresses
 GUARD_ADDRS = {f"0x{a:08x}" for sites in CORE_STORE_GUARD.values() for a, _n in sites}
 
@@ -181,10 +189,11 @@ def main():
     doc = json.loads(bundle.read_text())
     cdoc = json.loads(core.read_text())
     check(sha256(core.read_bytes()) == CORE_SHA256, f"core: sha256 is the pinned {CORE_SHA256[:16]}...")
-    check(cdoc["id"] == "core" and cdoc["version"] == "0.1" and cdoc["target"]["os"] == "1.73",
-          f"core: {cdoc['id']} {cdoc['version']} for OS {cdoc['target']['os']}")
+    check(cdoc["id"] == "core" and cdoc["version"] == OS["core_version"] and cdoc["target"]["os"] == OSV
+          and doc["target"]["os"] == OSV,
+          f"core: {cdoc['id']} {cdoc['version']} for OS {cdoc['target']['os']}, the bundle for {doc['target']['os']}")
     check(doc["license"] == "GPL-2.0-or-later" and doc["author"] == "trigcondition"
-          and doc["requires"] == ["core"] and doc.get("resources", {}).get("core") == "0.1",
+          and doc["requires"] == ["core"] and doc.get("resources", {}).get("core") == OS["core_version"],
           f"bundle: {doc['id']} {doc['version']}, {doc['license']}, by {doc['author']}, requires "
           f"{doc['requires']}, core >= {doc.get('resources', {}).get('core')}")
 
@@ -204,16 +213,16 @@ def main():
     check(rc == 0 and "OK: the mods combine" in out, "patch --check: " + out.strip().splitlines()[-1])
     cli = work / "cli.syx"
     rc, out = elek("elekloader.patch", "--stock", STOCK_SYX, "--mod", core, "--mod", bundle,
-                   "--out", cli, "--version", "1.73")
-    if check(rc == 0 and cli.exists(), "patch --out (version 1.73)"):
+                   "--out", cli, "--version", OSV)
+    if check(rc == 0 and cli.exists(), f"patch --out (version {OSV})"):
         print("     " + " | ".join(l.strip() for l in out.splitlines() if l.startswith(("linked", "verified"))))
         results["cli"] = image_checks("cli", cli, expect_main, stock_secs, work)
 
     # 3. the web page's code path
-    res, built = web_build(work / "web", [core, bundle], bundle, ["1.73"])
+    res, built = web_build(work / "web", [core, bundle], bundle, [OSV])
     if res:
         dv = res["default_version"]
-        if dv != "1.73":
+        if dv != OSV:
             res2, built2 = web_build(work / "web-default", [core, bundle], bundle, [dv])
             if res2:
                 res["builds"].update(res2["builds"])
@@ -232,26 +241,27 @@ def main():
         results["web_default_version"] = dv
     ours = sha256(args.expect_syx.read_bytes())
     results["build_py"] = ours
-    for k in ("cli", "web-1.73"):
+    for k in ("cli", "web-" + OSV):
         check(results.get(k) == ours, f"{k} .syx is build.py's {args.expect_syx.name} ({ours[:16]}...)")
 
     # 4. what must be refused
     rc, out = elek("elekloader.patch", "--stock", STOCK_SYX, "--mod", bundle, "--check")
     check(rc != 0, "refused without a core: " + out.strip().splitlines()[-1][:200])
-    c02 = work / "core02"
-    (c02 / "src").mkdir(parents=True)
-    arc = subprocess.run(["git", "-C", ELEK_DIR, "archive", CORE02_REV, "mods/core", "mods/core-ar2"],
-                         check=True, capture_output=True).stdout
-    subprocess.run(["tar", "-x", "-C", c02 / "src"], input=arc, check=True)
-    rc, out = elek("elekloader.sdk.build", c02 / "src" / "mods" / "core-ar2", "--stock", STOCK_SYX,
-                   "--out", c02 / "out")
-    core02 = next((c02 / "out").glob("core-0.2*.elemod"), None)
-    if check(rc == 0 and core02 is not None, f"core-ar2 0.2 built from {CORE02_REV} (for the refusal)"):
-        rc, out = elek("elekloader.patch", "--stock", STOCK_SYX, "--mod", core02, "--mod", bundle, "--check")
-        # the refusal must come from the guard: an overlap at one of its addresses
-        why = [l for l in out.splitlines() if "overlap" in l and any(a in l for a in GUARD_ADDRS)]
-        check(rc != 0 and bool(why), "refused with core 0.2 by the guard: " +
-              (why[0].strip() if why else out[-300:]))
+    for rev, ver in REFUSE_CORES:
+        cw = work / f"core{ver}"
+        (cw / "src").mkdir(parents=True)
+        arc = subprocess.run(["git", "-C", ELEK_DIR, "archive", rev, "mods/core", "mods/core-ar2"],
+                             check=True, capture_output=True).stdout
+        subprocess.run(["tar", "-x", "-C", cw / "src"], input=arc, check=True)
+        rc, out = elek("elekloader.sdk.build", cw / "src" / "mods" / "core-ar2", "--stock", STOCK_SYX,
+                       "--out", cw / "out")
+        cnew = next((cw / "out").glob(f"core-{ver}*.elemod"), None)
+        if check(rc == 0 and cnew is not None, f"core-ar2 {ver} built from {rev[:7]} (for the refusal)"):
+            rc, out = elek("elekloader.patch", "--stock", STOCK_SYX, "--mod", cnew, "--mod", bundle, "--check")
+            # the refusal must come from the guard: an overlap at one of its addresses
+            why = [l for l in out.splitlines() if "overlap" in l and any(a in l for a in GUARD_ADDRS)]
+            check(rc != 0 and bool(why), f"refused with core {ver} by the guard: " +
+                  (why[0].strip() if why else out[-300:]))
 
     # 5. the user guide's hashes are this release's
     if args.doc:
