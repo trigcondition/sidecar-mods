@@ -493,7 +493,54 @@ def t_names(e):
           e.peek(w["snap"][0], e.sym("ux") + 36, 1)[0] == 12)
 
 
-TESTS = dict(level=t_level, padmode=t_padmode, dsp=t_dsp, juno=t_juno, knob=t_knob, list=t_list, leave=t_leave, gone=t_gone, trk=t_trk, push=t_push,
+def t_bank(e):
+    """Hardware report on mfxdev (2026-11-03): the SRC view gone for good, stock's SRC page instead, 2B "on covered" with
+    9 views and SamplerLedView on top, until the Rytm restarted. A BANK key tapped on the shown view (no trig after it):
+    stock's bank menu (BankSelectMenuView 401ccccc) for ~3.5 s, then the plain SRC page; PatternSelectionView's byte
+    +0x84 stays 1 until a pattern is picked, and 1027d took it for "BANK held". The held keys are byte +0x7f (a bit a
+    BANK key). Now: covered while BANK is held and while the menu is up, the host's frame back after the menu."""
+    juno(e)
+    r = e.run("bank", 6000, [(500, "press", "BANK_A")], snap=J)
+    b = evs(r, "v2b")
+    print(f"  2Bs: {[(hex(x['state']), x['views'], x['vt']) for x in b[-4:]]} ({len(b)})")
+    check("bank: the bank menu covers the view (a 2B: covered, BankSelectMenuView on top)",
+          any(x["vt"] == "401ccccc" and x["state"] & 2 for x in b), b[-4:])
+    s = e.sv(r["snap"][0])
+    check("bank: after the menu the view is not covered and shows the host's frame", s["covered"] == 0 and s["show"] == 1,
+          s)
+    check("bank: the panel shows the host's frame byte for byte", r["oled"] == r["frame"], diff(r["oled"], r["frame"]))
+    check("bank: the last 2B says on, committed, shown (0x45), SamplerLedView on top, 9 views",
+          bool(b) and b[-1]["state"] == 0x45 and b[-1]["vt"] == "40234cfc" and b[-1]["views"] == 9, b[-1:])
+    h = e.run("bankheld", 1200, [(500, "press", "BANK_E", 1500)], snap=J)
+    s = e.sv(h["snap"][0])
+    check("bank: BANK_E held: covered (stock's screen), as before", s["covered"] == 1 and s["show"] == 0, s)
+    p = e.run("bankptn", 3000, [(500, "press", "BANK_A", 600), (700, "press", "T1")], snap=J)
+    s = e.sv(p["snap"][0])
+    check("bank: BANK_A + T1 (the same pattern picked): the host's frame back", s["covered"] == 0 and s["show"] == 1 and
+          p["oled"] == p["frame"], s)
+
+
+def t_popups(e):
+    """The owner's lead for the same report: a stock toast over the shown view (CLEAR, UNDO CLEAR, COPY, PASTE on the SRC
+    page and in GRID REC, SAVE PATTERN) covers it while it is up, then the host's frame is back, 9 views, not covered."""
+    juno(e)
+    F = lambda t, k: [(t, "press", "FUNC", 400), (t + 100, "press", k)]   # noqa: E731
+    cases = [("clear", 5000, F(500, "PLAY")), ("copy", 5000, F(500, "RECORD")), ("paste", 6500, F(500, "RECORD") + F(3000, "STOP")),   # (no toast with nothing copied)
+             ("grclear", 7000, [(300, "press", "RECORD")] + F(800, "PLAY") + F(3500, "PLAY")),
+             ("grcopy", 7000, [(300, "press", "RECORD")] + F(800, "RECORD") + F(3500, "STOP")),
+             ("save", 6000, [(1150, "press", "FUNC", 250), (1200, "press", "SCNE"), (1400, "press", "DOWN"),
+                             (1550, "press", "YES")])]
+    for n, ms, ev in cases:
+        r = e.run("pop-" + n, ms, ev, snap=J)
+        b = evs(r, "v2b")
+        s = e.sv(r["snap"][0])
+        check(f"popups {n}: a toast covered the view (PopupWindow 401d6e18)",
+              any(x["vt"] == "401d6e18" and x["state"] & 2 for x in b), [(hex(x["state"]), x["views"], x["vt"]) for x in b])
+        check(f"popups {n}: after it the host's frame, not covered, 9 views", s["covered"] == 0 and s["show"] == 1 and
+              r["oled"] == r["frame"] and bool(b) and b[-1]["views"] == 9 and b[-1]["state"] == 0x45, (s, b[-1:]))
+
+
+TESTS = dict(bank=t_bank, popups=t_popups, level=t_level, padmode=t_padmode, dsp=t_dsp, juno=t_juno, knob=t_knob, list=t_list, leave=t_leave, gone=t_gone, trk=t_trk, push=t_push,
              names=t_names)
 
 
