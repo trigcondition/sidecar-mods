@@ -49,7 +49,7 @@ and they call each other at fixed addresses.
 
 1. Back up every project, sound and sample with Transfer.
 2. Make sure the recovery route works on your unit: one full DIN reflash of your stock OS file through the STARTUP
-   menu (below). `docs/FLASHING.md` stage S0 says why: the USB route needs a firmware that boots.
+   menu (below). Moving from 1.73: the recovery reflash is stock 1.74, and it is the one-way step. `docs/FLASHING.md` stage S0 says why: the USB route needs a firmware that boots.
 3. Use a scratch project for the first session under the mods. Projects saved while a track plays a Sidecar
    machine show that track as DISABLE on stock (`docs/FLASHING.md`, "Projects saved under the mods, on stock").
 
