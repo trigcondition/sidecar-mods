@@ -1,6 +1,6 @@
 # Releasing the A4 mod
 
-The A4 mod lives in this repository under `a4/`, with its own tags, `a4-v<mod version>` (`a4-v0.10`), and its own GitHub releases. It reaches people with Sidecar 0.4.0, not before: its docs and patcher entry stay unreleased until then.
+The A4 mod lives in this repository under `a4/`, with its own tags, `a4-v<mod version>` (`a4-v0.12`), and its own GitHub releases. It reaches people with Sidecar 0.4.0, not before: its docs and patcher entry stay unreleased until then.
 
 **A release holds `.elemod` files and their papers. Never a `.syx`.** A built `.syx` holds Elektron's firmware, and so does nothing else here. `a4/out/` is ignored, and its `.syx.json` holds local paths.
 
@@ -37,8 +37,8 @@ The web patcher does not read `.elemod` files. It applies a record file made fro
 The tested bytes need the lock file and the build's stamp:
 
 ```sh
-python3 -m elekloader.patch --stock Analog-Four_MKII_OS1.56.syx --mod core-0.3.elemod --mod sidecar-a4-0.10.elemod \
-    --lockfile a4156.lock.json --version SA10 --out sidecar.syx
+python3 -m elekloader.patch --stock Analog-Four_MKII_OS1.56.syx --mod core-0.3.elemod --mod sidecar-a4-0.12.elemod \
+    --lockfile a4156.lock.json --version SA12 --out sidecar.syx
 ```
 
 Without `--lockfile`, or with another `--version`, the `.syx` has other bytes from the tested one, and the hash will not match.
