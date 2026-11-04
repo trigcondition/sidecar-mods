@@ -125,13 +125,16 @@ def check_file(name, data, version, others):
     return "not a name an a4 release may hold"
 
 
+PACK_MARK = ".sidecar-release-out"
+
+
 def check_dir(path, tag):
     """-> {refused name: why}; a problem with the release as a whole is under ''."""
     refused = {}
     m = re.match(r"^a4-v(\d+\.\d+)$", tag)
     if not m:
         return {"": f"tag {tag}: an a4 release's tag is a4-v<mod version>"}
-    names = sorted(os.listdir(path))
+    names = sorted(n for n in os.listdir(path) if n != PACK_MARK)  # pack_release.sh's marker
     files = {}
     for n in names:
         p = os.path.join(path, n)
@@ -167,7 +170,7 @@ def main():
             fh.writelines(n + "\n" for n in sorted(refused) if n)
     if refused:
         return 1
-    print(f"{a.tag}: {len(os.listdir(a.dir))} files, nothing refused")
+    print(f"{a.tag}: {len([n for n in os.listdir(a.dir) if n != PACK_MARK])} files, nothing refused")
     return 0
 
 
