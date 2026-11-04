@@ -2,7 +2,7 @@
 
 **Runs on the owner's unit, OS 1.56, on Overbridge: machines heard through filter, drive and FX.** A mod for OS 1.56, built with [elekloader](https://github.com/irpina/elekloader)'s core-a4. Unofficial: not affiliated with, endorsed by or supported by Elektron. No Elektron firmware is in this repository: you supply the stock `.syx`, and neither it nor anything built from it may be committed.
 
-Released on its own, under tags `a4-v...`, as `.elemod` files only: [RELEASE.md](RELEASE.md). The source here is 0.12 (SA12), the build for Sidecar 0.4.0, tag `a4-v0.12`: it passes the suites and rehearsals in the emulators. 0.11 (SA11) has run on a real A4 with a Pi 5 and a Pi 4; SA12 differs from 0.11 only in the screen: it draws a frame only when the frame was copied whole, else the last whole one. <!-- UNRELEASED: SA12 on a real A4: set this from the owner's flash before the a4-v0.12 tag -->
+Released on its own, under tags `a4-v...`, as `.elemod` files only: [RELEASE.md](RELEASE.md). The source here is 0.12 (SA12), the build for Sidecar 0.4.0, tag `a4-v0.12`: it passes the suites and rehearsals in the emulators, and has run on a real A4 (2026-11-04): unplug and replug, the octave keys blocked while the Sidecar answers and back when it goes, UP / DOWN and the Sidecar's menu. SA12 differs from 0.11 (SA11) only in the screen: it draws a frame only when the frame was copied whole, else the last whole one.
 
 ## What it does
 
