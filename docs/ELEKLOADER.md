@@ -117,8 +117,10 @@ The web page shows the same steps before every download.
 
 ### From 1.73 to 1.74
 
-A unit on 1.73 (stock or with the Sidecar's 1.73 build) can take the 1.74 build directly: the file is a whole OS, and
-projects carry over (1.74 changed no project format: its additions are the Outbox's main-output routing). Treat it as
+A unit on 1.73 (stock or with the Sidecar's 1.73 build) can take the 1.74 build directly: the file is a whole OS.
+Projects should carry over: 1.74's kit, sound, pattern, global and project code is 1.73's with only its addresses
+moved (its additions are the Outbox's main-output routing), checked in the code of both images and in the emulator.
+No project has yet been opened on a unit after the move, so back up every project first. Treat it as
 **one-way**: going back from 1.74 to 1.73 has passed in the emulator, but has not been tried on a unit, and the OS
 carries "Downgrade not possible". Once on 1.74, recover with stock 1.74, and back up first.
 
