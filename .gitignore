@@ -19,6 +19,10 @@ vendor/
 stock/*.syx
 
 # Never commit firmware or anything derived from it, build outputs or local notes
+# a4/out: build.sh's folder; its .syx.json holds local paths, its map the image's layout
+a4/out/
+*.syx.json
+*.syx.map.json
 *.syx
 *.bin
 *.elf

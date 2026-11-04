@@ -2,6 +2,8 @@
 
 **Runs on the owner's unit, OS 1.56, on Overbridge: machines heard through filter, drive and FX.** A mod for OS 1.56, built with [elekloader](https://github.com/irpina/elekloader)'s core-a4. Unofficial: not affiliated with, endorsed by or supported by Elektron. No Elektron firmware is in this repository: you supply the stock `.syx`, and neither it nor anything built from it may be committed.
 
+Released on its own, under tags `a4-v...`, as `.elemod` files only: [RELEASE.md](RELEASE.md). The source here is 0.10 (SA10): it passes the suites and rehearsals in the emulators and **has not run on a real A4 yet**. What this page says was heard or seen on a unit comes from 0.8 and earlier.
+
 ## What it does
 
 A track's sound can pick a Sidecar machine. That track's trigs and parameters go to a Sidecar over USB MIDI, and the machine's audio comes back in OVERBRIDGE mode through stock's track inputs, into that voice's own analog path: its filters, overdrive, amp, pan and the A4's chorus, delay and reverb all act on it. No audio code is patched: OUT channels 2..5 are stock's.

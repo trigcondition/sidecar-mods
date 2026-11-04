@@ -10,6 +10,18 @@ This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
 FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
+The Analog Four MKII mod
+------------------------
+a4/ is released on its own, under tags a4-v<version>. A release's published
+files (sidecar-a4-<version>.elemod, and core-0.3.elemod beside it) are built
+from this repository at that tag: a4/build.sh, with the toolchain the release's
+TOOLCHAIN.txt names, from the user's own stock OS 1.56 file. core-0.3.elemod is
+elekloader's core-a4 0.3, built unchanged by elekloader's own builder from
+mods/core-a4 at elekloader commit c150ac583a4b7e6d64680d5592f4a40f409193f7
+(https://github.com/irpina/elekloader, GPL-2.0-or-later); that source is in the
+release's elekloader-c150ac5-src.tar.gz. No Elektron firmware is in this
+repository or in a release.
+
 Corresponding source
 --------------------
 The published files of a release are built from this repository at the
