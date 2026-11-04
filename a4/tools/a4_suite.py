@@ -1012,6 +1012,57 @@ def t_octave(a):
         check(f"octave: {m}: the same screens with no Sidecar, and on stock", x == z == w and ok(rz), f"{sum(p != q for p, q in zip(x, z))} differ from no Sidecar, {sum(p != q for p, q in zip(x, w))} from stock")
 
 
+def din_notes(r):
+    """Note-ons on the A4's MIDI OUT (DIN), from the emulator's end summary: they go out with the USB port down too. The summary holds 64 bytes, a dozen notes."""
+    m = re.search(r"^midi out \(\d+ bytes\): ([0-9a-f ]*)$", r.log, re.M)
+    out, st, i = [], 0, 0
+    b = [int(x, 16) for x in m.group(1).split()] if m else []
+    while i < len(b):
+        if b[i] & 0x80:
+            st, i = b[i], i + 1
+            continue
+        n = {0xC0: 1, 0xD0: 1}.get(st & 0xF0, 2)
+        if st & 0xF0 == 0x90 and i + 1 < len(b) and b[i + 1]:
+            out.append(b[i])
+        i += n
+    return out
+
+
+def t_octave_back(a):
+    """The octave comes back when the Sidecar goes (the sa12 review's MEDIUM). A Sidecar answering: UP leaves the octave; the USB host gone: UP and DOWN step it
+    again, as stock (a4_kbd_key reads the port live, a4_ui_tick clears host_seen). A dead engine with the port up: UP stays off the octave, as the README says, until
+    the port goes. KB_C1's note on MIDI OUT says the octave: the 04s stop with the port. The emulator's A4 does not come back on the bus after a gone host, so the
+    port stays down to the end."""
+    ok = lambda r: r.rc == 0 and not r.faults()
+    def pre(name, host):                                                # a Sidecar there, a machine on T1, AMP; KB_C1, UP, KB_C1
+        r = Run(a, name, host=host).overbridge()
+        r.t += SHOWN
+        return r.machine(1, 1).key("AMP", 200).key("KB_C1", 200).key("UP", 250).key("KB_C1", 200)
+    def gone(r, keys):                                                  # the USB host gone, a tick past it, then the keys, each with KB_C1
+        t0 = r.t + 50
+        r.t += 400
+        for k in keys:
+            r.key(k, 250).key("KB_C1", 200)
+        r.go(extra=["--usb-host-gone", f"{t0}M:{r.t + 1000}M"], tail=200)
+        return t0, [c for c, k in r.sent() if c >= t0 * 1e6]
+    g = pre("ob_gone", [])
+    t0, after = gone(g, ("UP", "UP", "DOWN"))
+    n = din_notes(g)
+    b = n[0] if n else 0
+    check("octave_back: a Sidecar answering: UP leaves the octave", len(n) >= 2 and n[:2] == [b, b] and g.count(4) == 2, f"{n}, {g.count(4)} 04s")
+    check("octave_back: the USB host gone: UP, UP, DOWN step it again, as stock", n[2:] == [b + 12, b + 24, b + 12] and not after and ok(g), f"{n}, {len(after)} sends after the port went; " + "; ".join(g.faults()[:2]))
+    d = pre("ob_dead", []).go()
+    secs = float(re.search(r"end: .*?, ([\d.]+) s,", d.side).group(1))
+    k = pre("ob_dead1", ["--seconds", f"{secs:.2f}"])                   # the engine gone after the prefix, the port up
+    k.t += 1000
+    k.key("UP", 250).key("KB_C1", 200)
+    gone(k, ("UP",))
+    m = din_notes(k)
+    c = m[0] if m else 0
+    check("octave_back: a dead engine, the port up: UP still leaves the octave, as documented", len(m) >= 3 and m[:3] == [c, c, c] and ", 2 trigs," in k.side, str(m))   # the engine heard the first two KB_C1s only: gone by the third
+    check("octave_back: then the USB host gone: UP steps it again", m[3:] == [c + 12] and ok(k), f"{m}; " + "; ".join(k.faults()[:2]))
+
+
 def sx(b):
     """A Sidecar SysEx, as hex for --usb-midi."""
     return "f07d5254" + b + "f7"
@@ -1688,7 +1739,7 @@ def t_remote_pages(a):
 
 
 TESTS = {"labels": t_labels, "title": t_title, "off": t_off, "knobs": t_knobs, "zones": t_zones, "map": t_map, "fin": t_fin, "lock": t_lock, "pages": t_pages, "analog2": t_analog2, "os2": t_os2, "pick": t_pick, "locks": t_locks, "lfos": t_lfos, "power2": t_power2, "fresh": t_fresh, "am1": t_am1, "rollback": t_rollback, "chord": t_chord, "chord_keys": t_chord_keys, "mono": t_mono, "mono_chord": t_mono_chord, "poly_voices": t_poly_voices, "mono_gap": t_mono_gap, "mono_stall": t_mono_stall, "chord_labels": t_chord_labels, "hatched": t_hatched, "preview": t_preview, "kit": t_kit, "poly": t_poly, "user": t_user, "no_pi": t_no_pi, "computer": t_computer, "seq": t_seq, "strict": t_strict, "params": t_params, "stall": t_noread, "gone": t_gone, "power": t_stock_after,
-         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off, "remote_kit": t_remote_kit, "remote_pages": t_remote_pages, "upyes": t_upyes, "octave": t_octave, "low": t_low}
+         "remote_open": t_remote_open, "remote_keys": t_remote_keys, "remote_exit": t_remote_exit, "remote_play": t_remote_play, "remote_splash": t_remote_splash, "remote_pair": t_remote_pair, "remote_link": t_remote_link, "remote_voice": t_remote_voice, "remote_old": t_remote_old, "remote_off": t_remote_off, "remote_kit": t_remote_kit, "remote_pages": t_remote_pages, "upyes": t_upyes, "octave": t_octave, "octave_back": t_octave_back, "low": t_low}
 
 
 def main():
@@ -1698,7 +1749,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     for n in a.names or TESTS:
-        if (n.startswith("remote_") or n in ("upyes", "octave", "low")) and not a.engine:
+        if (n.startswith("remote_") or n in ("upyes", "octave", "octave_back", "low")) and not a.engine:
             check(f"{n}: needs --engine", False)
             continue
         print(n, flush=True)
