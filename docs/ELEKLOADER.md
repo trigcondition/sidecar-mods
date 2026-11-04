@@ -13,7 +13,7 @@ recovery section included.
 
 **OS 1.74:**
 
-| file | what | sha256 (development snapshot of 0.4.0, not a release) |
+| file | what | sha256 |
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.74.syx` | the stock OS 1.74, in Elektron's `Analog-Rytm_MKII_OS1.74_dist.zip` | `cb0f99d620edde994fb860c0e79cc2464e427d06882828cfdfb00fc53700e123` |
 | `core-0.1-os1.74.elemod` | elekloader's core-ar2 0.1 for OS 1.74: the boot copier and hook bus every elekloader mod builds on | `89c00065e8f83ce839978c45a32200e09879682b8b95cbff0bdb71ca09dc3c8a` |
@@ -21,7 +21,7 @@ recovery section included.
 
 **OS 1.73:**
 
-| file | what | sha256 (development snapshot of 0.4.0, not a release) |
+| file | what | sha256 |
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.73.syx` | the stock OS 1.73 (Elektron no longer offers it; use the file you have) | `8ad671087ec30433d5407c7380d2396e0915ab931c5d3dd18a78bf284d3d1e52` |
 | `core-0.1.elemod` | elekloader's core-ar2 0.1: the boot copier and hook bus every elekloader mod builds on | `33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825` |
@@ -147,7 +147,9 @@ carries "Downgrade not possible". Once on 1.74, recover with stock 1.74, and bac
 
 ## Status
 
-This snapshot's release files above have not been run on a unit. The 1.74 build has run only in the emulator (its
+<!-- UNRELEASED: the hardware status at release: which of the release builds (1.73 07780e9e..., 1.74 538ae6fa...) the owner has flashed and played on a unit; rewrite this section from it. -->
+
+These release files have not been run on a unit. The 1.74 build has run only in the emulator (its
 suites, as the 1.73 build's, and flash rehearsals from stock 1.74, from the 1.73 build and back to stock 1.74); no
 unit has run any Sidecar build on 1.74 yet. On 1.73, a test build from the same source has passed the emulator suites
 and a flash rehearsal and has run on a unit. The emulator enters MAIN OS directly with its own depacker, so it does not run the Rytm bootstrap's depacker on this
@@ -159,8 +161,8 @@ work, and the bootstrap (untouched) is the way back if it does not. First hardwa
 
 ## Source and licence
 
-The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this development snapshot is the branch `dev` of
-<https://github.com/trigcondition/sidecar-mods> (no release, no tag): `make setup` then
+The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this release is the tag `v0.4.0` of
+<https://github.com/trigcondition/sidecar-mods>: `make setup` then
 `make release` builds the 1.73 `.elemod` files from it and `make release OS=1.74` the 1.74 ones, byte for byte with the toolchain in `TOOLCHAIN.txt` (GNU
 binutils 2.47 `m68k-elf-as`, Python 3.14; another assembler version may give other bytes). `NOTICE` names the exact
 elekloader commits: the core is core-ar2 0.1 built unchanged from elekloader's `mods/core-ar2` at `8972d70` (for 1.74:
