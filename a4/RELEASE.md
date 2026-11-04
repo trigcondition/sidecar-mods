@@ -15,11 +15,13 @@ The A4 mod lives in this repository under `a4/`, with its own tags, `a4-v<mod ve
 
 So CI never builds the mod and never proves it works. The local runs below are the proof.
 
+`release_assets.py` does not look for stock windows in an `.elemod`'s `hex` parts (the NOTICE allows a few short stock fragments, so a full check would need an allow-list, and CI has no stock image). The 4-byte stock-window check is `a4_patch.py`'s, on the patcher's record file, and runs only on your own machine, with the stock file.
+
 ## Steps
 
 1. **On your own machine, at the release commit:** set `mod.json`'s version and the `STAMP` default in `build.sh`, build, then run `a4_suite.py`, `a4_e2e.py` and the rehearsals stock to the build and back, as in [README.md](README.md). All on the same bytes.
 2. **On a real A4:** flash that build, play it, and go back to stock. A build that has not run on a unit is not released.
-3. **Pack:** `ELEKLOADER=/path/elekloader a4/tools/pack_release.sh a4/out RELEASE_DIR` copies the two `.elemod` files by name, the lock file, `LICENSE`, `NOTICE`, elekloader's source and `TOOLCHAIN.txt`, writes `SHA256SUMS`, and runs `release_assets.py` on the folder. It must end with `nothing refused`.
+3. **Pack:** `ELEKLOADER=/path/elekloader a4/tools/pack_release.sh a4/out RELEASE_DIR` first refuses while an `UNRELEASED` mark is left in the tree (`tools/check_unreleased.py`) or when `RELEASE_DIR` is a non-empty folder it did not pack, then copies the two `.elemod` files by name, the lock file, `LICENSE`, `NOTICE`, elekloader's source and `TOOLCHAIN.txt`, writes `SHA256SUMS`, and runs `release_assets.py` on the folder. It must end with `nothing refused`.
 4. **Snapshot:** publish as a snapshot export, as the Rytm's releases, never private history. Scan it: no personal name, Mac username or e-mail, only trigcondition; no local path; no firmware.
 5. **Pull request** to `dev`, then `main`. The code owner merges.
 6. **Tag** the merged commit: `a4-v<version>`, annotated.
