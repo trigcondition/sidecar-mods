@@ -8,9 +8,9 @@ This repository holds the source of the **Rytm firmware 0.4.0**, released with *
 Pi 5). It brings the report master FX needs (each track's pan and route, so the Sidecar's through mode is stereo), MD's
 own page, the JUNO and 6-OP FM preset browser and DSP SAMPLE's sample picker on knob A of SRC, list knobs of up to 36
 names, the MIDI machine (machine 50), the arpeggiator's settings in the sound (UP + FLTR), and two fixes to the remote
-pages: the Sidecar's view on the SRC page comes back after a BANK tap, and the animated SRC pages no longer flicker. It
-comes in two builds of the same source, for **OS 1.74** (what Elektron offers now) and for **OS 1.73**: one elekloader
-module per OS, `rytm-sidecar-0.4.0-os1.74.elemod` with elekloader's `core-0.1-os1.74.elemod`, and
+pages: the Sidecar's view on the SRC page comes back after a BANK tap, and a drawing race that could make the animated
+SRC pages flicker is fixed. It comes in two builds of the same source, for **OS 1.74** (what Elektron offers now) and
+for **OS 1.73**: one elekloader module per OS, `rytm-sidecar-0.4.0-os1.74.elemod` with elekloader's `core-0.1-os1.74.elemod`, and
 `rytm-sidecar-0.4.0.elemod` with `core-0.1.elemod`. Build the `.syx` from your own stock file on elekloader's page or
 command line, or in the browser patcher (build `rel0-4-0` for 1.73, `rel0-4-0-os1.74` for 1.74); both give the same
 file. Moving a Rytm from 1.73 to 1.74 is one way: read `docs/ELEKLOADER.md` and `docs/FLASHING.md` first.
