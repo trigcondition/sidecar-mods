@@ -13,7 +13,7 @@ recovery section included.
 
 **OS 1.74:**
 
-| file | what | sha256 (development snapshot of 0.4.0, not a release) |
+| file | what | sha256 |
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.74.syx` | the stock OS 1.74, in Elektron's `Analog-Rytm_MKII_OS1.74_dist.zip` | `cb0f99d620edde994fb860c0e79cc2464e427d06882828cfdfb00fc53700e123` |
 | `core-0.1-os1.74.elemod` | elekloader's core-ar2 0.1 for OS 1.74: the boot copier and hook bus every elekloader mod builds on | `89c00065e8f83ce839978c45a32200e09879682b8b95cbff0bdb71ca09dc3c8a` |
@@ -21,7 +21,7 @@ recovery section included.
 
 **OS 1.73:**
 
-| file | what | sha256 (development snapshot of 0.4.0, not a release) |
+| file | what | sha256 |
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.73.syx` | the stock OS 1.73 (Elektron no longer offers it; use the file you have) | `8ad671087ec30433d5407c7380d2396e0915ab931c5d3dd18a78bf284d3d1e52` |
 | `core-0.1.elemod` | elekloader's core-ar2 0.1: the boot copier and hook bus every elekloader mod builds on | `33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825` |
@@ -49,7 +49,7 @@ and they call each other at fixed addresses.
 
 1. Back up every project, sound and sample with Transfer.
 2. Make sure the recovery route works on your unit: one full DIN reflash of your stock OS file through the STARTUP
-   menu (below). Moving from 1.73: the recovery reflash is stock 1.74, and it is the one-way step. `docs/FLASHING.md` stage S0 says why: the USB route needs a firmware that boots.
+   menu (below). Recovery is the stock file of the OS you want to be on, and both directions work with Elektron's files (checked on a unit). `docs/FLASHING.md` stage S0 says why: the USB route needs a firmware that boots.
 3. Use a scratch project for the first session under the mods. Projects saved while a track plays a Sidecar
    machine show that track as DISABLE on stock (`docs/FLASHING.md`, "Projects saved under the mods, on stock").
 
@@ -120,9 +120,10 @@ The web page shows the same steps before every download.
 A unit on 1.73 (stock or with the Sidecar's 1.73 build) can take the 1.74 build directly: the file is a whole OS.
 Projects should carry over: 1.74's kit, sound, pattern, global and project code is 1.73's with only its addresses
 moved (its additions are the Outbox's main-output routing), checked in the code of both images and in the emulator.
-No project has yet been opened on a unit after the move, so back up every project first. Treat it as
-**one-way**: going back from 1.74 to 1.73 has passed in the emulator, but has not been tried on a unit, and the OS
-carries "Downgrade not possible". Once on 1.74, recover with stock 1.74, and back up first.
+A kit saved and reloaded on a unit running the 1.74 build; back up every project first, as before any OS change.
+The move is **not one-way**: you can always flash back to 1.73 or 1.74 with Elektron's own stock files (checked on a
+unit, 2026-11-04). Recovery is the stock file of the OS you want to be on. Elektron's site offers only 1.74, so keep
+your own copy of the 1.73 file if you want to go back to it.
 
 ## What you cannot do yet
 
@@ -147,9 +148,12 @@ carries "Downgrade not possible". Once on 1.74, recover with stock 1.74, and bac
 
 ## Status
 
-This snapshot's release files above have not been run on a unit. The 1.74 build has run only in the emulator (its
-suites, as the 1.73 build's, and flash rehearsals from stock 1.74, from the 1.73 build and back to stock 1.74); no
-unit has run any Sidecar build on 1.74 yet. On 1.73, a test build from the same source has passed the emulator suites
+<!-- UNRELEASED: 1.74 538ae6fa... is filled in from the unit run of 2026-11-04; still open: whether the 1.73 release build (07780e9e...) has been flashed on a unit, and the final hashes at the release commit. -->
+
+The 1.74 build (sha256 `538ae6fa...`, the hash above) has run on a real Rytm (2026-11-04): the owner flashed stock 1.74,
+then the 1.74 build, and the Sidecar machines, the pages, the SEND FX including ROUTE PRE, the MASTER page and kit save and
+reload all work. Flashing back and forth between stock 1.73 and stock 1.74 works too. Before that it had passed the
+emulator suites and flash rehearsals from stock 1.74, from the 1.73 build and back to stock 1.74. On 1.73, a test build from the same source has passed the emulator suites
 and a flash rehearsal and has run on a unit. The emulator enters MAIN OS directly with its own depacker, so it does not run the Rytm bootstrap's depacker on this
 file. Two things are new against the rui1051 image the Sidecar's own unit runs: the MAIN OS lacks 0028-elek-hello
 (a test counter), and the packed stream comes from elekloader's new packer. The new stream uses only what Elektron's own stock 1.73 stream
@@ -159,8 +163,8 @@ work, and the bootstrap (untouched) is the way back if it does not. First hardwa
 
 ## Source and licence
 
-The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this development snapshot is the branch `dev` of
-<https://github.com/trigcondition/sidecar-mods> (no release, no tag): `make setup` then
+The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this release is the tag `v0.4.0` of
+<https://github.com/trigcondition/sidecar-mods>: `make setup` then
 `make release` builds the 1.73 `.elemod` files from it and `make release OS=1.74` the 1.74 ones, byte for byte with the toolchain in `TOOLCHAIN.txt` (GNU
 binutils 2.47 `m68k-elf-as`, Python 3.14; another assembler version may give other bytes). `NOTICE` names the exact
 elekloader commits: the core is core-ar2 0.1 built unchanged from elekloader's `mods/core-ar2` at `8972d70` (for 1.74:
@@ -174,6 +178,7 @@ beside the files.
     make release OS=1.74  # the same for OS 1.74: build/release/<VERSION>-os1.74/ (the port's tree: build/os/1.74)
     make release-check OS=1.74
     make release-all      # both, each checked
+    make release-assets   # the GitHub release's one folder: build/release/<VERSION>-assets/
 
 - One source tree, two OSes: the sources hold OS 1.73's addresses; `re/os/1.74.toml` maps them to 1.74's
   (segments with their shifts, the regions 1.74 really changed, which refuse any address, and 1.74's stock-byte
@@ -186,6 +191,12 @@ beside the files.
   Makefile (the rui1051 set without 0028-elek-hello, a test counter). `tools/build.py --elek-bundle` writes one elemod for every enabled mod; without it,
   one per mod (`rytm-<id>-<tag>.elemod`), each with `requires` for the mods it needs.
 - `make release` runs `tools/verify.py` on the build, as every build.
+- `make release-assets` (`tools/combine_release.py`) makes the release's one asset folder from the two OS folders: all
+  of the 1.73 folder, the 1.74 folder's `.elemod` files and core source archive, its `TOOLCHAIN.txt` as
+  `TOOLCHAIN-os1.74.txt`, and one `SHA256SUMS` over the twelve files. It refuses when a folder does not match its own
+  `SHA256SUMS`, when `LICENSE`, `NOTICE` or the builder's archive differ between the two, on a file a release does not
+  hold (a `.syx`), and on a `TOOLCHAIN.txt` with uncommitted changes. It runs `tools/check_unreleased.py` first, which
+  refuses while an `UNRELEASED` mark is left in the tree.
 - `make release-check` (`tools/release_check.py`) takes only the published files and the stock `.syx`:
   - `elekloader.lint`, `patch --check` and `patch --out`;
   - the web page's own module (`web/bridge.py`, run in CPython in place of the page's Pyodide): add both files,

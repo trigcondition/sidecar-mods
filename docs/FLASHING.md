@@ -16,9 +16,8 @@ unit (docs/REVIEW-2026-10-09.md, HIGH 3 and the staged plan there):
    (FUNC + power, TRIG 4, below) - about 16+ minutes for 3 MB. Only this route
    is served by the bootstrap; the USB route needs a booting MAIN OS and a
    working [YES], and 0022 hooks the panel path that [YES] uses.
-   **Moving from 1.73 to 1.74:** this reflash is then stock 1.74, and it is the
-   one-way step (see "Downgrades": going back to 1.73 has not been tried on a
-   unit). Do it with Elektron's own file first; the Sidecar build for 1.74 comes
+   **Moving from 1.73 to 1.74:** this reflash is then stock 1.74 (see "Downgrades":
+   both directions work with Elektron's files). Do it with Elektron's own file first; the Sidecar build for 1.74 comes
    after, once the unit runs stock 1.74. On 1.73 nothing changes: stock 1.73.
 4. Make a scratch project for every test.
 
@@ -226,11 +225,9 @@ during the upgrade." The bootstrap carries its own `BOOTSTRAP UPGRADE` /
 
 ## Downgrades
 
-Not supported by the device. MAIN OS carries "Downgrade not possible" and the
-bootstrap carries a VERSION CHECK. Assume you cannot go back, and that this is why
-the project pins the newest OS rather than an older one.
-
-So the move from OS 1.73 to 1.74 is one-way: once a unit runs 1.74 (stock or the
-Sidecar's 1.74 build), its recovery file is stock 1.74. Going back to 1.73 passed
-in the emulator (the OS's own upgrade path took a 1.73 file), but no unit has done
-it, and neither route (USB or the STARTUP menu) is known to accept it.
+MAIN OS carries a "Downgrade not possible" message and the bootstrap a VERSION CHECK, but on a real unit
+you can always flash back to 1.73 or 1.74 with Elektron's own stock files (checked 2026-11-04, from stock and from the
+Sidecar's 1.74 build). So the move between OS 1.73 and 1.74 is not one-way: recovery is the stock file of the OS you
+want to be on. Back up your projects before any OS change, as always. Elektron's site offers only 1.74 now, so keep
+your own copy of the 1.73 file if you want it. A build with another version number than your stock file's (for
+instance elekloader's default 2.0a) is a different case and stays untested: do not flash it.

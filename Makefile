@@ -49,7 +49,7 @@ RELEASE_ARGS := --param 0014-hidden-machines:variants=0 --param 0014-hidden-mach
 	--param 0022-looper:sfx=1 --param 0022-looper:rui=1 --param 0022-looper:fxin=1 \
 	--area-elek 0021-ext --area-elek 0022-looper --area-elek 0025-sendfx-report
 
-.PHONY: port release-all
+.PHONY: port release-all release-assets
 ifneq ($(OS),$(TREE_OS))
 # ---- another OS: the port's tree, and the same targets run there
 PORT := build/os/$(OS)
@@ -92,7 +92,7 @@ release: symbols layout
 		> $(REL)/elekloader-$(CORE_SHORT)-core-ar2-src.tar.gz
 	git -C vendor/elekloader archive --format=tar.gz --prefix=elekloader-c150ac5/ \
 		c150ac583a4b7e6d64680d5592f4a40f409193f7 > $(REL)/elekloader-c150ac5-src.tar.gz
-	{ echo "release $(VERSION) for OS $(TREE_OS), built from rytm-mods $$(git rev-parse HEAD)$$(git diff --quiet HEAD || echo ' (uncommitted changes)')"; \
+	{ echo "release $(VERSION) for OS $(TREE_OS), built from sidecar-mods $$(git rev-parse HEAD)$$([ -z "$$(git status --porcelain)" ] || echo ' (uncommitted changes)')"; \
 	  echo "elekloader $$(git -C vendor/elekloader rev-parse HEAD) (builder), core-ar2 from $(CORE_REV)"; \
 	  m68k-elf-as --version | head -1; $(PY) --version; uname -sm; } > $(REL)/TOOLCHAIN.txt
 	cd $(REL) && { command -v sha256sum > /dev/null && SUM="sha256sum" || SUM="shasum -a 256"; \
@@ -109,6 +109,15 @@ endif
 release-all:
 	$(MAKE) release release-check
 	$(MAKE) release release-check OS=1.74
+
+# The GitHub release's one asset folder, build/release/$(VERSION)-assets/, from the two folders release-all writes:
+# all of the 1.73 folder, the 1.74 folder's own files, its TOOLCHAIN.txt as TOOLCHAIN-os1.74.txt, one SHA256SUMS
+# over the lot. It refuses while an UNRELEASED mark is left in the tree, when a shared file (LICENSE, NOTICE, the
+# builder's archive) differs between the two folders, or when a folder does not match its own SHA256SUMS.
+release-assets:
+	python3 tools/check_unreleased.py
+	python3 tools/combine_release.py build/release/$(VERSION) build/release/$(VERSION)-os1.74 \
+		build/release/$(VERSION)-assets --os-a $(TREE_OS) --os-b 1.74
 
 layout:
 	$(PY) tools/layout.py

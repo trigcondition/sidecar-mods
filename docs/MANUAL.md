@@ -314,7 +314,8 @@ The design and the measurements are in `mods/0013-voice-dac/mod.toml`.
 
 ## Returning to stock
 
-Flash Elektron's stock `.syx` of the OS your unit runs the same way (`docs/FLASHING.md`): stock 1.74 on OS 1.74
-(going back from 1.74 to 1.73 is untested on a unit: treat 1.74 as one-way), stock 1.73 on OS 1.73. The mods
+Flash Elektron's stock `.syx` of the OS your unit runs the same way (`docs/FLASHING.md`): the stock file of the OS you want to be on
+(1.74 or 1.73; both directions work with Elektron's files, checked on a unit; Elektron offers only 1.74 now, so keep your
+own copy of 1.73). The mods
 store their settings in bits stock firmware ignores, so projects open on stock
 with the mod settings dropped.
