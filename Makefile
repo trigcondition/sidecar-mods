@@ -92,7 +92,7 @@ release: symbols layout
 		> $(REL)/elekloader-$(CORE_SHORT)-core-ar2-src.tar.gz
 	git -C vendor/elekloader archive --format=tar.gz --prefix=elekloader-c150ac5/ \
 		c150ac583a4b7e6d64680d5592f4a40f409193f7 > $(REL)/elekloader-c150ac5-src.tar.gz
-	{ echo "release $(VERSION) for OS $(TREE_OS), built from rytm-mods $$(git rev-parse HEAD)$$(git diff --quiet HEAD || echo ' (uncommitted changes)')"; \
+	{ echo "release $(VERSION) for OS $(TREE_OS), built from sidecar-mods $$(git rev-parse HEAD)$$(git diff --quiet HEAD || echo ' (uncommitted changes)')"; \
 	  echo "elekloader $$(git -C vendor/elekloader rev-parse HEAD) (builder), core-ar2 from $(CORE_REV)"; \
 	  m68k-elf-as --version | head -1; $(PY) --version; uname -sm; } > $(REL)/TOOLCHAIN.txt
 	cd $(REL) && { command -v sha256sum > /dev/null && SUM="sha256sum" || SUM="shasum -a 256"; \
