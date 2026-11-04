@@ -29,6 +29,7 @@ jobs:
           fetch-depth: 0
       - id: sides
         name: Which sides changed
+        shell: bash
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -104,8 +105,11 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           RYTM: ${{ needs.rytm.result }}
           A4: ${{ needs.a4.result }}
+          RYTM_ON: ${{ needs.changes.outputs.rytm }}
+          A4_ON: ${{ needs.changes.outputs.a4 }}
         run: |
-          echo "changes $CHANGES, rytm $RYTM, a4 $A4"
+          echo "changes $CHANGES, rytm $RYTM ($RYTM_ON), a4 $A4 ($A4_ON)"
           [ "$CHANGES" = success ]
+          [ "$RYTM_ON" = true ] || [ "$A4_ON" = true ]
           [ "$RYTM" = success ] || [ "$RYTM" = skipped ]
           [ "$A4" = success ] || [ "$A4" = skipped ]

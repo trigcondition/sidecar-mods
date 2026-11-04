@@ -30,6 +30,11 @@ jobs:
         if: failure() && steps.check.conclusion == 'failure'
         run: |
           gh release edit "$TAG" --draft=true
+          if [ ! -f refused.txt ]; then
+            echo "::error::the check failed without a refused.txt (it crashed?): the release is a draft again, no asset removed"
+            exit 1
+          fi
           while IFS= read -r name; do
-            gh release delete-asset "$TAG" "$name" --yes
+            if [ -n "$name" ]; then gh release delete-asset "$TAG" "$name" --yes; fi
           done < refused.txt
+          echo "::error::assets refused: the release is a draft again; refused: $(tr '\n' ' ' < refused.txt)"
