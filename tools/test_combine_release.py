@@ -9,6 +9,9 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import combine_release  # noqa: E402
 
+SHA = "a" * 40
+OTHER = "b" * 40
+
 
 def make_folder(d, os_name, suffix, core, extra=None, toolchain=None):
     os.makedirs(d)
@@ -19,7 +22,7 @@ def make_folder(d, os_name, suffix, core, extra=None, toolchain=None):
         "elekloader-c150ac5-src.tar.gz": "builder source",
         "LICENSE": "GPL",
         "NOTICE": "notice",
-        "TOOLCHAIN.txt": toolchain or f"release 0.4.0 for OS {os_name}, built from sidecar-mods abc\nas 2.47\n",
+        "TOOLCHAIN.txt": toolchain or f"release 0.4.0 for OS {os_name}, built from sidecar-mods {SHA}\nas 2.47\n",
     }
     files.update(extra or {})
     for n, text in files.items():
@@ -41,12 +44,13 @@ class Combine(unittest.TestCase):
         self.a = os.path.join(self.tmp.name, "0.4.0")
         self.b = os.path.join(self.tmp.name, "0.4.0-os1.74")
         self.out = os.path.join(self.tmp.name, "0.4.0-assets")
+        self.expect = SHA
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def run_it(self):
-        return combine_release.main([self.a, self.b, self.out, "--os-b", "1.74"])
+        return combine_release.main([self.a, self.b, self.out, "--os-b", "1.74", "--expect-commit", self.expect])
 
     def test_twelve_files(self):
         make_folder(self.a, "1.73", "", "8972d70")
@@ -102,7 +106,7 @@ class Combine(unittest.TestCase):
 
     def test_uncommitted(self):
         make_folder(self.a, "1.73", "", "8972d70",
-                    toolchain="release 0.4.0 for OS 1.73, built from sidecar-mods abc (uncommitted changes)\n")
+                    toolchain=f"release 0.4.0 for OS 1.73, built from sidecar-mods {SHA} (uncommitted changes)\n")
         make_folder(self.b, "1.74", "-os1.74", "13fa795")
         self.assert_refused()
 
@@ -113,6 +117,41 @@ class Combine(unittest.TestCase):
         open(os.path.join(self.out, "old"), "w").close()
         self.assertEqual(self.run_it(), 1)
         self.assertEqual(os.listdir(self.out), ["old"])
+
+    def test_different_commits(self):
+        make_folder(self.a, "1.73", "", "8972d70")
+        make_folder(self.b, "1.74", "-os1.74", "13fa795",
+                    toolchain=f"release 0.4.0 for OS 1.74, built from sidecar-mods {OTHER}\n")
+        self.assert_refused()
+
+    def test_not_head(self):
+        make_folder(self.a, "1.73", "", "8972d70")
+        make_folder(self.b, "1.74", "-os1.74", "13fa795")
+        self.expect = OTHER
+        self.assert_refused()
+
+    def test_no_commit_named(self):
+        make_folder(self.a, "1.73", "", "8972d70", toolchain="release 0.4.0 for OS 1.73, built from sidecar-mods abc\n")
+        make_folder(self.b, "1.74", "-os1.74", "13fa795")
+        self.assert_refused()
+
+    def test_extra_file(self):
+        make_folder(self.a, "1.73", "", "8972d70", extra={"stray.tar.gz": "x"})
+        make_folder(self.b, "1.74", "-os1.74", "13fa795")
+        self.assert_refused()
+
+    def test_missing_file(self):
+        make_folder(self.a, "1.73", "", "8972d70")
+        make_folder(self.b, "1.74", "-os1.74", "13fa795")
+        os.remove(os.path.join(self.b, "core-0.1-os1.74.elemod"))
+        write_sums(self.b)
+        self.assert_refused()
+
+    def test_colliding_names(self):
+        # same file names in both folders (no OS suffix): the combined set would be short of twelve
+        make_folder(self.a, "1.73", "", "8972d70")
+        make_folder(self.b, "1.74", "", "13fa795")
+        self.assert_refused()
 
 
 if __name__ == "__main__":
