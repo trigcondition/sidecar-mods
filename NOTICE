@@ -1,4 +1,4 @@
-rytm-mods (Sidecar mods for the Elektron Analog Rytm MKII, OS 1.73)
+rytm-mods (Sidecar mods for the Elektron Analog Rytm MKII, OS 1.73 and OS 1.74)
 Copyright (C) 2026 trigcondition
 
 This program is free software: you can redistribute it and/or modify it under
@@ -12,25 +12,34 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 Corresponding source
 --------------------
-The published files of a release (rytm-sidecar-<version>.elemod, and
-core-0.1.elemod beside it) are built from this repository at the release's
-tag, v<version>, at https://github.com/trigcondition/sidecar-mods:
-`make setup`, then `make release` (docs/ELEKLOADER.md), with the toolchain
-the release's TOOLCHAIN.txt names (the bytes depend on the m68k-elf-as
-version). That tag holds the complete source of our bytes (mods/,
-registry/, re/, tools/) and pins the exact third-party sources the build
-uses (Makefile, tools/build.py):
+The published files of a release are built from this repository at the
+release's tag, v<version>, at https://github.com/trigcondition/sidecar-mods:
+`make setup`, then `make release` for OS 1.73 and `make release OS=1.74` for
+OS 1.74 (docs/ELEKLOADER.md), with the toolchain the release's TOOLCHAIN.txt
+names (the bytes depend on the m68k-elf-as version). For OS 1.73 they are
+rytm-sidecar-<version>.elemod and core-0.1.elemod; for OS 1.74
+rytm-sidecar-<version>-os1.74.elemod and core-0.1-os1.74.elemod, each OS in
+its own release folder. That tag holds the complete source of our bytes
+(mods/, registry/, re/, tools/; the 1.74 addresses come from the 1.73 sources
+through re/os/1.74.toml and tools/ostarget.py) and pins the exact third-party
+sources the build uses (Makefile, tools/build.py, re/os/<os>.toml):
 
-  - core-0.1.elemod is elekloader's core-ar2 0.1, built unchanged by
-    elekloader's own builder from mods/core-ar2 and mods/core at elekloader
-    commit 8972d70629f230af99c63c8624a886b33ec08299
+  - core-0.1.elemod (OS 1.73) is elekloader's core-ar2 0.1, built unchanged
+    by elekloader's own builder from mods/core-ar2 and mods/core at
+    elekloader commit 8972d70629f230af99c63c8624a886b33ec08299
     (https://github.com/irpina/elekloader, GPL-2.0-or-later);
+  - core-0.1-os1.74.elemod (OS 1.74) is the same core-ar2 0.1 with
+    upstream's own port to OS 1.74 (the "ports" block of its mod.json, by
+    irpina and Iced-Cream), built unchanged by the same builder from
+    mods/core-ar2 and mods/core at elekloader commit
+    13fa795d601c52a7152c17554ae3b3f6f6ca8b05;
   - the builder, linker and packer are elekloader at commit
     c150ac583a4b7e6d64680d5592f4a40f409193f7.
 
-Their source is also in the release folder, beside the files (GPL-2.0
-section 3): elekloader-8972d70-core-ar2-src.tar.gz (mods/core and
-mods/core-ar2 at 8972d70, with elekloader's LICENSE and NOTICE) and
+Their source is also in each release folder, beside the files (GPL-2.0
+section 3): for OS 1.73 elekloader-8972d70-core-ar2-src.tar.gz (mods/core and
+mods/core-ar2 at 8972d70, with elekloader's LICENSE and NOTICE), for OS 1.74
+elekloader-13fa795-core-ar2-src.tar.gz (the same at 13fa795), and in both
 elekloader-c150ac5-src.tar.gz (all of elekloader at c150ac5).
 
 Some of our stubs are generated from C (mods/*/build.sh says how); the C file
