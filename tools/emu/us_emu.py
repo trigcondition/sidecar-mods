@@ -617,7 +617,9 @@ def card_copy(e, name):
     return c
 
 
-STOCK = os.path.join(ROOT, "stock", "Analog-Rytm_MKII_OS1.73.syx")
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+import ostarget  # noqa: E402  the tree's OS (1.73, or a port's: tools/ostarget.py)
+STOCK = str(ostarget.info()["stock_path"])
 
 
 def t_poweroff(e):

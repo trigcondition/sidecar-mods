@@ -14,11 +14,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import layout
+import ostarget
 import symbols as symmod
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
-STOCK_SYX = ROOT / "stock" / "Analog-Rytm_MKII_OS1.73.syx"
+STOCK_SYX = ostarget.info()["stock_path"]          # the tree's OS's stock file (re/os/<os>.toml)
 EFT = ROOT / "vendor" / "elektron-firmware-tool" / "elektron-firmware-tool"
 
 
@@ -109,12 +110,13 @@ def main():
         else:
             print(f"FAIL elekloader block: tail {tail_ok}, inside its area {area_ok} ({lay})")
             ok = False
-        site = 0x400008c0 - base
+        boot_site = ostarget.addr(0x400008c0)        # the OS entry's jsr to the VBR setup (1.73 and 1.74 alike)
+        site = boot_site - base
         want = b"\x4e\xb9" + boot_lo.to_bytes(4, "big")
         if bytes(patched[site:site + 6]) == want:
-            print(f"ok   boot site 0x400008c0: jsr 0x{boot_lo:08x} (core's .boot, appended)")
+            print(f"ok   boot site 0x{boot_site:08x}: jsr 0x{boot_lo:08x} (core's .boot, appended)")
         else:
-            print(f"FAIL boot site 0x400008c0 holds {bytes(patched[site:site + 6]).hex()}, "
+            print(f"FAIL boot site 0x{boot_site:08x} holds {bytes(patched[site:site + 6]).hex()}, "
                   f"expected {want.hex()}")
             ok = False
         hdr, mine_hdr = STOCK_SYX.read_bytes()[0x24:0x40], syx.read_bytes()[0x24:0x40]

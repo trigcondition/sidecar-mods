@@ -23,11 +23,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import layout
+import ostarget
 import symbols as symmod
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
-STOCK_SYX = ROOT / "stock" / "Analog-Rytm_MKII_OS1.73.syx"
+# The OS this tree is for (re/symbols.toml [meta] target; a port's tree is another OS's, tools/ostarget.py) and its
+# facts: the stock file, elekloader's core for it (re/os/<os>.toml).
+OS = ostarget.info()
+STOCK_SYX = OS["stock_path"]
 EFT_DIR = ROOT / "vendor" / "elektron-firmware-tool"
 EFT = EFT_DIR / "elektron-firmware-tool"
 
@@ -47,10 +51,15 @@ def run(cmd, **kw):
 
 
 def check_stock():
+    """The target's stock file (only it: a tree for 1.73 needs no 1.74 file, and the other way round), by
+    stock/SHA256SUMS and by re/os/<os>.toml."""
     sums = (ROOT / "stock" / "SHA256SUMS").read_text().split()
     want = dict(zip(sums[1::2], sums[0::2]))
-    for name, expect in want.items():
-        got = sha256((ROOT / "stock" / name).read_bytes())
+    name = STOCK_SYX.name
+    if not STOCK_SYX.exists():
+        raise SystemExit(f"stock/{name} missing: Elektron's OS {OS['os']} file, as downloaded")
+    got = sha256(STOCK_SYX.read_bytes())
+    for expect in (want.get(name), OS["syx_sha256"]):
         if got != expect:
             raise SystemExit(f"stock/{name} checksum mismatch\n  want {expect}\n  got  {got}")
 
@@ -247,14 +256,15 @@ def check_linked_params(mods, enabled):
 # and is only executed here, like elektron-firmware-tool: nothing of it is copied into
 # this repository. The pinned commit is the Makefile's ELEK_REV; build.py refuses another.
 # The core is built from its source as it was at ELEK_CORE_REV (the same repository): core-ar2
-# 0.1, the last core for OS 1.73 without mod storage, which the Rytm runs since rui1051.
+# 0.1, the last core for OS 1.73 without mod storage, which the Rytm runs since rui1051; for OS 1.74
+# the same core's port (upstream's 13fa795, re/os/1.74.toml core_rev).
 # Upstream's main has moved core-ar2 to 0.6, OS 1.74 only; 0.2 (storage) collides with our
 # sound and kit bytes (mods/0027-elekloader/design.md section 8). The current builder makes
 # from that source the same core-0.1.elemod 8972d70 made (sha256 33de51c0..., measured).
 ELEK_DIR = ROOT / "vendor" / "elekloader"
 ELEK_REV = "c150ac583a4b7e6d64680d5592f4a40f409193f7"
-ELEK_CORE_REV = "8972d70629f230af99c63c8624a886b33ec08299"
-ELEK_CORE_VERSION = "0.1"
+ELEK_CORE_REV = OS["core_rev"]
+ELEK_CORE_VERSION = OS["core_version"]
 ELEK_MOD = "0027-elekloader"
 ELEK_CROSS = "m68k-elf-"
 ELEK_ID = "rytm-"          # elemod id = this + the mod's id, e.g. rytm-0021-ext
@@ -274,17 +284,18 @@ HOMEPAGE = "https://github.com/trigcondition/sidecar-mods"
 # mod with that data claims, with a site that leaves the stock bytes as they are, the first
 # word of each storage hook core 0.2 adds on 1.73 (92a99c9 mods/core-ar2/mod.json, the same
 # sites every later 1.73 core keeps): elekloader then refuses the mod with any such core
-# ("... overlap"), and links it with 0.1 as before. Nothing in the image changes.
+# ("... overlap"), and links it with 0.1 as before. Nothing in the image changes. 1.73's addresses, as
+# everything here; on another OS, translated by its map (on 1.74 the same: core 0.3 .. 0.6 hook the same sites).
 CORE_STORE_GUARD = {
-    "sound": [(0x4000843a, "st_sound_save"), (0x400081f6, "st_sound_load")],
-    "kit": [(0x400088d6, "st_kit_save"), (0x4000863e, "st_kit_load")],
+    "sound": [(ostarget.addr(0x4000843a), "st_sound_save"), (ostarget.addr(0x400081f6), "st_sound_load")],
+    "kit": [(ostarget.addr(0x400088d6), "st_kit_save"), (ostarget.addr(0x4000863e), "st_kit_load")],
 }
 CORE_STORE_SCOPES = {"0013-voice-dac": ["sound"], "0021-ext": ["sound"],
                      "0025-sendfx-report": ["kit"]}
 
 
 def elek_pinning(meta):
-    """Both tools must pin the same stock: elekloader's Rytm 1.73 release (syx and main
+    """Both tools must pin the same stock: elekloader's Rytm release of our OS (syx and main
     OS sha256, main OS length) has to be ours (stock/SHA256SUMS, re/symbols.toml meta)."""
     if not (ELEK_DIR / ".git").exists():
         raise SystemExit(f"{ELEK_DIR} missing: make setup")
@@ -296,14 +307,16 @@ def elek_pinning(meta):
         from elekloader.devices import analog_rytm_mk2 as prof
     finally:
         sys.path.pop(0)
-    rel = prof.DEVICE.releases.get("1.73")
+    rel = prof.DEVICE.releases.get(OS["os"])
+    if rel is None:
+        raise SystemExit(f"elekloader {ELEK_REV[:7]} knows no Rytm OS {OS['os']}")
     sums = (ROOT / "stock" / "SHA256SUMS").read_text().split()
     ours = dict(zip(sums[1::2], sums[0::2]))[STOCK_SYX.name]
     for what, theirs, mine in (("stock .syx sha256", rel.syx_sha256, ours),
                                ("MAIN OS sha256", rel.main_sha256, meta["mainos_sha256"]),
                                ("MAIN OS length", rel.main_len, meta["mainos_size"])):
         if theirs != mine:
-            raise SystemExit(f"elekloader's Rytm 1.73 {what} is {theirs}, ours {mine}")
+            raise SystemExit(f"elekloader's Rytm {OS['os']} {what} is {theirs}, ours {mine}")
     if prof.DEVICE.main_load != meta["base"]:
         raise SystemExit(f"elekloader's load address 0x{prof.DEVICE.main_load:08x} != ours")
     return rev, prof.DEVICE.ddr
@@ -553,8 +566,9 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
         if bundle:
             modjson = {"id": eid, "version": version, **BUNDLE_META,
                        "description": (
-                           f"The Sidecar's mods for the Analog Rytm MKII on OS 1.73: "
-                           + ", ".join(ms) + ". Use it with core-ar2 0.1 (core-0.1.elemod, "
+                           f"The Sidecar's mods for the Analog Rytm MKII on OS {OS['os']}: "
+                           + ", ".join(ms) + f". Use it with core-ar2 {ELEK_CORE_VERSION} "
+                           f"(core-{ELEK_CORE_VERSION}{OS['core_suffix']}.elemod, "
                            f"published beside it) only: core 0.2 and newer keep their mod storage "
                            f"in bytes these mods already use, and are refused. Source, licence "
                            f"(GPL-2.0-or-later) and the install guide: {HOMEPAGE} "
@@ -566,7 +580,7 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                        "license": BUNDLE_META["license"],
                        "description": ((mods[mid].get("summary") or "").strip()[:900] +
                                        f" Built for this set only (tag {tag}). {HOMEPAGE}")}
-        modjson.update({"device": "analog-rytm-mk2", "os": "1.73", "requires": requires,
+        modjson.update({"device": "analog-rytm-mk2", "os": OS["os"], "requires": requires,
                         "conflicts": conflicts,
                         "resources": {"core": ELEK_CORE_VERSION} if sources else {},
                         "sources": sources, "subscribe": subscribe, "sites": sites,
@@ -576,7 +590,9 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
         built.append(next((mdir / "out").glob("*.elemod")))
         nsites += len(sites)
         sources_of[eid] = ms
-    version = STOCK_SYX.read_bytes()[0x3b:0x3f].decode()   # the stock container's "1.73"
+    version = STOCK_SYX.read_bytes()[0x3b:0x3f].decode()   # the stock container's "1.73" / "1.74"
+    if version != OS["os"]:
+        raise SystemExit(f"{STOCK_SYX.name} says version {version!r}, not {OS['os']}")
     log = elek("elekloader.patch", "--stock", STOCK_SYX, "--mod", core_mod,
                *[x for b in built for x in ("--mod", b)], "--out", syx_out, "--version", version)
     man = json.loads(Path(str(syx_out) + ".json").read_text())
@@ -806,6 +822,12 @@ def main():
         claim = [c for c in caves.get(mid, [])
                  if not layout.gated_out(c.get("gate"), mod["_params"], mid)]
         if not caves.get(mid):
+            gone = [u for u in ostarget.load(OS["os"]).get("unavailable", []) if u["owner"] == mid]
+            if gone:
+                raise SystemExit(
+                    f"{mid} cannot be built outside elekloader's area on OS {OS['os']}: its cave (0x{gone[0]['addr']:08x}) "
+                    f"is {OS['os']}'s code ({gone[0].get('note', 're/os/' + OS['os'] + '.toml [[unavailable]]')}). "
+                    f"Build it in the area: --area-elek {mid}, as the release does.")
             raise SystemExit(f"{mid} is enabled but has no cave claim in the registry")
         if not claim:
             stub_symbols[mid] = {}

@@ -75,10 +75,11 @@ Prerequisites:
 - `m68k-elf-binutils` (`brew install m68k-elf-binutils` on macOS)
 - a Ghidra install, only for `make ghidra`
 
-The stock firmware is not included. Download Analog Rytm MKII OS 1.73 from
-Elektron's support site and place the `.syx` at
-`stock/Analog-Rytm_MKII_OS1.73.syx`. The build refuses any file whose checksum
-differs from `stock/SHA256SUMS`.
+The stock firmware is not included. The sources are written for OS 1.73 and build for OS 1.74 too, through a
+committed address map (`re/os/1.74.toml`, `tools/ostarget.py`). Elektron's support site offers OS 1.74 now: put its
+`.syx` (from `Analog-Rytm_MKII_OS1.74_dist.zip`) at `stock/Analog-Rytm_MKII_OS1.74.syx` and add `OS=1.74` to the make
+commands (`make release OS=1.74`); with a 1.73 file, `stock/Analog-Rytm_MKII_OS1.73.syx` and no `OS`. The build
+refuses any file whose checksum differs from `stock/SHA256SUMS` / `re/os/<os>.toml`.
 
     make setup     # venv + Python deps, clone and build the vendor tool at its pinned commit
     make verify    # build + assert the result
