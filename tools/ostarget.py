@@ -136,34 +136,70 @@ def addr(a: int, root=ROOT) -> int:
 HEX = re.compile(r"(?<![\w])(?<![^.]\.)0[xX]([0-9a-fA-F]{8})([uUlL]*)\b")   # also after "..", a range
 DEC = re.compile(r"(?<![\w.$-])(1\d{9})(?!\w)(?!\.\d)")   # also `1075551828.l` (gas absolute long)
 BARE = re.compile(r"(?<![0-9a-fA-Fx_.])(40[0-2][0-9a-fA-F]{5})(?![0-9a-fA-F])")
-# any number that could be an image address, in whatever form: what the forms above missed is refused (an address left
-# as 1.73's would be the same word in both builds, which no comparison of the two builds can see)
-ANY = re.compile(r"(?<![0-9a-zA-Z_])(?:0[xX]([0-9a-fA-F]{8})|(1\d{9}))(?![0-9a-zA-Z_])")
+# The net: every other way a source can spell an image address. A hit that is a moved address (or one in a changed
+# region) and was not translated above is refused, unless re/os/<os>.toml [[not_address]] names that file and value
+# with a reason (a float, a mask, FX words that happen to read as one). An address left as 1.73's would be the same
+# word in both builds, which no comparison of the two builds can see.
+ANY = re.compile(r"(?<![0-9a-zA-Z_$])(?:0[xX]([0-9a-fA-F_]{8,11})|(1\d{9}))(?![0-9a-zA-Z_])")   # hex (any _ grouping), decimal
+DOLLAR = re.compile(r"\$([0-9a-fA-F]{8})(?![0-9a-fA-F])")                                      # Motorola $400a2bee
+BYTES = re.compile(r"0[xX]40\s*,\s*0[xX]([0-9a-fA-F]{2})\s*,\s*0[xX]([0-9a-fA-F]{2})\s*,\s*0[xX]([0-9a-fA-F]{2})(?![0-9a-fA-F])")
+HALF = re.compile(r"(?<![0-9a-zA-Z_])0[xX](40[0-2][0-9a-fA-F])(?:\s*<<\s*16|\s*,\s*0[xX]([0-9a-fA-F]{4})(?![0-9a-fA-F]))")
+BASEPLUS = re.compile(r"(?:(?<![\w])BASE|0[xX]4000_?0400)\s*\+\s*(0[xX][0-9a-fA-F]+|\d+)(?![\w.])")
 HEXU = re.compile(r"(?<![\w.])0x(40[0-2][0-9a-fA-F]_[0-9a-fA-F]{4})\b")      # Python's 0x4012_119a
 
 
 class Translator:
-    def __init__(self, m: Map):
+    def __init__(self, m: Map, not_address=()):
+        """not_address: {(file, value)}: literals that read as image addresses and are not (re/os/OS.toml)."""
         self.m, self.log, self.refused = m, [], []
+        self.allow = set(not_address)
+        self._made = []
+
+    def _allowed(self, where, v):
+        return (where.rsplit(":", 1)[0], v) in self.allow
 
     def _one(self, v, where, fmt):
         if not self.m.in_image(v) and v not in self.m.exc:
+            return None
+        if self._allowed(where, v):
             return None
         try:
             t = self.m.tr(v)
         except Refused as e:
             self.refused.append(f"{where}: {e}")
+            self._made.append(v)            # refused once, not again by the net
             return None
         if t == v:
             return None
         self.log.append((where, v, t))
+        self._made.append(t)
         return fmt(t)
+
+    def _net(self, w, v, form, hi_only=False):
+        """A hit of the net: refused if it is (or, hi_only: its 64 KB could hold) a moved or changed address."""
+        if self._allowed(w, v) or v in self._made:
+            return
+        span = range(v, v + 0x10000, 0x100) if hi_only else (v,)
+        for x in span:
+            if not self.m.in_image(x):
+                continue
+            try:
+                moved = self.m.tr(x) != x
+            except Refused as e:
+                self.refused.append(f"{w}: {form}: {e}")
+                return
+            if moved:
+                self.refused.append(f"{w}: {form} reads as the moved image address 0x{v:08x}; the port translates "
+                                    f"only 0x-hex literals (and gcc's decimals in generated stubs): write it as one, "
+                                    f"or list it in [[not_address]] with the reason")
+                return
 
     def text(self, s: str, where: str, dec=False, bare=False) -> str:
         """Every image address in s translated; refused ones left and recorded."""
         out = []
         for n, line in enumerate(s.splitlines(keepends=True), 1):
             w = f"{where}:{n}"
+            self._made = []
 
             def hx(mm):
                 v = int(mm.group(1), 16)
@@ -178,17 +214,26 @@ class Translator:
             if bare:
                 line = BARE.sub(lambda mm: self._one(int(mm.group(1), 16), w, lambda t: f"{t:08x}") or mm.group(0),
                                 line)
-            made = {b for ww, _a, b in self.log[-64:] if ww == w}
             for mm in ANY.finditer(line):
-                v = int(mm.group(1), 16) if mm.group(1) else int(mm.group(2))
-                if v in made or not self.m.in_image(v) or (mm.group(2) and not dec):
-                    continue
-                try:
-                    if self.m.tr(v) != v:
-                        self.refused.append(f"{w}: {mm.group(0)} looks like a moved image address in a form the port "
-                                            f"does not translate")
-                except Refused:
-                    pass
+                if mm.group(1):
+                    digits = mm.group(1).replace("_", "")
+                    if len(digits) != 8:
+                        continue
+                    self._net(w, int(digits, 16), mm.group(0))
+                else:
+                    self._net(w, int(mm.group(2)), mm.group(0) + " (decimal)")
+            for mm in DOLLAR.finditer(line):
+                self._net(w, int(mm.group(1), 16), mm.group(0))
+            for mm in BYTES.finditer(line):
+                self._net(w, int("40" + "".join(mm.groups()), 16), mm.group(0) + " (bytes)")
+            for mm in HALF.finditer(line):
+                hi = int(mm.group(1), 16) << 16
+                if mm.group(2):
+                    self._net(w, hi | int(mm.group(2), 16), mm.group(0) + " (two halves)")
+                else:
+                    self._net(w, hi, mm.group(0) + " (a high half)", hi_only=True)
+            for mm in BASEPLUS.finditer(line):
+                self._net(w, BASE + int(mm.group(1), 0), mm.group(0) + " (the image base plus an offset)")
             out.append(line)
         return "".join(out)
 
@@ -322,7 +367,7 @@ def port(os_ver: str, out: Path, root=ROOT, quiet=False) -> int:
         raise SystemExit(f"the tree is {os_ver} already")
     doc = load(os_ver, root)
     m = the_map(os_ver, root)
-    tr = Translator(m)
+    tr = Translator(m, {(x["file"], x["value"]) for x in doc.get("not_address", [])})
     out.mkdir(parents=True, exist_ok=True)
     for name in COPY:
         dst = out / name

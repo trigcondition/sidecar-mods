@@ -49,6 +49,54 @@ class MapTest(unittest.TestCase):
         t.text("lea 0x40057460,%a0\n", "y.s")
         self.assertEqual(len(t.refused), 1)
 
+    def test_gas_long_decimal(self):
+        """9279e63: gcc writes some absolute operands as `N.l`."""
+        t = ostarget.Translator(self.m)
+        out = t.text("\tcmp.l 1074408430.l,%d2\n\tmove.l 0x400a2bee.w,%d0\n", "stub.s", dec=True)
+        self.assertEqual(out, "\tcmp.l 1074408538.l,%d2\n\tmove.l 0x400a2c5a.w,%d0\n")
+        self.assertEqual(t.refused, [])
+
+    def refused(self, text, dec=False, allow=()):
+        t = ostarget.Translator(self.m, allow)
+        out = t.text(text, "x.c", dec=dec)
+        return t.refused, out
+
+    def test_net_refuses_untranslated_forms(self):
+        for text, why in (("jsr 1074408430\n", "decimal in a hand-written file"),
+                          ("move.l #$400a2bee,%d0\n", "Motorola $hex"),
+                          ("{0x40, 0x0a, 0x2b, 0xee}\n", "a byte array"),
+                          ("{0x400a, 0x2bee}\n", "two halves"),
+                          ("(0x400a << 16) | lo\n", "a high half"),
+                          ("BASE + 0xa27ee\n", "the image base plus an offset"),
+                          ("0x40000400 + 0xa27ee\n", "the base literal plus an offset"),
+                          ("0x40_0a_2b_ee\n", "another digit grouping")):
+            with self.subTest(why):
+                ref, out = self.refused(text)
+                self.assertEqual(len(ref), 1, ref)
+                self.assertEqual(out, text)                              # left as it was, never half-translated
+
+    def test_net_refuses_changed_regions(self):
+        ref, _ = self.refused("lea $40057460,%a0\n")
+        self.assertEqual(len(ref), 1)
+        self.assertIn("changed", ref[0])
+
+    def test_net_leaves_values(self):
+        for text in ("0x4000 | FP_A\n", "{0x4000, 0x0001}\n", "x = 1073741824\n", "BASE + ms // 5\n",
+                     "0x80000000 + 0x10\n"):
+            with self.subTest(text):
+                self.assertEqual(self.refused(text)[0], [])
+
+    def test_not_address_allow_list(self):
+        ref, out = self.refused("jsr 0x400a2bee\n{0x400a, 0x2bee}\n", allow={("x.c", 0x400a2bee)})
+        self.assertEqual((ref, out), ([], "jsr 0x400a2bee\n{0x400a, 0x2bee}\n"))
+        for x in self.doc.get("not_address", []):
+            with self.subTest(x["file"]):
+                self.assertTrue(x.get("reason"))
+                hit = ostarget.Translator(self.m)
+                hit.text((ROOT / x["file"]).read_text(), x["file"], bare=x["file"].startswith("tools/"))
+                self.assertTrue(any(f"0x{x['value']:08x}" in r for r in hit.refused),
+                                f"{x['file']}: no longer holds 0x{x['value']:08x}: drop the entry")
+
     def test_every_claim_has_a_target_hash(self):
         """A new detour or patch needs its 1.74 hash (tools/ostarget.py derive), or the port refuses it."""
         reg = layout.load(ROOT / "registry" / "allocations.toml")
