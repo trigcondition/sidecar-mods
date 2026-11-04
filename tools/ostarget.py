@@ -114,6 +114,28 @@ class Map:
     def shift(self, a: int) -> int:
         return self.tr(a) - a
 
+    def untr(self, t: int) -> int:
+        """A target address back to 1.73's (the inverse of tr), for a test that reads a 1.73 image from a port's
+        tree. Outside the image: unchanged."""
+        cands = {a for a, b in self.exc.items() if b == t}
+        cands |= {t - sh for lo, hi, sh in self.segs if lo + sh <= t < hi + sh}
+        if not cands and not self.in_image(t):
+            return t
+        if len(cands) != 1:
+            # none, or two (1.73's end padding, where 1.74's code now is): no single 1.73 address
+            raise Refused(f"0x{t:08x} has {len(cands) or 'no'} 1.73 counterpart{'s' if len(cands) != 1 else ''}")
+        return cands.pop()
+
+
+def address_in(os_ver: str, a: int, root=ROOT) -> int:
+    """An address of the tree's OS as an image of os_ver has it (both the sources' OS and the tree's are known):
+    e.g. a 1.74 tree's suite reading a 1.73 base. The same OS: unchanged."""
+    here = tree_os(root)
+    if os_ver == here:
+        return a
+    src = a if "from" not in load(here, root)["meta"] else the_map(here, root).untr(a)
+    return src if os_ver == load(here, root)["meta"].get("from", here) else the_map(os_ver, root).tr(src)
+
 
 def the_map(os_ver: str, root=ROOT) -> Map:
     doc = load(os_ver, root)

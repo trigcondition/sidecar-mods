@@ -30,6 +30,13 @@ class MapTest(unittest.TestCase):
         self.assertEqual(self.m.tr(0x40193f4e), 0x4019411a)          # FN_MGR: +0x1cc
         self.assertEqual(self.m.tr(0x401e34fc), 0x401e37ac)          # a vtable: +0x2b0
 
+    def test_untranslate(self):
+        for a in (0x400008c0, 0x400a2bee, 0x401bf918, 0x40287ccc, 0x80000000):
+            self.assertEqual(self.m.untr(self.m.tr(a)), a)
+        with self.assertRaises(ostarget.Refused):
+            self.m.untr(0x402cc920)              # 1.73's padding there, and 1.74's code moved over it: two answers
+        self.assertEqual(ostarget.address_in("1.73", 0x401bf918), 0x401bf918)     # the sources' own tree
+
     def test_outside_the_image(self):
         for a in (0x80000000, 0x8000e508, 0x41318982, 0x47be0000, 0xfc070000, 0x2ca):
             self.assertEqual(self.m.tr(a), a)

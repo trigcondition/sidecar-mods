@@ -4,12 +4,14 @@ host's answers are built here from the tables the host answers with (plugins/mdk
 
     tools/emu/md_emu.py TAG all | TEST ...     (RYTM_EMU, RYTM_TEENSY as tools/emu/us_emu.py; base: tools/emu/us_base.sh TAG)
 """
+import json
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import us_emu as U     # noqa: E402  (Emu, check, the protocol module as U.P)
+import ostarget        # noqa: E402  (us_emu put tools/ on the path: the tree's OS, address_in)
 import sfx_emu as S    # noqa: E402  (pokes, poke_boot)
 
 P = U.P
@@ -106,9 +108,9 @@ def rec_names(e, s, recs=None):
     return [e.cstr(s, e.u32(s, U.rec(r) + 48), 5) for r in (recs or range(REC_MD, REC_MD + 8))]
 
 
-def src_row(e, s):
-    """Machine 42's SRC page row (0x40287cc8 + 36 m: name, 8 records)."""
-    b = e.peek(s, 0x40287ccc + 36 * 42, 32)
+def src_row(e, s, at=0x40287ccc + 36 * 42):
+    """Machine 42's SRC page row (0x40287cc8 + 36 m: name, 8 records); `at`: where it is in e's image."""
+    b = e.peek(s, at, 32)
     return [int.from_bytes(b[i:i + 4], "big") for i in range(0, 32, 4)]
 
 
@@ -508,9 +510,21 @@ def md_mode(e, s):
     return e.peek(s, U.sym("md") + 4, 1)[0]
 
 
+def os_of(x):
+    """The OS of an Emu's build ("1.73", "1.74"), from its manifest."""
+    return json.load(open(os.path.join(x.out, "manifest.json")))["target"].removeprefix("OS")
+
+
+def own(x, a):
+    """This tree's address a as x's image has it: 0.3.0's base is a 1.73 build, so in the 1.74 tree its records are
+    read at 1.73's addresses (tools/ostarget.py address_in), never at 1.74's."""
+    return ostarget.address_in(os_of(x), a)
+
+
 def t_same030(e):
     """An old sound on this build against release 0.3.0's image, same words, same keys: the SRC and SMPL screens, the
-    records' fields and names, the 04s are 0.3.0's."""
+    records' fields and names, the 04s are 0.3.0's. Each image's records are read at its own OS's addresses (0.3.0 is
+    a 1.73 build), so on a 1.74 build the records are compared as on 1.73."""
     rel = U.Emu("rel0-3-0")
     U.OBJ = e.out
     ev, t = U.walk_list(100, DOWNS_MD)
@@ -523,13 +537,15 @@ def t_same030(e):
         ed.pop(REC_PROJ + 0x1c + 28)
         s2, c = S.poke_boot(x, f"same-{name}", ed, snap=s, start=x.clock + t)
         s3 = x.run(f"same-{name}-src", 800, keys, snap=s2, start=4400, card=c, save=True)
-        rec = [x.peek(s3, U.rec(r), 40) for r in range(390, 398)]
-        nm = [[x.cstr(s3, x.u32(s3, U.rec(r) + o), 13) for o in (40, 44, 48)] for r in range(390, 398)]
+        rec = [x.peek(s3, own(x, U.rec(r)), 40) for r in range(390, 398)]
+        nm = [[x.cstr(s3, x.u32(s3, own(x, U.rec(r)) + o), 13) for o in (40, 44, 48)] for r in range(390, 398)]
         tr = [m for m in x.sent if len(m) > 20 and m[4] in (3, 4)]
         src = open(os.path.join(x.out, f"same-{name}-src.png"), "rb").read()
         x.run(f"same-{name}-smpl", 200, [(20, "press", "SMPL")], snap=s3, start=5200, card=c)
         smp = open(os.path.join(x.out, f"same-{name}-smpl.png"), "rb").read()
-        out[name] = dict(rec=rec, nm=nm, tr=tr, src=src, smp=smp, row=src_row(x, s3))
+        out[name] = dict(rec=rec, nm=nm, tr=tr, src=src, smp=smp, row=src_row(x, s3, own(x, 0x40287ccc + 36 * 42)))
+        check(f"same030: {name}'s records found (the image's own OS, {os_of(x)}): names present",
+              all(n[0] for n in nm), str(nm[:2]))
     a, b = out["new"], out["rel"]
     # the machine's name differs on purpose (MD): the records' group name
     for z in (a, b):
