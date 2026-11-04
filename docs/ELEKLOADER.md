@@ -176,6 +176,7 @@ beside the files.
     make release OS=1.74  # the same for OS 1.74: build/release/<VERSION>-os1.74/ (the port's tree: build/os/1.74)
     make release-check OS=1.74
     make release-all      # both, each checked
+    make release-assets   # the GitHub release's one folder: build/release/<VERSION>-assets/
 
 - One source tree, two OSes: the sources hold OS 1.73's addresses; `re/os/1.74.toml` maps them to 1.74's
   (segments with their shifts, the regions 1.74 really changed, which refuse any address, and 1.74's stock-byte
@@ -188,6 +189,12 @@ beside the files.
   Makefile (the rui1051 set without 0028-elek-hello, a test counter). `tools/build.py --elek-bundle` writes one elemod for every enabled mod; without it,
   one per mod (`rytm-<id>-<tag>.elemod`), each with `requires` for the mods it needs.
 - `make release` runs `tools/verify.py` on the build, as every build.
+- `make release-assets` (`tools/combine_release.py`) makes the release's one asset folder from the two OS folders: all
+  of the 1.73 folder, the 1.74 folder's `.elemod` files and core source archive, its `TOOLCHAIN.txt` as
+  `TOOLCHAIN-os1.74.txt`, and one `SHA256SUMS` over the twelve files. It refuses when a folder does not match its own
+  `SHA256SUMS`, when `LICENSE`, `NOTICE` or the builder's archive differ between the two, on a file a release does not
+  hold (a `.syx`), and on a `TOOLCHAIN.txt` with uncommitted changes. It runs `tools/check_unreleased.py` first, which
+  refuses while an `UNRELEASED` mark is left in the tree.
 - `make release-check` (`tools/release_check.py`) takes only the published files and the stock `.syx`:
   - `elekloader.lint`, `patch --check` and `patch --out`;
   - the web page's own module (`web/bridge.py`, run in CPython in place of the page's Pyodide): add both files,

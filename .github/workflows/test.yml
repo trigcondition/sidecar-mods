@@ -29,6 +29,7 @@ jobs:
           python tools/test_layout.py
           python tools/test_cavescan.py
           python tools/test_ostarget.py
+          python tools/test_combine_release.py
       - name: Calibration self-tests (mod 0006)
         run: |
           python tools/comp/calib_tables.py --check

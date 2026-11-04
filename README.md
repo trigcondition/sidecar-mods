@@ -87,6 +87,7 @@ The Sidecar mods as one elekloader module per OS, `rytm-sidecar-<VERSION>.elemod
     make release OS=1.74  # the same for OS 1.74: build/release/0.4.0-os1.74/
     make release-check OS=1.74
     make release-all      # all four, both OSes
+    make release-assets   # build/release/0.4.0-assets/: the GitHub release's 12 files, one SHA256SUMS
 
 `make release-check` takes only the published files and the stock `.syx` through elekloader's command line and its web
 page's code path: MAIN OS must come out as the release build's, the other sections stock. It also checks that
