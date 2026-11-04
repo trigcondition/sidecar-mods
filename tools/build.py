@@ -822,6 +822,12 @@ def main():
         claim = [c for c in caves.get(mid, [])
                  if not layout.gated_out(c.get("gate"), mod["_params"], mid)]
         if not caves.get(mid):
+            gone = [u for u in ostarget.load(OS["os"]).get("unavailable", []) if u["owner"] == mid]
+            if gone:
+                raise SystemExit(
+                    f"{mid} cannot be built outside elekloader's area on OS {OS['os']}: its cave (0x{gone[0]['addr']:08x}) "
+                    f"is {OS['os']}'s code ({gone[0].get('note', 're/os/' + OS['os'] + '.toml [[unavailable]]')}). "
+                    f"Build it in the area: --area-elek {mid}, as the release does.")
             raise SystemExit(f"{mid} is enabled but has no cave claim in the registry")
         if not claim:
             stub_symbols[mid] = {}
