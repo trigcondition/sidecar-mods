@@ -13,7 +13,7 @@ SRC pages flicker is fixed. It comes in two builds of the same source, for **OS 
 for **OS 1.73**: one elekloader module per OS, `rytm-sidecar-0.4.0-os1.74.elemod` with elekloader's `core-0.1-os1.74.elemod`, and
 `rytm-sidecar-0.4.0.elemod` with `core-0.1.elemod`. Build the `.syx` from your own stock file on elekloader's page or
 command line, or in the browser patcher (build `rel0-4-0` for 1.73, `rel0-4-0-os1.74` for 1.74); both give the same
-file. Moving a Rytm from 1.73 to 1.74 is one way: read `docs/ELEKLOADER.md` and `docs/FLASHING.md` first.
+file. You can move between 1.73 and 1.74 in both directions with Elektron's stock files (checked on a unit): read `docs/ELEKLOADER.md` and `docs/FLASHING.md` first.
 
 > **Sidecar Mini (Teensy 4.1) is phased out.** It is frozen at 0.1.0, with its Rytm build `rui1027d` (below): no new
 > features. The 0.1.0 release stays downloadable.

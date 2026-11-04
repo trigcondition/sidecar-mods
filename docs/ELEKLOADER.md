@@ -49,7 +49,7 @@ and they call each other at fixed addresses.
 
 1. Back up every project, sound and sample with Transfer.
 2. Make sure the recovery route works on your unit: one full DIN reflash of your stock OS file through the STARTUP
-   menu (below). Moving from 1.73: the recovery reflash is stock 1.74, and it is the one-way step. `docs/FLASHING.md` stage S0 says why: the USB route needs a firmware that boots.
+   menu (below). Recovery is the stock file of the OS you want to be on, and both directions work with Elektron's files (checked on a unit). `docs/FLASHING.md` stage S0 says why: the USB route needs a firmware that boots.
 3. Use a scratch project for the first session under the mods. Projects saved while a track plays a Sidecar
    machine show that track as DISABLE on stock (`docs/FLASHING.md`, "Projects saved under the mods, on stock").
 
@@ -120,9 +120,10 @@ The web page shows the same steps before every download.
 A unit on 1.73 (stock or with the Sidecar's 1.73 build) can take the 1.74 build directly: the file is a whole OS.
 Projects should carry over: 1.74's kit, sound, pattern, global and project code is 1.73's with only its addresses
 moved (its additions are the Outbox's main-output routing), checked in the code of both images and in the emulator.
-No project has yet been opened on a unit after the move, so back up every project first. Treat it as
-**one-way**: going back from 1.74 to 1.73 has passed in the emulator, but has not been tried on a unit, and the OS
-carries "Downgrade not possible". Once on 1.74, recover with stock 1.74, and back up first.
+A kit saved and reloaded on a unit running the 1.74 build; back up every project first, as before any OS change.
+The move is **not one-way**: you can always flash back to 1.73 or 1.74 with Elektron's own stock files (checked on a
+unit, 2026-11-04). Recovery is the stock file of the OS you want to be on. Elektron's site offers only 1.74, so keep
+your own copy of the 1.73 file if you want to go back to it.
 
 ## What you cannot do yet
 
@@ -147,11 +148,12 @@ carries "Downgrade not possible". Once on 1.74, recover with stock 1.74, and bac
 
 ## Status
 
-<!-- UNRELEASED: the hardware status at release: which of the release builds (1.73 07780e9e..., 1.74 538ae6fa...) the owner has flashed and played on a unit; rewrite this section from it. -->
+<!-- UNRELEASED: 1.74 538ae6fa... is filled in from the unit run of 2026-11-04; still open: whether the 1.73 release build (07780e9e...) has been flashed on a unit, and the final hashes at the release commit. -->
 
-These release files have not been run on a unit. The 1.74 build has run only in the emulator (its
-suites, as the 1.73 build's, and flash rehearsals from stock 1.74, from the 1.73 build and back to stock 1.74); no
-unit has run any Sidecar build on 1.74 yet. On 1.73, a test build from the same source has passed the emulator suites
+The 1.74 build (sha256 `538ae6fa...`, the hash above) has run on a real Rytm (2026-11-04): the owner flashed stock 1.74,
+then the 1.74 build, and the Sidecar machines, the pages, the SEND FX including ROUTE PRE, the MASTER page and kit save and
+reload all work. Flashing back and forth between stock 1.73 and stock 1.74 works too. Before that it had passed the
+emulator suites and flash rehearsals from stock 1.74, from the 1.73 build and back to stock 1.74. On 1.73, a test build from the same source has passed the emulator suites
 and a flash rehearsal and has run on a unit. The emulator enters MAIN OS directly with its own depacker, so it does not run the Rytm bootstrap's depacker on this
 file. Two things are new against the rui1051 image the Sidecar's own unit runs: the MAIN OS lacks 0028-elek-hello
 (a test counter), and the packed stream comes from elekloader's new packer. The new stream uses only what Elektron's own stock 1.73 stream
