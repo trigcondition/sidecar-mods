@@ -148,8 +148,6 @@ your own copy of the 1.73 file if you want to go back to it.
 
 ## Status
 
-<!-- UNRELEASED: 1.74 538ae6fa... is filled in from the unit run of 2026-11-04; still open: whether the 1.73 release build (07780e9e...) has been flashed on a unit, and the final hashes at the release commit. -->
-
 The 1.74 build (sha256 `538ae6fa...`, the hash above) has run on a real Rytm (2026-11-04): the owner flashed stock 1.74,
 then the 1.74 build, and the Sidecar machines, the pages, the SEND FX including ROUTE PRE, the MASTER page and kit save and
 reload all work. Flashing back and forth between stock 1.73 and stock 1.74 works too. Before that it had passed the
