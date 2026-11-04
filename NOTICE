@@ -95,8 +95,8 @@ Facts, not code
 
 Elektron
 --------
-Elektron and Analog Rytm are trademarks of Elektron Music Machines. This
-project is not affiliated with or endorsed by Elektron. It contains no
+Elektron, Analog Rytm and Analog Four are trademarks of Elektron Music
+Machines. This project is not affiliated with or endorsed by Elektron. It contains no
 Elektron firmware and publishes no firmware image: the .elemod files carry
 our own bytes and the sha256 of the stock bytes they replace, plus a few
 short stock fragments where a mod must repeat them (the stock instructions a
