@@ -1,6 +1,6 @@
 #!/bin/bash
 # tools/emu/us_base.sh TAG - the emulator base for the user-slot tests (tools/emu/us_emu.py): cold boot
-# build/Analog-Rytm_MKII_OS1.73_<TAG>.syx in rytm-emu on a fresh card, the startup dialogs answered
+# build/Analog-Rytm_MKII_OS<os>_<TAG>.syx (the tree's OS: 1.73, or a port's) in rytm-emu on a fresh card, the startup dialogs answered
 # (YES, NO, NO, NO as rytm-emu's tools/looper_base.sh does), then USB CONFIG = OVERBRIDGE and TRANSPORT
 # SEND on (GLOBAL > MIDI CONFIG > SYNC), only what is off switched on (its YES toggles), as looper_base.sh
 # reads them. Writes, in rytm-emu (all git-ignored there; firmware-derived, never committed):
@@ -14,7 +14,8 @@ set -eo pipefail
 TAG=${1:?usage: us_base.sh TAG}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 EMU=${RYTM_EMU:-../rytm-emu}
-SYX="$ROOT/build/Analog-Rytm_MKII_OS1.73_$TAG.syx"
+SYX=$(ls "$ROOT"/build/Analog-Rytm_MKII_OS*_"$TAG".syx 2>/dev/null | head -1)
+SYX=${SYX:-$ROOT/build/Analog-Rytm_MKII_OS1.73_$TAG.syx}
 [ -f "$SYX" ] || { echo "no $SYX: build it first (tools/build.py --tag $TAG ...)"; exit 1; }
 # the objects us_emu.py reads symbols from and the manifest (params): build/obj holds the last build's, so this runs
 # right after building TAG; they are copied next to the tests' screens (build/emu/TAG, git-ignored)
@@ -30,7 +31,11 @@ LAST=$(ls -t "$ROOT"/build/manifest_*.json | head -1)
 [ "$LAST" = "$ROOT/build/manifest_$TAG.json" ] || { echo "build/obj is $(basename "$LAST")'s, not $TAG's: build $TAG again first"; exit 1; }
 mkdir -p "$ROOT/build/emu/$TAG"
 cp "$ROOT/build/manifest_$TAG.json" "$ROOT/build/emu/$TAG/manifest.json"
-for m in 0021-ext 0023-teensy-drive; do cp "$ROOT/build/obj/$m.elf" "$ROOT/build/emu/$TAG/$m.elf"; done
+# an area mod's: its object as linked in the area (build.py), so the suites' symbols are run addresses
+for m in 0021-ext 0023-teensy-drive; do
+  f="$ROOT/build/obj/$m.area.elf"; [ -f "$f" ] || f="$ROOT/build/obj/$m.elf"
+  cp "$f" "$ROOT/build/emu/$TAG/$m.elf"
+done
 cd "$EMU"
 FW=fw/AR173_us_$TAG.syx CARD=sections/us_$TAG.img SNAP=sections/us_$TAG.snap
 cp "$SYX" "$FW"

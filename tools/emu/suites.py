@@ -63,6 +63,9 @@ SUITES = {
     "sv":   dict(mods={"0026", "0029", "0021"}, imports={"rui"}, est=173),
     "pc":   dict(mods={"0026", "0021", "0022"}, est=102),
     "mrep": dict(mods={"0026", "0021"}, est=91),
+    "md":   dict(mods={"0021", "0029"}, imports={"us", "sfx"}, est=300),
+    "mi":   dict(mods={"0021", "0026", "0022"}, imports={"pc", "cu"}, est=90),
+    "ar":   dict(mods={"0021", "0026", "0022"}, imports={"us"}, est=120),
     "fxin": dict(mods={"0030", "0022", "0024"}, est=43),
     "td":   dict(mods={"0023"}, imports={"us"}, est=37),
     "frz":  dict(mods={"0029"}, est=22),
@@ -183,8 +186,11 @@ def rled_shards_ok():
 def shards(suite, emu, shard, notes):
     """[(job name, tests or None for all, extra env, est s)]"""
     if suite == "rled" and shard:
-        if not os.path.exists(os.path.join(emu, "sections", "rled_stock.snap")):
-            notes.append("rled not sharded: sections/rled_stock.snap is missing (its first run makes it)")
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import ostarget                        # the tree's OS: rled_emu.py's STOCK_BASE
+        base = "rled_stock" + ("" if ostarget.tree_os() == "1.73" else "_os" + ostarget.tree_os())
+        if not os.path.exists(os.path.join(emu, "sections", base + ".snap")):
+            notes.append(f"rled not sharded: sections/{base}.snap is missing (its first run makes it)")
         elif not rled_shards_ok():
             notes.append("rled not sharded: RLED_SHARDS / RLED_UPKEYS in suites.py miss rled_emu.py's TESTS / UPKEYS")
         else:

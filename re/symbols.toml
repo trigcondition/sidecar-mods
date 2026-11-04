@@ -1650,3 +1650,16 @@ note = "The 4-byte header the SysEx router compares the message with (`lea 0x401
 addr = 0x40000438
 status = "verified"
 note = "Inside the context-switch exception handler (0x40000410, rte at 0x40000458): `move.l #0xffffdfff,%d0` (6 B), between saving the outgoing task (moveml to its TCB, 0x4000041e) and storing the incoming one (a0) in rtos_current_tcb; d1 and a1 are live, d2..d7 free (restored from the incoming TCB at 0x40000452) [code]. 1.74: the same (analoghealth's task_switch site). 0031 detours it (ts_det, idle time)."
+
+# ------------------------------------------------------------- DIN MIDI out (7o, 2026-10-31)
+[fn.midi_out_port]
+addr = 0x4008575e
+sig = "void(int len, const uint8_t *data, int port)"
+status = "inferred"
+note = "The OS's MIDI out switch [code]: port 1 the GLOBAL setting (0x40085722 maps it to 2 / 3 / 4), 2 USB (usb_midi_send under usb_midi_mutex), 3 DIN only (din_send), 4 both. Returns at once while 0x419f28a8 is 0. The note-on helper calls it with (3, msg, 1). 0026's 4F calls it with port 3."
+
+[fn.din_send]
+addr = 0x40001dea
+sig = "void(int len, const uint8_t *data)"
+status = "inferred"
+note = "The DIN MIDI sender [code]: a 4 KB DMA ring; spins while (used + pending + len) would not fit, then writes with interrupts masked (SR 0x2700) and kicks the DMA. Pending 0x413da678, head 0x413da670, its start 0x413da67c, DMA counters 0xfc0454b4 / 0xfc0454bc. Task callers need no lock. 1.74: not looked up."

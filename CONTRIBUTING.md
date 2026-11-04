@@ -2,15 +2,20 @@
 
 Thanks for helping with the Sidecar's Rytm mods. Hardware test reports, fixes and new mods are welcome.
 
+`main` holds the releases, `dev` is the development branch: work goes on a feature branch off `dev`, and pull requests go
+to `dev`. Releases reach `main` from `dev`, and the maintainer merges those. Feature branches are public too. `dev` moves and can be
+broken; it is not a release. On every branch: no firmware (see Rules), and run the tests below before you open the pull
+request.
+
 ## Workflow
 
-1. **Fork** this repository on GitHub and clone your fork.
-2. Create a branch for your change: `git checkout -b 0026-fix-keys`.
+1. **Fork** this repository on GitHub and clone your fork, then `git checkout dev`.
+2. Create a branch for your change from `dev`: `git checkout -b 0026-fix-keys dev`.
 3. Make the change. For a new mod, follow "Adding a mod" in the README: symbols with an honest `status`, claims in
    `registry/allocations.toml`, `mods/NNNN-slug/{mod.toml,stub.s,design.md}`.
 4. Build and verify against your own stock OS 1.73 (`make setup`, then `make verify`, or the Sidecar build in the
    README), and run the tests (below).
-5. Push the branch to your fork and open a **pull request** against `main`. Fill in the template.
+5. Push the branch to your fork and open a **pull request** against `dev`. Fill in the template.
 6. The `test` check must pass, and a code owner reviews and approves before the pull request is merged.
    `main` takes no direct pushes or force pushes.
 

@@ -1,0 +1,40 @@
+{
+ "id": "sidecar-a4",
+ "version": "0.12",
+ "title": "Sidecar",
+ "category": "Sidecar",
+ "license": "GPL-2.0-or-later",
+ "description": "The Sidecar on an Analog Four MKII: knob D of the NOISE page picks a machine for a track's sound, and that track's trigs and parameters go to a Sidecar over USB MIDI under the A4 device profile. Its audio comes back through stock's Overbridge track inputs, into the voice's analog path. Every sound starts OFF. A track with a machine has OSC1's page as its own, and OSC2's by a setting, with plain dials and its names, and the Sidecar's pages can open on the A4's screen. Runs on a unit on Overbridge.",
+ "device": "analog-four-mk2",
+ "os": "1.56",
+ "sources": ["a4_report.c", "a4_usb.c", "a4_task.c", "a4_page.c", "a4_label.s", "a4_remote.c", "a4_rx.s"],
+ "sites": [
+  {"addr": "0x40023678", "stock": "206800684e90", "op": "jsr", "target": "a4_label_call"},
+  {"addr": "0x40025c26", "stock": "2068006c4e90", "op": "jsr", "target": "a4_title_call"},
+  {"addr": "0x400263aa", "stock": "2068006c4e90", "op": "jsr", "target": "a4_title_call"},
+  {"addr": "0x40066320", "stock": "4feffff048d7041c", "op": "jmp", "target": "a4_router"},
+  {"addr": "0x400291cc", "stock": "4eb9400b9e16", "op": "jsr", "target": "a4_notes_call"},
+  {"addr": "0x40023532", "stock": "206800844e90", "op": "jsr", "target": "a4_widget_call"},
+  {"addr": "0x40008b58", "stock": "4eb940095988", "op": "jsr", "target": "a4_sound_loaded"},
+  {"addr": "0x400bd3e8", "stock": "2f024e93588f", "op": "jsr", "target": "a4_kbd_key_call"}
+ ],
+ "storage": [{"sym": "a4_machine", "scope": "sound", "bits": 4}, {"sym": "a4_osc2", "scope": "sound", "bits": 1}],
+ "subscribe": [
+  {"event": "ev_render_out", "fn": "a4_render", "order": 20},
+  {"event": "ev_tick", "fn": "a4_tick", "order": 40},
+  {"event": "ev_tick", "fn": "a4_ui_tick", "order": 50},
+  {"event": "ev_draw", "fn": "a4_ui_draw", "order": 50},
+  {"event": "ev_key", "fn": "a4_ui_key", "order": 50},
+  {"event": "ev_enc", "fn": "a4_ui_enc", "order": 50}
+ ],
+ "contribute": [
+  {"to": "core_params", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_params", 0]]},
+  {"to": "core_params", "order": 51, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_params2", 0]]},
+  {"to": "core_params", "order": 52, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_knob_text", 0]]},
+  {"to": "core_page_fns", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page_osc1", 0]]},
+  {"to": "core_page_fns", "order": 51, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page_noise", 0]]},
+  {"to": "core_page_fns", "order": 52, "data": "00000000", "relocs": [[0, "abs32", "sym:a4_page_osc2", 0]]}
+ ],
+ "requires": ["core"],
+ "resources": {"core": "0.3"}
+}

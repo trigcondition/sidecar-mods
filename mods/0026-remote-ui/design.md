@@ -512,7 +512,9 @@ drawAll 0x40079086 draws the view controller's (ev_tick's ctrl) views from `*(ct
 PatternGridView, KeyboardView, **SynthPageView (vtable 0x401e34fc)**, PatternSelectionView (0x401cca04), HelpBubbleView,
 QuickPerformanceView, **SamplerLedView (0x40234cfc)**. SMPL and FLTR swap the page view (SamplePageView 0x401e3170,
 SoundPageView 0x401e32c4); the machine list (MachineListView 0x401e5bf4), TRK held, TEMPO and PERF add a view after
-SamplerLedView; GLOBAL and the SOUND menu replace the list. PatternSelectionView's byte +0x84 is 1 while BANK is held.
+SamplerLedView; GLOBAL and the SOUND menu replace the list. PatternSelectionView's byte +0x7f holds the BANK keys held (a
+bit a key). (Its byte +0x84, used here until fix/popup-covered, is set by a BANK key and cleared only when a pattern is
+picked: a BANK tapped and left kept the view covered until a restart; sv_emu.py `bank`.)
 So: SRC = SynthPageView in the list; covered = the last view is not SamplerLedView, or that byte is set. Value turns on
 SRC add no view (the value replaces the label in place). Not handled: HelpBubbleView / QuickPerformanceView's own
 states (no flag found; neither drew over SRC in the walks tried). The selected track: 0x41318982 (0021's).
@@ -2285,3 +2287,40 @@ playing: whole every time, the POS reports still sent).
     never queues repeats today, so not reachable from the panel).
   - N7: after the page closes with NO kept back, NO + SCNE / CHRO / PLAYMODE is no longer stock's reload (NO is eaten).
   - L6: UP pressed before FUNC still starts the combo map (UP held alone, as before).
+
+## 7h: DSP SAMPLE's picker on knob A (2026-10-31, emulator only)
+
+One way to pick on every sample machine: knob A of the SRC page opens the list. ENG and SMP swap **places**, not words: SRC is
+SMP STR BRI DMP MIX SEED TUN LEV, SMPL TUN FIN MOD ENG / STA END LOP LEV (0021 writes the SRC row at boot, dsps_p2_order). SMP stays
+P11, word 19, record 441; ENG stays P1, word 9, record 416, so saved sounds, locks, NRPN, CC and the 04s are unchanged
+(`md_emu.py dspold`: a project of the 0.3.0 image, the same words and 04). 2A keeps its P numbers: sv_word reads P11 through knob A,
+P1 from the kit word. ls_enc takes DSP SAMPLE as the banked machines (ls.p 10): the SMPL-page path, ls_dsps, ls_smpl and UP + SRC's
+SMPL press are gone, and with them 1045's fallback for a host older than 1045 that ignores the 4A (`dspoldhost`): as on the banked
+machines, such a host gets a list nobody draws until NO; every host since 0.3.0 answers. No frame at all: no view, so knob A is 0029's
+banked step, as D was. A 0.3.x Rytm with a new host: the host keeps ENG on its SRC view (the Rytm's slot asks tell).
+
+## 7o: the MIDI machine, and 4F, the DIN port (2026-10-31, emulator only)
+
+Host half: rytm-teensy core/midim/midim.h. 0021's half: its design.md "7o". Tags as above; [measured] = rytm-emu mdpage, DTEMU_STRICT=1.
+
+**Machine 50** `MIDI`, on every track (0x401bf1e0 ffff, names by registry patch). SRC: DST CHAN BANK SBNK PROG PB AT MW. SMPL: VAL1..4 SEL1..4. As LIVE IN / CHOP: cu_tab, cu_grp,
+CU_IDS, cu_prep's page-2 defaults (all 0; the sample page's stock words would set CC numbers), wr_tick's checks. DST and CHAN are stepped (0x104, 0x110). Value texts 27..32.
+mr_flag 0x00: 33's vb says flag 0 with machine 50; the host goes by the machine byte. An older host shows PLAITS's page for it and ignores its reports.
+
+**4F, host -> Rytm:** `F0 7D 52 54 4F 01 <status & 7F> <d1> [<d2>] F7`, one channel message; C0..DF two bytes, others three; anything else counts in rx_bad. 0022's router passes it.
+It runs in the MIDI task and calls the OS's port switch 0x4008575e(len, data, 3): DIN only, without the USB mutex, whatever GLOBAL's MIDI port settings say [code]. The OS's sender
+0x40001dea writes a 4 KB DMA ring with interrupts masked and spins while it is full, so sysex_body checks the room first (DIN_FREE, that wait's sum, read only): under 64 B spare the
+message is dropped and counted (din_drop), the MIDI task never spins. The port is MIDI only when GLOBAL has not set it to DIN sync; the mod does not look. No gate on the machine:
+4F sends for any host. [Correction, 2026-10-31: re/symbols.toml's note and the old rytm-mods/build/mainos_emac.dis disagree on these addresses; that .dis is stale. Disassemble
+build/stock_mainos.bin.]
+
+Tests [measured, `tools/emu/mi_emu.py TAG all`]: `list` (the list's 29th DOWN, labels, ids, defaults, a pad's 44 and 11, no 04), `steps`, `din` (each message's bytes on MIDI OUT in
+order), `dinbad`, `dinburst` (1000 messages at once: no fault; the emulator's UART does not back up, so the drop path has not run), `play` (trigs and their 11s, nothing open after STOP),
+`lock` (a PROG lock in its step's 44), `kit` (3B, 33), `saved` (a power-off and a cold boot: machine and words). Against the real core: rytm-teensy `sim/midim_e2e.py`.
+
+
+## 7ae: the arpeggiator's code (2026-11-01)
+
+`45 01 <track> <lo7> <hi3>` both ways. The MIDI task queues a host write; `arp_tick` (UI task, behind `mr_tick`) writes the active kit's live sound and the project copy, then compares the 12 sounds with what it last said and reports a change: a kit or
+pattern change, a load, a paste and a reload all land there; a hello or an open reports all twelve. Cost: 12 byte compares a tick, 10 B a change. It does not follow a sound lock. Hello caps bit 3 (15). UP + FLTR: 30 page 4 (the ARP page), not under a
+held trig; stock leaves it free [rled_emu.py stockupkeys, UPKEYS=FLTR]. 0022's router passes 45. The design of what the code means: rytm-teensy core/arp/arp.h.

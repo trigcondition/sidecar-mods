@@ -2839,7 +2839,9 @@ sfu_tick:
 	jeq .L366
 	move.l -66650100,%d2
 	move.l 1073848900,%a0
+	move.l %a2,-(%sp)
 	jsr (%a0)
+	addq.l #4,%sp
 	tst.l %d0
 	jeq .L398
 	moveq #1,%d0

@@ -11,10 +11,14 @@ unit (docs/REVIEW-2026-10-09.md, HIGH 3 and the staged plan there):
 1. Back up every project and sample (Transfer) and note the +Drive listing
    and byte counts.
 2. Confirm a DIN MIDI interface and Transfer's legacy mode on the computer.
-3. Do a full **DIN legacy reflash of stock 1.73** through the STARTUP menu
+3. Do a full **DIN legacy reflash of the stock OS your unit runs** (on OS 1.74:
+   Elektron's stock 1.74 file; on OS 1.73: stock 1.73) through the STARTUP menu
    (FUNC + power, TRIG 4, below) - about 16+ minutes for 3 MB. Only this route
    is served by the bootstrap; the USB route needs a booting MAIN OS and a
    working [YES], and 0022 hooks the panel path that [YES] uses.
+   **Moving from 1.73 to 1.74:** this reflash is then stock 1.74 (see "Downgrades":
+   both directions work with Elektron's files). Do it with Elektron's own file first; the Sidecar build for 1.74 comes
+   after, once the unit runs stock 1.74. On 1.73 nothing changes: stock 1.73.
 4. Make a scratch project for every test.
 
 Only then follow the stages S1..S5 of docs/REVIEW-2026-10-09.md, one change at
@@ -98,7 +102,8 @@ mods/0021-ext/design.md ("Status") and user-slots-research.md.
 Before anything:
 - Backups: the user has backed up all projects, samples and sounds (Transfer). Keep that set read-only; note the
   +Drive listing and byte counts again on the day.
-- Stage S0 above (a DIN legacy reflash of stock 1.73 proved on this unit) holds for this build too.
+- Stage S0 above (a DIN legacy reflash of the unit's stock OS, 1.73 or 1.74, proved on this unit) holds for this
+  build too.
 - A scratch project for every step; never the backed-up ones.
 - The Teensy on its own tested build (rytm-teensy, host mode, the store with the test plugins: U1 sine_test,
   U2 fault_test).
@@ -145,7 +150,7 @@ Staged steps, one at a time, each with a go / no-go (stop and flash stock back o
    first sessions.
 7. **One hour** of a pattern on U-tracks with Overbridge streaming and knob turns, no fault, no dropouts on the
    Teensy's log.
-8. **Back to stock.** Before flashing stock 1.73 back: put stock machines on every U-track (and the mods' other
+8. **Back to stock.** Before flashing the stock OS back (the one the unit ran: 1.73 or 1.74): put stock machines on every U-track (and the mods' other
    machines) in the scratch project and save it, and power off once on the build so the working state holds no
    U-track (stock boots that state directly; below).
 
@@ -220,6 +225,9 @@ during the upgrade." The bootstrap carries its own `BOOTSTRAP UPGRADE` /
 
 ## Downgrades
 
-Not supported by the device. MAIN OS carries "Downgrade not possible" and the
-bootstrap carries a VERSION CHECK. Assume you cannot go back, and that this is why
-the project pins the newest OS rather than an older one.
+MAIN OS carries a "Downgrade not possible" message and the bootstrap a VERSION CHECK, but on a real unit
+you can always flash back to 1.73 or 1.74 with Elektron's own stock files (checked 2026-11-04, from stock and from the
+Sidecar's 1.74 build). So the move between OS 1.73 and 1.74 is not one-way: recovery is the stock file of the OS you
+want to be on. Back up your projects before any OS change, as always. Elektron's site offers only 1.74 now, so keep
+your own copy of the 1.73 file if you want it. A build with another version number than your stock file's (for
+instance elekloader's default 2.0a) is a different case and stays untested: do not flash it.

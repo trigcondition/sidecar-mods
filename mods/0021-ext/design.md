@@ -916,3 +916,117 @@ moved it to 0x98, off the wire). Their engine entries (0x4029043c / 0x40290440) 
 (0x4028838c / 0x402883b0) list MULTISAMPLE's records 398 443 399 400 401 402 406 407, set up by 0026 for whichever machine
 uses them; `us_page_record` and `us_param_record` treat 46..49 (WT_MACHINES 4) as 52 (page 2: the shared records through
 `us_cubox`). Labels, value texts, names, masks and page 2's defaults are 0026's (design.md "1051"). Emulator only.
+
+## 0021 in the area (mdpage, 2026-10-30)
+
+The caves were full (318 B of 18,542 B left) and the MD page needs ~2 KB. With `slots=1` all of 0021's code and data link
+into elekloader's DDR area (`--area-elek 0021-ext`; build.py refuses slots=1 without it). slots=0 stays in its caves,
+c127fe8's image as before.
+
+- **The three boxes other mods read by fixed address stay put, as registry patches, not as sections:** ext_stepbox at
+  0x4001a23c (`XSTP`, ext_steps, us_live: 0026, 0029), us_cubox at 0x4001a3dc (`CHRD`, two zero words, filled by 0026 at
+  its first ev_tick) and the head of the mailbox at 0x40027a04 (`JUNO`, us_sysex: 0022's router). The pointers are
+  `from_symbol` patches, which build.py hands elekloader as `ptr` sites; the readers are unchanged. These caves are in
+  dead-code pools (stock bytes are not zero), so the patches' `expect` are those stock bytes, and us_cubox's two words
+  must be written to zero. Only the mailbox's two head words are read from outside, so the rest of jn_mailbox (the name
+  cache, 1.3 KB) moved into the area with the code; the `.extn` cave is `!slots` now. In ext.c `US_CUBOX` is the fixed
+  address; ext_stepbox has no definition there any more.
+- **The other `[[cave]]` claims of 0021 are unwritten in such a build** and stay in the registry: slots=0 uses the
+  ungated ones, and the `slots`-gated ones are free for a later mod to take over by removing them.
+- **Detours:** three of them end mid-instruction at 6 B and got `elek_size = 8` (0x4003795a, 0x40007028, 0x4011f6bc),
+  as 0025's and 0026's. elek_source also renames `.pushsection` lines (`.ust`, `.us7`).
+- **cross_refs** sees no cave at the boxes, so 0022, 0026 and 0029 name 0021 in `[requires] mods`.
+- **Emulator symbols:** build.py links the mod's elekloader object at its run address into `build/obj/<id>.area.elf`,
+  and us_base.sh copies that as `0021-ext.elf`: the suites' `sym()` (file-local names too) and `ret_of_call` read run
+  addresses, unchanged.
+- **State moved with it:** `.exts`, `.usr` and the name buffers are `.run` words now; nothing outside 0021 addressed
+  them (`refs` in the manifest: only the boxes). The area copy at boot initialises them as the image did. `.run` is
+  17.8 KB; 38 KB of the area stays free.
+
+Proof that the move alone changes nothing [measured, rytm-emu, tag mdm1 = this change alone, 2026-10-30]: us 331, sfu 202,
+sfx 101, sq 326, bk 320, cu 100, sp 37, sv 88, pc 37, mrep 21, td 12, frz 16, fxin 33, rui 100: all PASS, 0 FAIL. dtboot's
+`--count` hook window must reach the area (`HOOK_WINDOW` 0x0800_0000, tools/emu/README.md): us_emu counts dsp_excite there.
+
+## MD (machine 42; backlog 7k, the Sidecar's docs/MD-BUILTIN.md, 2026-10-30)
+
+Machine 42 is named MD / MD; the Sidecar plays it (core/md), old sounds keep DIGIDRUM's page. slots=0 keeps DIGIDRUM.
+
+- **In the slots' code as "slot" 7** (`MD_S`): 35 + 7 = machine 42, 334 + 8 x 7 = records 390..397, flag table entry 7,
+  so us_record, us_text, us_src_table and us_kit_sound work unchanged. `us.c` grew to eight pointers (5, 6 unused; the
+  `us_off_*` offsets and sp_tick's `us+64` follow). The tables that only have the five real slots (`tgen`, `wait`,
+  `layer`, names) are kept away from it by name.
+- **Labels:** us_meta_in and us_list_in take slot bytes 0x40..0x42 to the MD cache (`us.c[7]`). No fingerprint logic: the
+  cache's `h.fp` holds the ENGINE of the 1A it keeps, never a tag. us_commit relabels the records and the SRC row (an
+  empty label is stock's unused box); a 1A of the same ENGINE keeps the two name lists.
+- **Page 2:** on an MD sound P9..P16 are the shared records (us_p2rec), set up as a slot's, on the sample words 17..24, so
+  they save, lock and LFO as those do; P12..P16 draw as unused boxes. Before any 1A (no Sidecar) P9..P11 show as P9 P10 P11
+  with numbers, and the title is MD. ENGINE and TYPE become stepped lists through ext_steps_us once 1B has come (0029).
+- **No automatic conversion** (decided 2026-10-31 for the owner, may change; to go back, call md_setup from a scan in
+  md_tick): a pattern's p-locks stay on their knobs, so converting could silently change how it sounds. A sound with no tag
+  plays as in 0.3.0 (`same030`: screens, records and reports equal to the 0.3.0 image's): tag 0 in the reports (the host's DIGIDRUM mapping), DIGIDRUM's page (dd_descriptors, the records' ranges as us_init kept them: ENG with its 11
+  stepped zones, labels per engine, all eight knobs in the SRC row, stock's SMPL page and record lookups by md_old, its
+  sample under the drum). A load touches nothing. The list has one entry, MD.
+- **md_tick** (from us_live, 20 Hz, UI task; us_live runs from 0029's ev_tick, so build.py refuses slots=1 without 0029):
+  - the set-ups the user confirmed, pending in `us.wb[t].pslot` until md_store could run: 8 fresh, 9 convert; dropped
+    when the track leaves 42 or a load lands (us_loaded);
+  - the tag back from the second marker;
+  - the selected track's page by its sound's tag: `md.mode` 1 DIGIDRUM's records, 2 MD's. On MD's a 19 asks on a change of
+    (ENGINE zone, P10's value) read from the kit words, and again every 2 s (a host that came up later; "unchanged" is
+    10 B); then the missing lists, one per 4 ticks.
+  A track the list's cursor previews (`us.ch`) is skipped. us_live (given ctrl by 0029) clears the note at the first tick
+  MachineListView is not among the views, so a list left by GLOBAL or the TRACK menu blocks nothing (SLOT PRINTS too).
+- **The marker is the tag word.** `0x224D` (`MD_TAG`) in sound slot 47 / live +0x6e. us_tag_load keeps it only when it is
+  exactly that, on machine 42; save and the trig's copy carry it as a U sound's. So a report says 0x224D exactly when the
+  sound is in MD's layout.
+- **The second marker:** slot 47 is zeroed by a save on 0.3.x or stock. P15's and P16's fraction bytes (sample words every
+  firmware saves; unused by MD, ignored by the host) hold 0x4D, 0x44, their integer parts 0. Marker and no tag: the tag
+  back in the kit, the project copy and us_tag, the words untouched [measured: a power-off on stock 1.73 and back].
+- **The user's action:** the list's YES after a cursor move, and the SOUND menu's step, go through us_choose (pslot 8: FM BD
+  fresh, table of MD-BUILTIN section 4, compiled in). YES with no move, on 42 without the tag: pslot 9, converted by the
+  mapping (md_setup) - unless `us_wb.pv` says the machine came from a preview (us_step's byte per track, us_loaded and NO
+  clear it): a list left by GLOBAL on a previewed stock sound, reopened and confirmed, sets up fresh, as those words are no
+  DIGIDRUM sound. A preview itself writes nothing.
+- **md_store** is us_defaults' pattern: words, marker and tag into the kit under the mask with the same guards, the project
+  copy's tag, then us_set for each word (the bank's queue is a bitmap and a value array per track), and the report's
+  `us_tag[t]` last. `md_wr` holds that track's reports in ext_render meanwhile (a trig waits a few blocks at most), so no
+  03 goes out with new words and tag 0.
+- **Sample layer:** ext_layer_kept: none for an MD sound, kept for an old one (by us_tag[owner]).
+- **Host side:** nothing to change: core/md answers 19 on these slots and plays tag 0 by its mapping; the host has no page
+  for 0x40, so the SRC view commits no frame and the Rytm's own page stays up.
+
+Tests [measured, rytm-emu]: `tools/emu/md_emu.py TAG all` (list, fresh, sound, labels, nohost, stops, ask, plock, kit, paste,
+tracks, old, kitload, convert, hold, marker, stuck, same030, switch); against the real core, the Sidecar's `sim/md_e2e.py`. Not on a Rytm.
+
+## List knobs of 36 names (0.4.0, 2026-10-31)
+
+A slot's enum cache holds eight lists of 36 names (`US_ENUM_MAX`, 16 before): the slot cache is 2804 B of allocator memory, 4 KB
+as rounded, ~24 KB for the six against ~12 KB [inferred from the allocator's rounding; 13.8 MB free]. Everything else already
+took N from `ecount`: us_text's zones, ext_steps' mode << 8 | N, 0029's detents (rec[3] = N - 1, ceil(128 k / N)), 0026's 2A. A
+list of N names reads as before for N <= 16: the zones and stored values do not depend on the limit (`old16`).
+
+A slot's 19 what 0 now carries arg 1: "I hold 36 names" (MD's slots keep arg = P10; an older host ignores it). A Rytm without it
+gets 16 from the host (core/user/um.cpp): entry k the name of zone 8 k x N / 128, so a 0.3.x Rytm's screen is what plays.
+Test: `us_emu.py TAG enum36`; on 0.3.0's image with a real 36-name package: the Sidecar's `sim/enum36_e2e.py`.
+
+## 7h: DSP SAMPLE's SMP on SRC knob A (2026-10-31)
+
+slots=1: the SRC row of machine 45 starts with record 441, written at the descriptors; dsps_p2_order has ENG (416) in SMP's place.
+No word, index or registry record moved (mods/0026-remote-ui/design.md "7h").
+
+MIX's default on DSP SAMPLE is 0 since 0.4.0's hardware pass (the owner: a sample player with the resonator as an option): record 439's
+default, written with the row (slots=1). Only a fresh choice takes a record's default; saved sounds keep their word (`md_emu.py dspmix`).
+
+## 7o: MIDI (machine 50; 2026-10-31, emulator only)
+
+Machine 50 (HH TEST) runs ext_render as LIVE IN and CHOP: engine entry 0x40290444, SRC page 0x402883d4 (MULTISAMPLE's records), `WT_MACHINES` 5, so `us_page_record` and
+`us_param_record` treat 50 as 52 (page 2: the shared records through us_cubox). Labels, value texts, names, mask and page 2's defaults are 0026's (its "7o").
+**No voice flag was left** (all 16 values of voice byte & 0x78 are taken), so us_flag_tab's entry is 0x80, which ext_render turns into the report's command: 44 / 43 for 04 / 03,
+the same bytes, voice byte plain. 0x11 is unchanged. ext_layer_kept reads vb & 0x78 = 0: the sample layer stays muted. Older hosts drop 44 / 43 as unknown commands. Host side:
+rytm-teensy core/midim/midim.h.
+
+
+## 7ae: the arpeggiator's code in the sound (2026-11-01)
+
+rytm-teensy core/arp/arp.h reads 10 opaque bits. **Stored:** slot 46 (+0x78 / +0x79). **Live:** +0x6d and the two bits above the tag (+0x6e bits 6, 7): the last spare bits of a live sound, which is what raw copies carry
+(sound-tag-research.md). `us_tag_load_c` / `us_tag_save_c` carry them for every machine; the three writers of the live tag keep the two bits. An old sound's slot is 0, OFF; a stock save zeroes it. `us_snd_init`, a new detour in
+`sound_init_defaults` (0x400122e6): a fresh sound's spare bytes are the allocator's, so all three are cleared there. 0026 writes and reports the code (below in its design). Tests: tools/emu/ar_emu.py.

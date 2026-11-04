@@ -52,7 +52,7 @@ def ms(e):
     """BD on MULTISAMPLE (machine 52): the machine list's last entry, from the base."""
     global MS
     if MS is None:
-        keys = ["SRC", "SRC"] + ["DOWN"] * 30 + ["YES"]   # 1034: WAVETABLE and GRANULAR before DAISYSP; 1051: LIVE IN, CHOP
+        keys = ["SRC", "SRC"] + ["DOWN"] * 31 + ["YES"]   # 1034: WAVETABLE and GRANULAR before DAISYSP; 1051: LIVE IN, CHOP; 7o: MIDI
         ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)]
         r = e.run("cu_ms", 500 + 500 * len(keys) + 1500, ev, usb=False)
         m = e.peek(r["snap"][0], 0x8000EA00, 1)[0]
@@ -155,7 +155,7 @@ def t_swap(e):
     check("swap: BD on WAVETABLE", e.peek(s, 0x8000EA00, 1)[0] == 46, e.peek(s, 0x8000EA00, 1)[0])
     check("swap: WAVETABLE's labels and defaults", [label(e, s, x) for x in SRC] == WT_SRC and kit16(e, s)[:8] ==
           WT_DEFAULTS, ([label(e, s, x) for x in SRC], kit16(e, s)[:8]))
-    keys = ["SRC", "SRC"] + ["DOWN"] * 5 + ["YES"]   # 46 -> 52 past 47, 48, 49 (1051) and 51
+    keys = ["SRC", "SRC"] + ["DOWN"] * 6 + ["YES"]   # 46 -> 52 past 47, 48, 49 (1051), 50 (7o) and 51
     ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)] + [(5000, "press", "SMPL")]
     r = e.run("cu_swap_ms", 6500, ev, snap=r["snap"], usb=False)
     s = r["snap"][0]
@@ -229,9 +229,9 @@ def t_msknobs(e):
     """MULTISAMPLE's stepped knobs: RTRG (D on SRC) turned up = ON (64, two zones), LOOP (D on SMPL) two steps = ON
     (the zone's low end 86), VOI (H, from the stock word 100 = AUTO, out of range) turned up = a count 1..6."""
     m = ms(e)
-    ev = [(300, "press", "SRC"), (900, "turn", "3:5", 8, 40), (1500, "press", "SMPL"), (2100, "turn", "3:5", 8, 40),
-          (2700, "turn", "7:5", 12, 40)]
-    r = e.run("cu_msknobs", 4500, ev, snap=m, usb=False)
+    ev = [(300, "press", "SRC"), (900, "turn", "3:5", 8, 40), (1500, "press", "SMPL"), (2100, "turn", "3:5", 16, 40),
+          (3100, "turn", "7:5", 12, 40)]   # (7o: 16 turns: how many steps 8 give depends on where they fall in the UI ticks)
+    r = e.run("cu_msknobs", 5000, ev, snap=m, usb=False)
     k = kit16(e, r["snap"][0])
     check("msknobs: RTRG = 64 (ON)", k[3] == 64, k[:8])
     check("msknobs: LOOP = 86 (ON's zone, as the host reads 86..127)", k[11] == 86, k[8:])
@@ -243,9 +243,9 @@ def t_back(e):
     """Back to 6-OP FM and back to a user slot: the shared records follow the selected track's machine (FM: group 6OP,
     E..H the chord; U1 (no Sidecar: no 1A) stock's SAMPLE page)."""
     m = ms(e)
-    keys = ["SRC", "SRC"] + ["UP"] * 10 + ["YES"]   # 52 -> 40 (1034: past 47 and 46; 1051: 49 and 48)
-    ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)] + [(7000, "press", "SMPL")]
-    r = e.run("cu_back_fm", 8500, ev, snap=m, usb=False)
+    keys = ["SRC", "SRC"] + ["UP"] * 11 + ["YES"]   # 52 -> 40 (1034: past 47 and 46; 1051: 49 and 48; 7o: 50)
+    ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)] + [(7500, "press", "SMPL")]
+    r = e.run("cu_back_fm", 9000, ev, snap=m, usb=False)
     s = r["snap"][0]
     check("back: BD on 6-OP FM again", e.peek(s, 0x8000EA00, 1)[0] == 40, e.peek(s, 0x8000EA00, 1)[0])
     check("back: group 6OP, E..H CHD..VOI", label(e, s, P2[4], 0x2c) == "6OP" and

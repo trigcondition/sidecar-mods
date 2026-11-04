@@ -1,7 +1,7 @@
 # Analog Rytm MKII firmware mods.
 PY := .venv/bin/python
 
-.PHONY: all setup symbols layout build verify cavescan ghidra disasm clean \
+.PHONY: all setup symbols layout build verify cavescan ghidra disasm clean port \
 	comp-selftest comp-cal-gen comp-cal-check comp-cal-build cave-selftest release release-check
 
 all: verify
@@ -27,12 +27,18 @@ setup:
 symbols:
 	$(PY) tools/symbols.py
 
+# The OS: the tree's own (re/symbols.toml [meta] target, 1.73), or OS=1.74 for its port (re/os/1.74.toml): then
+# `make release` / `release-check` / `build` / `verify` write the port's tree (tools/ostarget.py port, build/os/1.74)
+# and run there; the release lands in build/release/<VERSION>-os1.74/ here. `make release-all`: both OSes.
+TREE_OS := $(shell sed -n 's/^target *= *"OS\(.*\)"/\1/p' re/symbols.toml | head -1)
+OS ?= $(TREE_OS)
+osfact = $(shell $(PY) tools/ostarget.py info $(1))
+
 # The release for the elekloader web page (docs/ELEKLOADER.md): the Sidecar set as ONE elemod,
-# rytm-sidecar-$(VERSION).elemod, with core-ar2 0.1 beside it, in build/release/$(VERSION)/.
-# The set and its params are the rui1051 image's (the one on the user's unit). VERSION is the
-# one place the release version is set (build.py reads it too).
+# rytm-sidecar-$(VERSION).elemod (on 1.74 rytm-sidecar-$(VERSION)-os1.74.elemod), with core-ar2 0.1 beside it, in
+# build/release/$(VERSION)/ (1.74: build/release/$(VERSION)-os1.74/). The set and its params are the rui1051 image's
+# (the one on the user's unit). VERSION is the one place the release version is set (build.py reads it too).
 VERSION := $(shell cat VERSION)
-REL := build/release/$(VERSION)
 REL_TAG := rel$(subst .,-,$(VERSION))
 # the rui1051 set without 0028-elek-hello (a test counter; nothing needs it). 0031-remote-keys stays out of production
 # builds (the user, 2026-10-29: a dev / test feature; its sources stay for dev builds: RUI_DEV=1 tools/build_rui.sh)
@@ -41,24 +47,53 @@ RELEASE_MODS := 0014-hidden-machines 0021-ext 0022-looper 0023-teensy-drive 0025
 RELEASE_ARGS := --param 0014-hidden-machines:variants=0 --param 0014-hidden-machines:funcgen=0 \
 	--param 0014-hidden-machines:test=0 --param slots=1 --param 0022-looper:keys=0 \
 	--param 0022-looper:sfx=1 --param 0022-looper:rui=1 --param 0022-looper:fxin=1 \
-	--area-elek 0022-looper --area-elek 0025-sendfx-report
+	--area-elek 0021-ext --area-elek 0022-looper --area-elek 0025-sendfx-report
+
+.PHONY: port release-all release-assets
+ifneq ($(OS),$(TREE_OS))
+# ---- another OS: the port's tree, and the same targets run there
+PORT := build/os/$(OS)
+PORT_REL := build/release/$(VERSION)-os$(OS)
+
+port:
+	$(PY) tools/ostarget.py port $(OS)
+
+build verify: port
+	$(MAKE) -C $(PORT) $@ $(if $(TAG),TAG=$(TAG),)
+
+release: port
+	$(MAKE) -C $(PORT) release
+	rm -rf $(PORT_REL) && mkdir -p build/release && cp -R $(PORT)/build/release/$(VERSION) $(PORT_REL)
+	cp $(PORT)/build/Analog-Rytm_MKII_OS$(OS)_$(REL_TAG).syx build/
+	@echo "OS $(OS) release: $(PORT_REL)"
+
+release-check:
+	$(MAKE) -C $(PORT) release-check
+
+else
+# ---- the tree's own OS
+REL := build/release/$(VERSION)
+CORE_REV := $(call osfact,core_rev)
+CORE_SHORT := $(shell echo $(CORE_REV) | cut -c1-7)
+BUNDLE_SUFFIX := $(call osfact,bundle_suffix)
 
 release: symbols layout
 	$(PY) tools/comp/calib_tables.py --check
 	$(PY) tools/build.py --tag $(REL_TAG) --elek-bundle --mods $(RELEASE_MODS) $(RELEASE_ARGS)
 	$(PY) tools/verify.py --tag $(REL_TAG)
 	rm -rf $(REL) && mkdir -p $(REL)
-	cp build/elek/$(REL_TAG)/core/core-0.1.elemod \
-		build/elek/$(REL_TAG)/mods/rytm-sidecar/out/rytm-sidecar-$(VERSION).elemod $(REL)/
+	cp build/elek/$(REL_TAG)/core/core-*.elemod $(REL)/
+	cp build/elek/$(REL_TAG)/mods/rytm-sidecar/out/rytm-sidecar-$(VERSION).elemod \
+		$(REL)/rytm-sidecar-$(VERSION)$(BUNDLE_SUFFIX).elemod
 	cp LICENSE NOTICE $(REL)/
-	# GPL-2.0 section 3: the corresponding source of core-0.1.elemod (and the builder) beside it
-	git -C vendor/elekloader archive --format=tar.gz --prefix=elekloader-8972d70-core-ar2/ \
-		8972d70629f230af99c63c8624a886b33ec08299 mods/core mods/core-ar2 LICENSE NOTICE \
-		> $(REL)/elekloader-8972d70-core-ar2-src.tar.gz
+	# GPL-2.0 section 3: the corresponding source of the core elemod (and the builder) beside it
+	git -C vendor/elekloader archive --format=tar.gz --prefix=elekloader-$(CORE_SHORT)-core-ar2/ \
+		$(CORE_REV) mods/core mods/core-ar2 LICENSE NOTICE \
+		> $(REL)/elekloader-$(CORE_SHORT)-core-ar2-src.tar.gz
 	git -C vendor/elekloader archive --format=tar.gz --prefix=elekloader-c150ac5/ \
 		c150ac583a4b7e6d64680d5592f4a40f409193f7 > $(REL)/elekloader-c150ac5-src.tar.gz
-	{ echo "release $(VERSION), built from rytm-mods $$(git rev-parse HEAD)$$(git diff --quiet HEAD || echo ' (uncommitted changes)')"; \
-	  echo "elekloader $$(git -C vendor/elekloader rev-parse HEAD) (builder), core-ar2 from 8972d70629f230af99c63c8624a886b33ec08299"; \
+	{ echo "release $(VERSION) for OS $(TREE_OS), built from sidecar-mods $$(git rev-parse HEAD)$$([ -z "$$(git status --porcelain)" ] || echo ' (uncommitted changes)')"; \
+	  echo "elekloader $$(git -C vendor/elekloader rev-parse HEAD) (builder), core-ar2 from $(CORE_REV)"; \
 	  m68k-elf-as --version | head -1; $(PY) --version; uname -sm; } > $(REL)/TOOLCHAIN.txt
 	cd $(REL) && { command -v sha256sum > /dev/null && SUM="sha256sum" || SUM="shasum -a 256"; \
 		$$SUM *.elemod *.tar.gz LICENSE NOTICE TOOLCHAIN.txt > SHA256SUMS; } && cat SHA256SUMS
@@ -67,19 +102,36 @@ release: symbols layout
 # page's code path: MAIN OS must be the release build's, sections 1/2/5/8 stock.
 release-check:
 	$(PY) tools/release_check.py --dir $(REL) --expect build/mainos_$(REL_TAG).bin \
-		--expect-syx build/Analog-Rytm_MKII_OS1.73_$(REL_TAG).syx --doc docs/ELEKLOADER.md
+		--expect-syx build/Analog-Rytm_MKII_OS$(TREE_OS)_$(REL_TAG).syx --doc docs/ELEKLOADER.md
+endif
+
+# Both OSes' releases, each checked: the tree's own, then the port's.
+release-all:
+	$(MAKE) release release-check
+	$(MAKE) release release-check OS=1.74
+
+# The GitHub release's one asset folder, build/release/$(VERSION)-assets/, from the two folders release-all writes:
+# all of the 1.73 folder, the 1.74 folder's own files, its TOOLCHAIN.txt as TOOLCHAIN-os1.74.txt, one SHA256SUMS
+# over the lot. It refuses while an UNRELEASED mark is left in the tree, when a shared file (LICENSE, NOTICE, the
+# builder's archive) differs between the two folders, or when a folder does not match its own SHA256SUMS.
+release-assets:
+	python3 tools/check_unreleased.py
+	python3 tools/combine_release.py build/release/$(VERSION) build/release/$(VERSION)-os1.74 \
+		build/release/$(VERSION)-assets --os-a $(TREE_OS) --os-b 1.74
 
 layout:
 	$(PY) tools/layout.py
 
 # Mod 0006's calib.inc must be what its calibration.toml gives before anything
 # is assembled from it.
+ifeq ($(OS),$(TREE_OS))
 build: symbols layout
 	$(PY) tools/comp/calib_tables.py --check
 	$(PY) tools/build.py
 
 verify: build
 	$(PY) tools/verify.py $(if $(TAG),--tag $(TAG),)
+endif
 
 # Candidate code caves in the stock image. The cave pool in
 # registry/allocations.toml comes from this scan, not from anyone else's survey.

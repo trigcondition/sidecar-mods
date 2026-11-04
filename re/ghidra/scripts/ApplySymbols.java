@@ -21,6 +21,7 @@ public class ApplySymbols extends GhidraScript {
         name(0x4000076aL, "fpga_status_bit5", true);
         name(0x40001124L, "mutex_lock", true);
         name(0x40001246L, "mutex_unlock", true);
+        name(0x40001deaL, "din_send", true);
         name(0x400029e0L, "usb_midi_send", true);
         name(0x40005c6eL, "ob_in_write", true);
         name(0x40006cd8L, "param_tables_build", true);
@@ -78,6 +79,7 @@ public class ApplySymbols extends GhidraScript {
         name(0x40082084L, "panel_receiver", true);
         name(0x400829d4L, "mem_new", true);
         name(0x40083d6cL, "sysex_router", true);
+        name(0x4008575eL, "midi_out_port", true);
         name(0x400859acL, "sysex_send", true);
         name(0x40098b54L, "memcpy", true);
         name(0x4009a9bcL, "trig_fire", true);
@@ -274,6 +276,6 @@ public class ApplySymbols extends GhidraScript {
         name(0x8000fc58L, "trig_kit_copied", false);
         name(0x8000fc8cL, "applied_kit", false);
         name(0x8000fef4L, "fx_mix_ring_slot", false);
-        println("applied 257 symbols");
+        println("applied 259 symbols");
     }
 }

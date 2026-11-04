@@ -1,0 +1,40 @@
+# Checks the assets of an a4-v... release: .elemod files and their papers only, never a .syx. A built .syx holds Elektron's
+# firmware. a4/tools/release_assets.py is also run by hand before the release (a4/RELEASE.md); this is the second lock: on
+# a refusal it takes the offending assets down and turns the release back into a draft.
+# Limit: GitHub fires no event when an asset is added to a release that is already published and left unedited. So: draft
+# first, all assets on it, publish last, and any later asset through `gh release edit` too.
+name: a4-release
+on:
+  release:
+    types: [published, prereleased, edited]
+permissions:
+  contents: write
+jobs:
+  assets:
+    if: startsWith(github.event.release.tag_name, 'a4-v')
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Fetch the assets
+        run: gh release download "$TAG" --dir assets
+      - name: Check them
+        id: check
+        run: python a4/tools/release_assets.py assets --tag "$TAG" --refused refused.txt
+      - name: A refusal takes them down
+        if: failure() && steps.check.conclusion == 'failure'
+        run: |
+          gh release edit "$TAG" --draft=true
+          if [ ! -f refused.txt ]; then
+            echo "::error::the check failed without a refused.txt (it crashed?): the release is a draft again, no asset removed"
+            exit 1
+          fi
+          while IFS= read -r name; do
+            if [ -n "$name" ]; then gh release delete-asset "$TAG" "$name" --yes; fi
+          done < refused.txt
+          echo "::error::assets refused: the release is a draft again; refused: $(tr '\n' ' ' < refused.txt)"

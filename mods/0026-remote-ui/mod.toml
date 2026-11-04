@@ -107,4 +107,4 @@ subscribe = [
 [requires]
 shared = false
 # the host's 0x30..0x3F reach it only through 0022's SysEx router (rui=1); elekloader's `requires` (with what build.py finds in the bytes; tools/build.py cross_refs)
-mods = ["0022-looper"]
+mods = ["0021-ext", "0022-looper"]   # 0021: ext_stepbox and us_cubox at their fixed addresses (registry patches: cross_refs sees no cave there)

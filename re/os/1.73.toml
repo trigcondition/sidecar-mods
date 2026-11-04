@@ -1,0 +1,22 @@
+# The Analog Rytm MKII OS the sources are written for: every address in mods/, registry/ and re/symbols.toml is this
+# OS's. tools/ostarget.py info() gives the build tools these facts; a port to another OS (re/os/<os>.toml) translates
+# the addresses at build time (tools/ostarget.py port).
+
+[meta]
+os               = "1.73"
+stock            = "Analog-Rytm_MKII_OS1.73.syx"      # Elektron's file, as downloaded; never committed
+syx_sha256       = "8ad671087ec30433d5407c7380d2396e0915ab931c5d3dd18a78bf284d3d1e52"
+mainos_size      = 3005432
+mainos_sha256    = "28d9ef40c895e03f17dfce096543109adaf708947392db72818fc2a412d685d6"
+bootstrap_size   = 42302
+bootstrap_sha256 = "1b8d3b7288df118512740ac7c59d8dd9f71f44e6633a29628bcb068d756e2ed8"
+# elekloader's core-ar2 0.1, built from upstream's source at this commit (the last core for 1.73 without mod storage),
+# and the sha256 of the core-0.1.elemod it gives (published beside the bundle)
+core_rev         = "8972d70629f230af99c63c8624a886b33ec08299"
+core_version     = "0.1"
+core_sha256      = "33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825"
+# what tools/release_check.py builds to prove the bundle refuses newer cores (upstream commit, core version)
+refuse_cores     = [["92a99c958f9e17bfb93882385037b84185fc0420", "0.2"]]
+# the release's file names: the bundle, and the suffix of the core (as elekloader names it: "" for a core's own OS)
+bundle_suffix    = ""
+core_suffix      = ""
