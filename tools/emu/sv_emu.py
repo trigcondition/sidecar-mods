@@ -540,7 +540,43 @@ def t_popups(e):
               r["oled"] == r["frame"] and bool(b) and b[-1]["views"] == 9 and b[-1]["state"] == 0x45, (s, b[-1:]))
 
 
-TESTS = dict(bank=t_bank, popups=t_popups, level=t_level, padmode=t_padmode, dsp=t_dsp, juno=t_juno, knob=t_knob, list=t_list, leave=t_leave, gone=t_gone, trk=t_trk, push=t_push,
+def t_held(e):
+    """1027e (the owner's report on 0.4.3: a p-lock on a Sidecar machine's SRC page never showed): in GRID REC with a step
+    held the view stays on and its 2As carry that step's values (its locks, else the sound's), flagged (track | 0x40:
+    draw them, they are not the sound's), all 16 at the hold and each turned lock as it moves; let go, all 16 of the
+    sound unflagged. Held again later, the stored lock comes back. Outside GRID REC a held trig changes nothing."""
+    juno(e)
+    snd = e.kword(J[0], 0, 1)
+    sw = ((snd[0] & 0x7f) << 7) | (snd[1] >> 1)
+    rec = [(300, "press", "RECORD")]
+    ev = rec + [(800, "press", "T1", 1400), (1200, "turn", "1:+8", 6, 50)]
+    r = e.run("held", 3200, ev, snap=J)
+    a = evs(r, "v2a")
+    fl = [x for x in a if x["track"] == 0x40]
+    print(f"  2As: {[(hex(x['track']), x['first'], x['n'], x['vals'][:3]) for x in a]}")
+    check("held: a step held: all 16 of its values, flagged (2A 40 0 16)", bool(fl) and fl[0]["first"] == 0 and
+          fl[0]["n"] == 16 and fl[0]["ok"], fl[:1])
+    p2 = [x["vals"][1 - x["first"]] for x in fl if x["first"] <= 1 < x["first"] + x["n"]]
+    check("held: the turn's lock moves in flagged 2As (P2 up from the sound's value)", len(p2) >= 2 and p2[-1] > sw and
+          p2[-1] != p2[0], (sw, p2))
+    check("held: the sound's kit word unchanged (the turn was a lock)", e.kword(r["snap"][0], 0, 1) == snd)
+    last = a[-1] if a else {}
+    check("held: let go: all 16 of the sound again, unflagged (2A 0 0 16), P2 the sound's",
+          last.get("track") == 0 and last.get("first") == 0 and last.get("n") == 16 and last.get("vals", [0, -1])[1] == sw,
+          last)
+    s = e.sv(r["snap"][0])
+    check("held: the host's frame stayed on the glass", s["covered"] == 0 and s["show"] == 1 and r["oled"] == r["frame"],
+          (s, diff(r["oled"], r["frame"])))
+    r2 = e.run("heldagain", 1500, [(500, "press", "T1", 2000)], snap=r["snap"])
+    fl2 = [x for x in evs(r2, "v2a") if x["track"] == 0x40]
+    check("held: the step held again: its stored lock in a flagged 2A", bool(fl2) and fl2[0]["n"] == 16 and
+          fl2[0]["vals"][1] == p2[-1] if p2 else False, (fl2[:1], p2[-1:] if p2 else None))
+    r3 = e.run("heldlive", 1800, [(800, "press", "T1", 2000)], snap=J)
+    a3 = evs(r3, "v2a")
+    check("held: outside GRID REC a held trig sends no flagged 2A, the frame stays", not any(x["track"] & 0x40 for x in a3)
+          and r3["oled"] == r3["frame"], [(hex(x["track"]), x["first"], x["n"]) for x in a3])
+
+TESTS = dict(held=t_held, bank=t_bank, popups=t_popups, level=t_level, padmode=t_padmode, dsp=t_dsp, juno=t_juno, knob=t_knob, list=t_list, leave=t_leave, gone=t_gone, trk=t_trk, push=t_push,
              names=t_names)
 
 

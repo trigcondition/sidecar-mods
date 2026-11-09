@@ -550,6 +550,24 @@ Latency floor: the 2A waits for the next UI tick (0..50 ms) and the host's commi
 so a turn reaches the glass in about 50..100 ms (the TRK + YES page sends its turns at the event: 0..50 ms + the host).
 Not covered: a p-locked edit with a trig held (the page shows the lock; 2A reports the sound's own value).
 
+### 1027e: a held step's values in 2A
+
+The hardware report on 0.4.3 (a PLAITS track: a turn with a trig held never showed; a locked step held showed the
+sound's value): 2A carried the sound's own values only (1027b). Now while a step is held in GRID REC (stock's own held
+steps, the grid object's +0x15c / +0x158 as the bank list's YES reads them, 1038; the first held step) the view stays
+on and P1..P8 are that step's: the page's parameter set (view vtable +160 with -1) and its lock-get (+0x3c, set, id,
+step), as 0029's `sfu_get`; no lock: page_get_value with -1 as before. page_get_value's own third argument is NOT a
+step: with it >= 0 it reads a sound by that index (0x400ae494 on view +104) [code, 1.73 0x40038476..0x400384c4];
+measured: lock 0 gave another sound's values. P9..P16 stay the kit words (the sound's).
+
+The 2A's track byte carries 0x40 while a step is held (`2A 01 <t|0x40> <first> <n> ...`): the host draws the values
+and keeps them out of the sound's (its banked knob's 14 bits for the song, a MIDI machine's knobs). A hold, another
+step or a release sends all 16 (as they then are, flagged or not); a turn's lock as it moves, one value. An older host
+refuses a track byte >= 12, so it keeps the sound's values (as before). Outside GRID REC a held trig changes nothing;
+in seq mode the trigs are the host's. Test: sv_emu `held` (the lock moves 8192 -> 8448 -> 9088 in flagged 2As, the
+kit word unchanged, the sound's 16 unflagged at release, the stored lock again at the next hold, the frame on all
+along).
+
 ### 1027c: P9..P16 from the right words
 
 The 1027b build read P9..P16 from kit words 17..24 counted from P1 (0x41255933 + 2 w), past the knob words: on DSP SAMPLE
