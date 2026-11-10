@@ -291,6 +291,24 @@ frame arrived after the press) [measured: same build, both reruns alone ALL PASS
 
 Cost: one word test per key / turn; 37 is ~40 bytes once per page change. State +~170 B in .bss.
 
+**updown044 (0.4.4): UP / DOWN only on a Sidecar page that uses them (host side, no mod change).** The user report:
+CHRO's octave keys (UP / DOWN) did nothing while UP + TRIG's SEQ page or UP + FLTR's ARP page was open; on a poly
+track's SEQ page they worked. The capture point is this mask: 0026 routes UP / DOWN by the host's 37 (key_owner; the one
+exception, 1052d's FUNC + UP / DOWN before the host's next mask, stays), and 0022's router has no key path in the rui
+builds (keys=0). The host named UP / DOWN in every page's mask but the SEQ page's (updown1029), and the SEQ page named
+them under any question - UP + TRIG on a track that is no poly track shows the make / "not a poly machine" prompt, so
+there they were caught and used by nothing [measured, rytm-emu f44a + the real core, sim/rui_link.py ad hoc: CHRO, UP +
+TRIG or UP + FLTR, DOWN, the BD pad: before, DOWN reached the core (31 0 67) and the pad's note stayed 40; after, no
+key to the core and the note 36]. The pages that use them: the SEQ page's track menu (its rows; FUNC + DOWN opens
+it), POOL (rows), CHOP (DOWN: the trig keys' next bank), MENU / KEYS / WEB UI / USB-C (rows, scroll), and every ring
+page (DOWN: the next page, as RIGHT). Unused: INSERT, ARP, LFO, POLY, and the SEQ page's other questions. The mechanism
+is the smallest one already there: the host's per-page mask; ExtraPage gets `updown` (set on the pages above that stand
+alone), a page that stands alone names UP / DOWN only with it, ring pages as before, the SEQ page per moment
+(seq::updown_wanted: the menu or FUNC held). A list in the mod would duplicate the host's page knowledge and need a
+flash for every new page. Host tests: test_polypat (make / RESTORE / TURN OFF prompts pass them, the menu takes them,
+INSERT and ARP pass them, SIDECAR and POOL take them). Ring pages keeping DOWN is a choice left to the owner (passing
+it there would drop DOWN as "next page").
+
 ## 11. 1023: the connect splash
 
 Tags as above; [measured] = rytm-emu, rui1023, 2026-10-18, DTEMU_STRICT=1. No hardware.
