@@ -328,6 +328,26 @@ no confirm or cancel under a hidden menu or the startup dialogs); any other key 
 TRK + YES still opens the page; FUNC, the trig keys, the page keys...); a turn ends it and reaches stock (the edited
 value is on the stock screen at once). Releases follow the books (section 10).
 
+**1023b (0.4.4): the splash when the Rytm boots with the host attached.** The user report: Rytm on first, then the
+Sidecar: the splash; Sidecar on first, then the Rytm powered on: nothing. The cause is the rule above: at a cold boot
+with the host attached the port is configured before 0026's first tick [measured, rytm-emu cold boot on a powered-off
+card, the host present from 1 s: PORT_STATE 1 at ~1.1 s, the first tick ~6.8 s], so the hello went out at
+port_ticks 10 = st.ticks 11 and said 0.55 s; the host (remote.cpp, kSplashMinUp 60) answered "alive", no splash
+[measured with the real core, sim/rui_link.py: "rui: hello, Rytm up 0.5 s, caps 15: alive"]. Now the port's ticks
+count only once the UI loop has run HELLO_UP - HELLO_TICKS ticks (or the port's count has begun), so the first hello
+says >= 3 s (HELLO_UP 60) and the host greets it as it greets a later link: the splash once, ~3 s after the UI loop
+started (the stock screen is up by then: ~0.5 s after the first tick in rytm-emu). Later links are unchanged (the UI
+loop is long past 2.5 s). A page opened before that (TRK + YES in the UI loop's first 2.5 s) sets the count to
+HELLO_TICKS: the hello goes at once, next to the page's 30, inside the host's kHelloOpenMs (0.6 s), which keeps the
+page. Why the mod and not the host: the Rytm is the side that knows its UI is up; the host's rule and every host test
+stay as they are, and an older host (0.4.3) greets the boot too. The cost: at a boot with the host attached the link's
+first hello (33 / 3B snapshots, the host's voices silenced) comes ~2.5 s later than before; nothing before it waits on
+it. Test: rui_emu `boot` (cold boot on the base card powered off, `--usb-host-gone` 0..1 s as the host present from
+power on - rytm-emu's host raises VBUS before the firmware listens otherwise and never enumerates): one hello with up
+>= 60 and the splash on the panel (fails on held5: up 11); TRK + YES at 7.7 s: the hello next to the 30, the page
+open, the 36 ignored. Against the real core (sim/rui_link.py, ad hoc): held5 "alive", f44a 36 64 and the
+CONNECTED screen.
+
 **Old / new:** a 1022 host never answers 35 (its remote_sysex returns on any unknown id) and never sends 36; a 1022
 0026 never sends 35, so a 1023 host never sends it 36 (and if one came: the `default` case counts it in `rx_bad`,
 nothing else [code]).

@@ -67,31 +67,33 @@ class Emu:
     def sym(self, name):
         return self.syms["rytm-0026-remote-ui:" + name]
 
-    def at(self, ms):
-        return f"{self.clock + ms / 5:g}M"
+    def at(self, ms, cold=False):
+        return f"{(0 if cold else self.clock) + ms / 5:g}M"
 
-    def run(self, name, ms, events=(), script=None, counts=(), extra=(), env=None, save=True):
+    def run(self, name, ms, events=(), script=None, counts=(), extra=(), env=None, save=True, cold=False, card=None):
         """events: (ms, 'press', KEY[, hold ms]) / (ms, 'turn', 'ENC:DELTA', count, spacing ms) /
-        (ms, 'noread', to_ms) / (ms, 'sleep', to_ms). script: remote_ui.py's arguments (None: no host)."""
+        (ms, 'noread', to_ms) / (ms, 'sleep', to_ms). script: remote_ui.py's arguments (None: no host).
+        cold: a cold boot (times from power on) on `card` instead of the base snapshot."""
         s = socket.socket()
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
         s.close()
         snap = os.path.join(self.out, f"{name}.snap")
-        cmd = [DTBOOT, self.fw, "--load", self.snap, "--card", self.card,
+        at = lambda t: self.at(t, cold)   # noqa: E731
+        cmd = [DTBOOT, self.fw, *([] if cold else ["--load", self.snap]), "--card", card or self.card,
                "--instr", f"{ms // 5}M", "--every", "20M", "--usb-host", "--usb-midi-real",
                "--ob-link", f"127.0.0.1:{port}", *extra]
         for e in events:
             if e[1] == "press":
-                cmd += ["--press", f"{e[2]}@{self.at(e[0])}" + (f":{e[3] // 5}M" if len(e) > 3 else "")]
+                cmd += ["--press", f"{e[2]}@{at(e[0])}" + (f":{e[3] // 5}M" if len(e) > 3 else "")]
             elif e[1] == "turn":
-                cmd += ["--turn", f"{e[2]}@{self.at(e[0])}x{e[3]}/{e[4] // 5 if len(e) > 4 else 4}M"]
+                cmd += ["--turn", f"{e[2]}@{at(e[0])}x{e[3]}/{e[4] // 5 if len(e) > 4 else 4}M"]
             elif e[1] == "noread":
-                cmd += ["--usb-host-noread", f"{self.at(e[0])}:{self.at(e[2])}"]
+                cmd += ["--usb-host-noread", f"{at(e[0])}:{at(e[2])}"]
             elif e[1] == "sleep":
-                cmd += ["--usb-host-sleep", f"{self.at(e[0])}:{self.at(e[2])}"]
+                cmd += ["--usb-host-sleep", f"{at(e[0])}:{at(e[2])}"]
             elif e[1] == "gone":
-                cmd += ["--usb-host-gone", f"{self.at(e[0])}:{self.at(e[2])}"]
+                cmd += ["--usb-host-gone", f"{at(e[0])}:{at(e[2])}"]
         for c in counts:
             cmd += ["--count", f"{c:x}"]
         if save:
@@ -568,7 +570,42 @@ def ref0_at(e, ms):
     return e.ref0s[ms]
 
 
-TESTS = dict(frame=t_frame, kill=t_kill, escape=t_escape, noread=t_noread, full=t_full, cost=t_cost, pass_=t_pass, splash=t_splash)
+def t_boot(e):
+    """0.4.4 (user report): the Sidecar on first, then the Rytm powered on: no connect splash. The host (rytm-teensy
+    core/ui/remote.cpp) greets only a hello whose uptime is >= 3 s (kSplashMinUp 60 ticks), and at a cold boot with the
+    host attached the port is up before 0026's first tick, so the hello said ~0.5 s. Now the first hello waits until the
+    UI loop has run 3 s (HELLO_UP), and a page opened before that sends it at once.
+    The card: the base's, powered off (USB CONFIG and the working state kept). The host: rytm-emu's USB host raises VBUS
+    at power on, before the firmware listens, so it never enumerates; `--usb-host-gone` 0..1 s gives the VBUS edge the
+    firmware sees, which on hardware is a host present from power on. 0026's first tick comes ~6.8 s after power on."""
+    c = os.path.join(e.out, "boot.img")
+    if os.path.exists(c):
+        os.remove(c)
+    subprocess.run(["cp", "-c", os.path.join(EMU, e.card), c], check=True)
+    e.run("boot-off", 600, [], extra=["--power-off", f"{e.clock + 40:g}M"], card=c, save=False)
+    host = [(1, "gone", 1000)]
+    r = e.run("boot-on", 11500, host, script=["--splash", "60"], cold=True, card=c)
+    h = evs(r, "hello")
+    s1 = spl(e, r["snap"])
+    check("boot: the Rytm cold boots with the host attached: one hello (35), its uptime >= 3 s (60 ticks: the host's "
+          "kSplashMinUp, so the real host greets it)", len(h) == 1 and h[0]["up"] >= 60, h)
+    frame = open(os.path.join(e.out, "boot-on.frame"), "rb").read()
+    check("boot: the splash shows, the panel the host's frame byte for byte", s1["splash_on"] == 1 and s1["splashes"] == 1
+          and r["oled"] == frame, f"{s1}, {sum(a != b for a, b in zip(r['oled'] or b'', frame))} bytes differ")
+    # TRK + YES before the held hello (the UI loop up ~1 s): the hello goes at once (the host keeps a page opened up
+    # to 0.6 s before it), the page opens and stays, the host's later 36 ignored
+    r = e.run("boot-open", 11500, host + [(7700, "press", "TRK", 300), (7800, "press", "YES")], script=["--splash", "60"],
+              cold=True, card=c)
+    h = evs(r, "hello")
+    m = evs(r, "mode")
+    s2 = spl(e, r["snap"])
+    check("boot: TRK + YES before the held hello: the hello within 0.3 s of the page's 30, the page open at the end, no "
+          "splash", h and m and m[0]["on"] == 1 and abs(h[0]["t"] - m[0]["t"]) < 0.3 and e.st(r["snap"], "active") == 1
+          and s2["splashes"] == 0, (h[:1], m[:1], s2))
+
+
+TESTS = dict(frame=t_frame, kill=t_kill, escape=t_escape, noread=t_noread, full=t_full, cost=t_cost, pass_=t_pass, splash=t_splash,
+             boot=t_boot)
 EXTRA = dict(survey=t_survey)   # not in "all": 3 runs a key
 
 

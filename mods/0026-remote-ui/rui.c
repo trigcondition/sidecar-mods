@@ -38,7 +38,8 @@
  *                 31 1 <code >> 7> <code & 0x7f> <down>   (the firmware's key code, e.g. TRK 0x86 = 1 6)
  *                 32 1 <encoder> <delta + 64> <func>
  *                 35 1 <uptime >> 7> <uptime & 0x7f> <caps>   1023: hello, 0.5 s after the USB port came up (again
- *                      1 s and 2 s later while no valid host message came): uptime in ticks since 0026 started
+ *                      1 s and 2 s later while no valid host message came; 0.4.4: at a boot not before the UI loop's
+ *                      3rd second, HELLO_UP, unless a page opens): uptime in ticks since 0026 started
  *                      (saturated at 16383), caps bit 0: 36 understood, bit 1 (1049): 16 send FX label tables kept
  *                      (0029's 24s; before, 8: a host sends the labels of 8 TYPEs at most to an older build), bit 2
  *                      (1052): the project slot reports 4B (below, "1052")
@@ -129,6 +130,7 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 #define NKQ    16
 #define TIMEOUT_TICKS 20                            /* 1 s of the 20 Hz tick without a host message */
 #define HELLO_TICKS 10                              /* 35 this long after the port came up (the host reads by then) */
+#define HELLO_UP    60                              /* 0.4.4: and not before the UI loop has run 3 s (the host's splash rule) */
 #define K_NAV0 0x40       /* LEFT RIGHT UP DOWN YES NO 0x40..0x45 */
 #define K_NAV1 0x45
 #define K_PAD0 0x90       /* the 12 pads 0x90..0x9b */
@@ -2490,7 +2492,12 @@ static void tick_body(void *ctrl) {
   if (host_open) { host_open = 0; enter(ctrl, R_HOST, 0); }
   /* the hello: the port up for HELLO_TICKS, then again at +1 s and +2 s while the host has said nothing */
   if (PORT_STATE == 1) {
-    if (st.port_ticks < 0xffff) st.port_ticks++;
+    /* 0.4.4: a port up at the Rytm's boot (the host attached at power on) counts from the UI loop's 3rd second, so
+       the hello's uptime is >= HELLO_UP and the host greets it with its splash; a page opened before that: at once */
+    if (st.port_ticks < 0xffff) {
+      if (st.port_ticks || st.ticks > HELLO_UP - HELLO_TICKS) st.port_ticks++;
+      else if (st.active) st.port_ticks = HELLO_TICKS;
+    }
     if (st.port_ticks == HELLO_TICKS) { st.hello_rx = r; st.hello_n = 1; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; sq_forget(); pm.c_hello = commits; }
     else if (st.hello_n && st.hello_n < 3 && st.port_ticks == HELLO_TICKS + 20 * st.hello_n) {
       if (r == st.hello_rx) { st.hello_n++; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; } else st.hello_n = 3;
