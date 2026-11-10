@@ -291,6 +291,39 @@ frame arrived after the press) [measured: same build, both reruns alone ALL PASS
 
 Cost: one word test per key / turn; 37 is ~40 bytes once per page change. State +~170 B in .bss.
 
+**updown044 (0.4.4): UP / DOWN only on a Sidecar page that uses them (host side, no mod change).** The user report:
+CHRO's octave keys (UP / DOWN) did nothing while UP + TRIG's SEQ page or UP + FLTR's ARP page was open; on a poly
+track's SEQ page they worked. The capture point is this mask: 0026 routes UP / DOWN by the host's 37 (key_owner; the one
+exception, 1052d's FUNC + UP / DOWN before the host's next mask, stays), and 0022's router has no key path in the rui
+builds (keys=0). The host named UP / DOWN in every page's mask but the SEQ page's (updown1029), and the SEQ page named
+them under any question - UP + TRIG on a track that is no poly track shows the make / "not a poly machine" prompt, so
+there they were caught and used by nothing [measured, rytm-emu f44a + the real core, sim/rui_link.py ad hoc: CHRO, UP +
+TRIG or UP + FLTR, DOWN, the BD pad: before, DOWN reached the core (31 0 67) and the pad's note stayed 40; after, no
+key to the core and the note 36]. The pages that use them: the SEQ page's track menu (its rows; FUNC + DOWN opens
+it), POOL (rows), CHOP (DOWN: the trig keys' next bank), MENU / KEYS / WEB UI / USB-C (rows, scroll), and every ring
+page (DOWN: the next page, as RIGHT). Unused: INSERT, ARP, LFO, POLY, and the SEQ page's other questions. The mechanism
+is the smallest one already there: the host's per-page mask; ExtraPage gets `updown` (set on the pages above that stand
+alone), a page that stands alone names UP / DOWN only with it, ring pages as before, the SEQ page per moment
+(seq::updown_wanted: the menu or FUNC held). A list in the mod would duplicate the host's page knowledge and need a
+flash for every new page. Host tests: test_polypat (make / RESTORE / TURN OFF prompts pass them, the menu takes them,
+INSERT and ARP pass them, SIDECAR and POOL take them). Ring pages keeping DOWN is a choice left to the owner (passing
+it there would drop DOWN as "next page").
+
+**nav044 (0.4.4): NO leaves a shortcut's page in one press (host side, no mod change).** The user report: after
+visiting more than one tab, several NOs to leave; UP + AMP's NO odd. The cause was host-side: rui1051 kept a back
+history of the pages shortcuts were opened over (two deep), so NO walked back through them (UP + T9 over SYSTEM: NO to
+SYSTEM, NO to SIDECAR, NO out), and INSERT's OUT view (UP + AMP opens INSERT on it) took the first NO for itself (back
+to the TRACK view), a second to leave. 0026 is not involved: NO is the host's key on a page (the 37 mask), and the
+page closes by the host's 3A 0 0 as before. Now the host remembers only whether a shortcut put the page up (UP / TRK +
+key, UP + T, a host page request; not the MENU's pick, not LEFT / RIGHT); NO there asks the page closed at once, and the
+shortcut again on its own page leaves the same way. INSERT's OUT view opened by UP + AMP gives NO up to that (the view
+it opened on is the top level); an OUT view reached by RIGHT keeps its NO (back to the TRACK view). Unchanged: a page
+reached by the ring or picked in the MENU, and the MENU itself (review), go to SIDECAR on NO, SIDECAR's NO leaves (two presses from a ring page, as
+before). Exit behaviour only: the stock SRC / AMP / FLTR keys over a page are 0.5.0 work. Host tests: test_ui (rui1051
+block: SYSTEM + UP + T9, SIDECAR + UP + T9 + UP + LFO + UP + T12: one NO, 3A; a ring page: NO to SIDECAR), test_insert
+(UP + AMP: one NO; UP + FX then UP + LFO: one NO), test_lfo (UP + LFO again leaves); review: the MENU's NO to SIDECAR (test_ui), LFO / POLY pass UP / DOWN and
+SYSTEM keeps them (test_polypat).
+
 ## 11. 1023: the connect splash
 
 Tags as above; [measured] = rytm-emu, rui1023, 2026-10-18, DTEMU_STRICT=1. No hardware.
@@ -327,6 +360,26 @@ the pads play under it and keep it; a navigation key (LEFT RIGHT UP DOWN YES NO)
 no confirm or cancel under a hidden menu or the startup dialogs); any other key ends it and reaches stock (TRK too, so
 TRK + YES still opens the page; FUNC, the trig keys, the page keys...); a turn ends it and reaches stock (the edited
 value is on the stock screen at once). Releases follow the books (section 10).
+
+**1023b (0.4.4): the splash when the Rytm boots with the host attached.** The user report: Rytm on first, then the
+Sidecar: the splash; Sidecar on first, then the Rytm powered on: nothing. The cause is the rule above: at a cold boot
+with the host attached the port is configured before 0026's first tick [measured, rytm-emu cold boot on a powered-off
+card, the host present from 1 s: PORT_STATE 1 at ~1.1 s, the first tick ~6.8 s], so the hello went out at
+port_ticks 10 = st.ticks 11 and said 0.55 s; the host (remote.cpp, kSplashMinUp 60) answered "alive", no splash
+[measured with the real core, sim/rui_link.py: "rui: hello, Rytm up 0.5 s, caps 15: alive"]. Now the port's ticks
+count only once the UI loop has run HELLO_UP - HELLO_TICKS ticks (or the port's count has begun), so the first hello
+says >= 3 s (HELLO_UP 60) and the host greets it as it greets a later link: the splash once, ~3 s after the UI loop
+started (the stock screen is up by then: ~0.5 s after the first tick in rytm-emu). Later links are unchanged (the UI
+loop is long past 2.5 s). A page opened before that (TRK + YES in the UI loop's first 2.5 s) sets the count to
+HELLO_TICKS: the hello goes at once, next to the page's 30, inside the host's kHelloOpenMs (0.6 s), which keeps the
+page. Why the mod and not the host: the Rytm is the side that knows its UI is up; the host's rule and every host test
+stay as they are, and an older host (0.4.3) greets the boot too. The cost: at a boot with the host attached the link's
+first hello (33 / 3B snapshots, the host's voices silenced) comes ~2.5 s later than before; nothing before it waits on
+it. Test: rui_emu `boot` (cold boot on the base card powered off, `--usb-host-gone` 0..1 s as the host present from
+power on - rytm-emu's host raises VBUS before the firmware listens otherwise and never enumerates): one hello with up
+>= 60 and the splash on the panel (fails on held5: up 11); TRK + YES at 7.7 s: the hello next to the 30, the page
+open, the 36 ignored. Against the real core (sim/rui_link.py, ad hoc): held5 "alive", f44a 36 64 and the
+CONNECTED screen.
 
 **Old / new:** a 1022 host never answers 35 (its remote_sysex returns on any unknown id) and never sends 36; a 1022
 0026 never sends 35, so a 1023 host never sends it 36 (and if one came: the `default` case counts it in `rx_bad`,
@@ -549,6 +602,24 @@ first count, then one each 50 ms tick while it moves, ending at the kit's settle
 Latency floor: the 2A waits for the next UI tick (0..50 ms) and the host's commit is blitted at the tick after (50 ms),
 so a turn reaches the glass in about 50..100 ms (the TRK + YES page sends its turns at the event: 0..50 ms + the host).
 Not covered: a p-locked edit with a trig held (the page shows the lock; 2A reports the sound's own value).
+
+### 1027e: a held step's values in 2A
+
+The hardware report on 0.4.3 (a PLAITS track: a turn with a trig held never showed; a locked step held showed the
+sound's value): 2A carried the sound's own values only (1027b). Now while a step is held in GRID REC (stock's own held
+steps, the grid object's +0x15c / +0x158 as the bank list's YES reads them, 1038; the first held step) the view stays
+on and P1..P8 are that step's: the page's parameter set (view vtable +160 with -1) and its lock-get (+0x3c, set, id,
+step), as 0029's `sfu_get`; no lock: page_get_value with -1 as before. page_get_value's own third argument is NOT a
+step: with it >= 0 it reads a sound by that index (0x400ae494 on view +104) [code, 1.73 0x40038476..0x400384c4];
+measured: lock 0 gave another sound's values. P9..P16 stay the kit words (the sound's).
+
+The 2A's track byte carries 0x40 while a step is held (`2A 01 <t|0x40> <first> <n> ...`): the host draws the values
+and keeps them out of the sound's (its banked knob's 14 bits for the song, a MIDI machine's knobs). A hold, another
+step or a release sends all 16 (as they then are, flagged or not); a turn's lock as it moves, one value. An older host
+refuses a track byte >= 12, so it keeps the sound's values (as before). Outside GRID REC a held trig changes nothing;
+in seq mode the trigs are the host's. Test: sv_emu `held` (the lock moves 8192 -> 8448 -> 9088 in flagged 2As, the
+kit word unchanged, the sound's 16 unflagged at release, the stored lock again at the next hold, the frame on all
+along).
 
 ### 1027c: P9..P16 from the right words
 

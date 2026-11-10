@@ -38,7 +38,8 @@
  *                 31 1 <code >> 7> <code & 0x7f> <down>   (the firmware's key code, e.g. TRK 0x86 = 1 6)
  *                 32 1 <encoder> <delta + 64> <func>
  *                 35 1 <uptime >> 7> <uptime & 0x7f> <caps>   1023: hello, 0.5 s after the USB port came up (again
- *                      1 s and 2 s later while no valid host message came): uptime in ticks since 0026 started
+ *                      1 s and 2 s later while no valid host message came; 0.4.4: at a boot not before the UI loop's
+ *                      3rd second, HELLO_UP, unless a page opens): uptime in ticks since 0026 started
  *                      (saturated at 16383), caps bit 0: 36 understood, bit 1 (1049): 16 send FX label tables kept
  *                      (0029's 24s; before, 8: a host sends the labels of 8 TYPEs at most to an older build), bit 2
  *                      (1052): the project slot reports 4B (below, "1052")
@@ -129,6 +130,7 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 #define NKQ    16
 #define TIMEOUT_TICKS 20                            /* 1 s of the 20 Hz tick without a host message */
 #define HELLO_TICKS 10                              /* 35 this long after the port came up (the host reads by then) */
+#define HELLO_UP    60                              /* 0.4.4: and not before the UI loop has run 3 s (the host's splash rule) */
 #define K_NAV0 0x40       /* LEFT RIGHT UP DOWN YES NO 0x40..0x45 */
 #define K_NAV1 0x45
 #define K_PAD0 0x90       /* the 12 pads 0x90..0x9b */
@@ -706,6 +708,8 @@ static struct {
   uint8_t diag, diag_sent, diag_owed, pad2;   /* 2B's state byte now / last sent; 2B owed */
   uint32_t diag_vt_sent_w;             /* the top vtable in the last 2B */
   uint32_t diag_tick, d2b;             /* tick of the last 2B; 2Bs sent */
+  int32_t lock, lock_sent;             /* 1027e: the step held in GRID REC (0..63, -1 none): the values are its; as last sent */
+  uint32_t s2al;                       /* 1027e: 2As of a held step's values */
 } sv __attribute__((section(".bss"), aligned(4)));
 
 /* 0 not the SRC page, 1 the SRC page is the screen, 2 the SRC page is there but covered */
@@ -818,7 +822,7 @@ static int32_t sv_page(void *ctrl) {
   return cov ? 2 : 1;
 }
 
-static uint16_t sv_word(int32_t t, int32_t i) {
+static uint16_t sv_word(int32_t t, int32_t i, int32_t lock) {
   const volatile uint8_t *w = KWORD(t, i);   /* P1..P16 contiguous: 0021's knob word 9 + i at sound + 18 + 2 i */
   int32_t knob = i;
   if (MACHINE_OF(t) == DSPS_M) knob = i == DSPS_P ? 0 : i == 0 ? 8 : i;   /* 7h: knob A is SMP (P11); ENG (P1) on the SMPL page */
@@ -826,11 +830,19 @@ static uint16_t sv_word(int32_t t, int32_t i) {
     const uint32_t *vt = *(const uint32_t *const *)sv.view;
     int32_t id = ((pv_id_fn)vt[0x9c / 4])(sv.view, knob);
     if (id > 0) {
-      int32_t v = ((pv_get_fn)vt[0x54 / 4])(sv.view, id, -1);
+      int32_t v = -1, lk = 0;
+      if (lock >= 0) {                 /* 1027e: the held step's lock (the page's parameter set, vtable +160 / its +0x3c, as
+                                          0029's sfu_get); page_get_value's own third argument is a sound, not a step */
+        void **set = ((void **(*)(void *, int32_t))vt[160 / 4])(sv.view, -1);
+        if (set) v = ((int32_t (*)(void *, int32_t, int32_t))((const uint32_t *)*set)[0x3c / 4])(set, id, lock);
+        lk = v >= 0;
+      }
+      if (v < 0) v = ((pv_get_fn)vt[0x54 / 4])(sv.view, id, -1);
       if (XBOX[0] == 0x58535450u) {    /* 0021's list knob: 0029's wrapper answers the step index, not the word */
         int32_t m = ((int32_t (*)(int32_t))XBOX[1])(id), md = m >> 8, n = m & 0xff, k = (v >> 8) & 0xff, kv = w[0] & 0x7f;
         if (md >= 1 && md <= 3 && n > 0) {
-          if ((md == 1 ? kv * n / 128 : kv) == k) return (uint16_t)(kv << 7 | (w[1] >> 1));   /* the word, exact */
+          if (!lk && (md == 1 ? kv * n / 128 : kv) == k) return (uint16_t)(kv << 7 | (w[1] >> 1));   /* the word, exact
+                                          (not for a lock: the word is the sound's, a banked lock's bank its own, 1027e) */
           {                                                                                  /* the step's stored value */
             int32_t f = md == 3 ? (v & 0xe0) >> 1 : 0;   /* 1038: a banked knob's value keeps its bank (0029 bit 11) */
             v = md == 1 ? (128 * k + n - 1) / n : k;
@@ -844,6 +856,7 @@ static uint16_t sv_word(int32_t t, int32_t i) {
   return (uint16_t)((w[0] & 0x7f) << 7 | (w[1] >> 1));
 }
 
+static int32_t sv_held_step(void);
 static void sv_tick(void *ctrl, uint32_t r) {
   int32_t t = SEL_TRACK, pg = sv_page(ctrl), on;
   uint8_t m = 0;
@@ -861,6 +874,7 @@ static void sv_tick(void *ctrl, uint32_t r) {
     sv.ends++;
   }
   sv.covered = pg == 2;
+  sv.lock = sv.on && pg == 1 ? sv_held_step() : -1;   /* 1027e */
   if (r != sv.rx_seen) sv.idle = 0; else if (sv.idle < 0xffff) sv.idle++;
   sv.rx_seen = r;
   sv.show = sv.on && !sv.covered && commits != sv.base && sv.idle < TIMEOUT_TICKS && !st.active && !st.splash_on;
@@ -903,8 +917,9 @@ static void sv_flush(void) {
   }
   if (!sv.on) return;
   if (cu_steps(-1 - (int32_t)sv.track)) return;   /* 7o: MIDI being set up: the old machine's words are no CCs (the host feeds a 2A to the machine) */
+  if (sv.lock != sv.lock_sent) sv.vals_all = 1;   /* 1027e: a step held, another, or let go: all 16, flagged as they are */
   for (i = 0; i < 16; ++i) {
-    cur[i] = sv_word(sv.track, i);
+    cur[i] = sv_word(sv.track, i, sv.lock);
     if (sv.vals_all || cur[i] != sv.val[i]) { if (i < lo) lo = i; hi = i; }
     /* ... and the kit's words lag the live ones cu_defs_tick wrote (kit_param_changed's drain: 300-350 ms [measured, us_ui.json]): page 2's are all 0 by then */
     if (i >= 8 && cur[i] && cu_mi_settling(sv.track)) return;
@@ -912,13 +927,15 @@ static void sv_flush(void) {
   if (sv.vals_all) { lo = 0; hi = 15; }
   if (hi < 0) return;
   b[k++] = 0xf0; b[k++] = 0x7d; b[k++] = 0x52; b[k++] = 0x54; b[k++] = 0x2a; b[k++] = 0x01;
-  b[k++] = sv.track; b[k++] = (uint8_t)lo; b[k++] = (uint8_t)(hi - lo + 1);
+  b[k++] = (uint8_t)(sv.track | (sv.lock >= 0 ? 0x40 : 0)); b[k++] = (uint8_t)lo; b[k++] = (uint8_t)(hi - lo + 1);
   for (i = lo; i <= hi; ++i) { b[k++] = (uint8_t)(cur[i] >> 7); b[k++] = (uint8_t)(cur[i] & 0x7f); }
   b[k++] = 0xf7;
   if (!send(b, k)) return;
   for (i = lo; i <= hi; ++i) sv.val[i] = cur[i];
   sv.vals_all = 0;
   sv.s2a++;
+  if (sv.lock >= 0) sv.s2al++;
+  sv.lock_sent = sv.lock;
 }
 
 static void led_restore(void);
@@ -2147,6 +2164,17 @@ static struct {
 } ls __attribute__((section(".bss"), aligned(4)));
 #define LS_HELD_HI(o) (*(const volatile uint32_t *)((o) + 0x158u))
 #define LS_HELD_LO(o) (*(const volatile uint32_t *)((o) + 0x15cu))
+/* 1027e: the first step held now in GRID REC (stock's own held steps, as its lock page has them), -1 none */
+static int32_t sv_held_step(void) {
+  uint32_t o = SQ_GRIDOBJ, h;
+  int32_t i;
+  if (o < 0x40000000u || o >= 0x44000000u || !sq_grid()) return -1;
+  h = LS_HELD_LO(o);
+  if (h) { for (i = 0; !(h >> i & 1); ++i) ; return i; }
+  h = LS_HELD_HI(o);
+  if (h) { for (i = 0; !(h >> i & 1); ++i) ; return 32 + i; }
+  return -1;
+}
 #define PAT_LEN       ((rec_fn)0x400c04b8u)   /* pattern_length(track pattern) */
 #define CU_WT_M 46    /* WAVETABLE, GRANULAR, MULTISAMPLE (CU_WT / CU_GR / CU_MS below) */
 #define CU_GR_M 47
@@ -2158,7 +2186,7 @@ static struct {
 static int32_t ls_banked(uint32_t m) { return m == CU_WT_M || m == CU_GR_M || m == CU_MS_M || m == CU_CP_M ||
                                              ((m == 40 || m == 41) && ls_host_presets); }
 static void ls_queue(uint8_t on, uint8_t why) {
-  uint16_t v = sv_word(ls.track, ls.p);
+  uint16_t v = sv_word(ls.track, ls.p, -1);
   if (ls.qn >= LS_NQ) { ls.drops++; return; }
   ls.q[ls.qn][0] = ls.track; ls.q[ls.qn][1] = on; ls.q[ls.qn][2] = (uint8_t)(v >> 7); ls.q[ls.qn][3] = (uint8_t)(v & 0x7f);
   ls.q[ls.qn][4] = why;
@@ -2464,7 +2492,12 @@ static void tick_body(void *ctrl) {
   if (host_open) { host_open = 0; enter(ctrl, R_HOST, 0); }
   /* the hello: the port up for HELLO_TICKS, then again at +1 s and +2 s while the host has said nothing */
   if (PORT_STATE == 1) {
-    if (st.port_ticks < 0xffff) st.port_ticks++;
+    /* 0.4.4: a port up at the Rytm's boot (the host attached at power on) counts from the UI loop's 3rd second, so
+       the hello's uptime is >= HELLO_UP and the host greets it with its splash; a page opened before that: at once */
+    if (st.port_ticks < 0xffff) {
+      if (st.port_ticks || st.ticks > HELLO_UP - HELLO_TICKS) st.port_ticks++;
+      else if (st.active) st.port_ticks = HELLO_TICKS;
+    }
     if (st.port_ticks == HELLO_TICKS) { st.hello_rx = r; st.hello_n = 1; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; sq_forget(); pm.c_hello = commits; }
     else if (st.hello_n && st.hello_n < 3 && st.port_ticks == HELLO_TICKS + 20 * st.hello_n) {
       if (r == st.hello_rx) { st.hello_n++; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; } else st.hello_n = 3;

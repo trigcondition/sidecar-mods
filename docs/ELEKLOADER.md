@@ -17,7 +17,7 @@ recovery section included.
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.74.syx` | the stock OS 1.74, in Elektron's `Analog-Rytm_MKII_OS1.74_dist.zip` | `cb0f99d620edde994fb860c0e79cc2464e427d06882828cfdfb00fc53700e123` |
 | `core-0.1-os1.74.elemod` | elekloader's core-ar2 0.1 for OS 1.74: the boot copier and hook bus every elekloader mod builds on | `89c00065e8f83ce839978c45a32200e09879682b8b95cbff0bdb71ca09dc3c8a` |
-| `rytm-sidecar-0.4.0-os1.74.elemod` | the Sidecar mods, all in one module, for OS 1.74 | `794448662bb11fd2b9ece677640a431e2a6d9e169952aa3378cd0e3d9834e545` |
+| `rytm-sidecar-0.4.4-os1.74.elemod` | the Sidecar mods, all in one module, for OS 1.74 | `41bd2bdd80720d384e3d355e54726d942cb9339cb64ccf2e962decb4778f48c1` |
 
 **OS 1.73:**
 
@@ -25,7 +25,7 @@ recovery section included.
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.73.syx` | the stock OS 1.73 (Elektron no longer offers it; use the file you have) | `8ad671087ec30433d5407c7380d2396e0915ab931c5d3dd18a78bf284d3d1e52` |
 | `core-0.1.elemod` | elekloader's core-ar2 0.1: the boot copier and hook bus every elekloader mod builds on | `33de51c098ab0ecd9cc57e9dfc3efa3d95f8133b1f4a4e6abd80d5fdba2dd825` |
-| `rytm-sidecar-0.4.0.elemod` | the Sidecar mods, all in one module | `d003a738374ae3cb643c5d6c4cd4622dd1f7931398dcdfaf016b82576c956c44` |
+| `rytm-sidecar-0.4.4.elemod` | the Sidecar mods, all in one module | `fc974cc02d21f2754c390424bf178541d06d9dbd124e55b2b23c43d8fcc7b4d5` |
 
 Each OS's two `.elemod` files are published together, with `SHA256SUMS`, `LICENSE`, `NOTICE`, `TOOLCHAIN.txt` and the
 source of elekloader's parts (1.73: `elekloader-8972d70-core-ar2-src.tar.gz`; 1.74:
@@ -59,7 +59,7 @@ and they call each other at fixed addresses.
 2. Choose your stock firmware: `Analog-Rytm_MKII_OS1.74.syx` (or `Analog-Rytm_MKII_OS1.73.syx`). The page knows it
    by its hash.
 3. Add your own mods: that OS's core and module (1.74: `core-0.1-os1.74.elemod` and
-   `rytm-sidecar-0.4.0-os1.74.elemod`; 1.73: `core-0.1.elemod` and `rytm-sidecar-0.4.0.elemod`). Use our core
+   `rytm-sidecar-0.4.4-os1.74.elemod`; 1.73: `core-0.1.elemod` and `rytm-sidecar-0.4.4.elemod`). Use our core
    file, not one the page lists: the page's Rytm cores are newer ones (0.3 and up, for 1.74), which keep mod storage
    where the Sidecar keeps its settings, and are refused (below); for 1.73 it lists none.
 4. Tick `rytm-sidecar`. Ticking it ticks the core it requires. The check should say there are no conflicts.
@@ -68,8 +68,8 @@ and they call each other at fixed addresses.
    2.0a, and going back to stock from there is untested: the OS carries "Downgrade not possible" and the bootstrap a
    VERSION CHECK (`docs/FLASHING.md`, "Downgrades"), so either route, USB or the STARTUP menu, may refuse it.
 6. Build, and download the `.syx`. Its sha256, as built from this branch:
-   - version 1.74: `538ae6fa1a66dfb72141743036c40b4f3845ed73a4ea59f7e3b6aa9e51fab337`;
-   - version 1.73: `07780e9eb4bce7f71c83da3134ede4782f7ea7af211eb6787c670607707bff18`.
+   - version 1.74: `3bb035a2035857c0a3035dfb95fab0703191a4f8fdd1b8de3a31302d2770d77c`;
+   - version 1.73: `421cccc9dd16709f3981a1e4f0155bfdcabb337f2130ceb6fee26431967acf26`.
 
    If yours differs, do not flash it: see the next section.
 
@@ -84,9 +84,9 @@ build with the command line at the pinned commit instead:
     git clone https://github.com/irpina/elekloader && cd elekloader
     git checkout c150ac583a4b7e6d64680d5592f4a40f409193f7
     python3 -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx --mod core-0.1-os1.74.elemod \
-        --mod rytm-sidecar-0.4.0-os1.74.elemod --out sidecar.syx --version 1.74
+        --mod rytm-sidecar-0.4.4-os1.74.elemod --out sidecar.syx --version 1.74
 
-(for 1.73: `--stock Analog-Rytm_MKII_OS1.73.syx --mod core-0.1.elemod --mod rytm-sidecar-0.4.0.elemod --version
+(for 1.73: `--stock Analog-Rytm_MKII_OS1.73.syx --mod core-0.1.elemod --mod rytm-sidecar-0.4.4.elemod --version
 1.73`) and check that `sidecar.syx` has the sha256 above.
 
 Never share the `.syx` you built: it contains Elektron's firmware. Share the `.elemod` files instead.
@@ -136,7 +136,7 @@ your own copy of the 1.73 file if you want to go back to it.
   the same bytes the Sidecar mods already keep their own settings in (0013/0021: the sound's spare bytes; 0025: kit
   FX words 38..41). Both would overwrite each other's settings, silently. The module says so in a way elekloader
   enforces: it claims the first two bytes of each of core 0.2's storage hooks (without changing them), so elekloader
-  refuses the build with *"rytm-sidecar 0.4.0 site ... and core 0.2 site ... overlap"*. The format has no way to say
+  refuses the build with *"rytm-sidecar 0.4.4 site ... and core 0.2 site ... overlap"*. The format has no way to say
   "core 0.1 only" directly (`resources.core` is a minimum). If you see that message, you ticked a newer core: untick
   it and tick `core-0.1.elemod`. The guard has limits: it catches core 0.2's own storage hooks, at those addresses,
   under today's elekloader, whose overlap check counts any shared byte (on 1.74 the cores 0.2 to 0.6 hook the same
@@ -148,7 +148,7 @@ your own copy of the 1.73 file if you want to go back to it.
 
 ## Status
 
-The 1.74 build (sha256 `538ae6fa...`, the hash above) has run on a real Rytm (2026-11-04): the owner flashed stock 1.74,
+0.4.4 (the hashes above) has passed the emulator suites and flash rehearsals; its first hardware run is the owner's. The 0.4.4 1.74 build (sha256 `538ae6fa...`) has run on a real Rytm (2026-11-04): the owner flashed stock 1.74,
 then the 1.74 build, and the Sidecar machines, the pages, the SEND FX including ROUTE PRE, the MASTER page and kit save and
 reload all work. Flashing back and forth between stock 1.73 and stock 1.74 works too. Before that it had passed the
 emulator suites and flash rehearsals from stock 1.74, from the 1.73 build and back to stock 1.74. On 1.73, a test build from the same source has passed the emulator suites
@@ -161,7 +161,7 @@ work, and the bootstrap (untouched) is the way back if it does not. First hardwa
 
 ## Source and licence
 
-The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this release is the tag `v0.4.0` of
+The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this release is the tag `v0.4.4` of
 <https://github.com/trigcondition/sidecar-mods>: `make setup` then
 `make release` builds the 1.73 `.elemod` files from it and `make release OS=1.74` the 1.74 ones, byte for byte with the toolchain in `TOOLCHAIN.txt` (GNU
 binutils 2.47 `m68k-elf-as`, Python 3.14; another assembler version may give other bytes). `NOTICE` names the exact
