@@ -318,10 +318,11 @@ page closes by the host's 3A 0 0 as before. Now the host remembers only whether 
 key, UP + T, a host page request; not the MENU's pick, not LEFT / RIGHT); NO there asks the page closed at once, and the
 shortcut again on its own page leaves the same way. INSERT's OUT view opened by UP + AMP gives NO up to that (the view
 it opened on is the top level); an OUT view reached by RIGHT keeps its NO (back to the TRACK view). Unchanged: a page
-reached by the ring or picked in the MENU goes to SIDECAR on NO, SIDECAR's NO leaves (two presses from a ring page, as
+reached by the ring or picked in the MENU, and the MENU itself (review), go to SIDECAR on NO, SIDECAR's NO leaves (two presses from a ring page, as
 before). Exit behaviour only: the stock SRC / AMP / FLTR keys over a page are 0.5.0 work. Host tests: test_ui (rui1051
 block: SYSTEM + UP + T9, SIDECAR + UP + T9 + UP + LFO + UP + T12: one NO, 3A; a ring page: NO to SIDECAR), test_insert
-(UP + AMP: one NO; UP + FX then UP + LFO: one NO), test_lfo (UP + LFO again leaves).
+(UP + AMP: one NO; UP + FX then UP + LFO: one NO), test_lfo (UP + LFO again leaves); review: the MENU's NO to SIDECAR (test_ui), LFO / POLY pass UP / DOWN and
+SYSTEM keeps them (test_polypat).
 
 ## 11. 1023: the connect splash
 
