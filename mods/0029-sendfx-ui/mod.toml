@@ -24,7 +24,9 @@ sets' read / write / lock entries wrapped so two knobs share a word); TYPE and P
 TYPE shows the Sidecar's names (host-link 21) and !NAME for a missing effect (22); P1 is ROUT
 (PRE 0..63 / POST 64..127); P2..P5 take the Sidecar's per-TYPE labels and zone names (24), else
 P2..P5 and numbers. The ASK never waits on USB (try-lock). Needs
-0025-sendfx-report (FX 38..41 storage) and 0022 sfx=1 for the names. Emulator only. design.md.
+0025-sendfx-report (FX 38..41 storage) and 0022 sfx=1 for the names. 0.5.0: knobs G / H are
+BASE / WID, each send FX's return filter, held by the Sidecar (host-link 22 ver 2 both ways,
+records 1..4, never stored in the kit, no locks). Emulator only. design.md.
 """
 
 [sources]

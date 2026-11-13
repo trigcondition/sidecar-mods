@@ -31,7 +31,7 @@ K_TRK, K_LFO, K_T3 = 0x86, 0x35, 0x02
 BLUE, ORANGE = 47, 52        # palette: (0, 0, 31) and (11, 6, 0) [measured, the OS's palette in rytm-emu]
 # struct rui (rui.c) after splash_why (988): pend_hello 992, pend_page 993, then these (m68k: ints on 2-byte bounds)
 OFF = dict(hdrs=1086, active=4, last_reason=296, lfo_opens=994, lfo_hints=998, led_seen=1002, led_want=1006, led_paints=1010,
-           led_restores=1014, led_busy=1018)
+           led_restores=1014, led_busy=1018, splash_on=972, splash_why=988)   # splash_on: rui_emu.py SPL
 FAILS = []
 
 
@@ -74,7 +74,7 @@ class Emu:
     def sym(self, name):
         return self.syms["rytm-0026-remote-ui:" + name]
 
-    def run(self, name, length, events=(), alive=(0, None), fw=None, snap=None, clock=None, card=None):
+    def run(self, name, length, events=(), alive=(0, None), fw=None, snap=None, clock=None, card=None, extra=()):
         """events: (at, 'press', KEY[:hold M]) / (at, 'sx', HEX). alive: keepalives every 20 M from .. to (None: the
         end; () none). -> dict(msgs, snap, oled)."""
         start = self.clock if clock is None else clock
@@ -93,6 +93,7 @@ class Emu:
                 cmd += ["--usb-midi", f"{val}@{start + at}M"]
             elif kind == "turn":   # 1041: "ENC:DELTA" three times, 4 M (20 ms) apart
                 cmd += ["--turn", f"{val}@{start + at}Mx3/4M"]
+        cmd += list(extra)   # fk: e.g. --usb-host-gone A:B (absolute M)
         out = os.path.join(self.tmp, f"{name}.usb")
         env = dict(os.environ, DTEMU_STRICT="1", DTBOOT_USB_OUT=out, DTBOOT_OLED="1")
         r = subprocess.run(cmd, cwd=EMU, env=env, capture_output=True, text=True)
@@ -327,9 +328,9 @@ def t_stockup(e):
     """1038: stock 1.73's UP held + T6..T10 (as 1036b's probe for T3 / T5): on the main screen, in GRID REC, on the FLTR
     page, in CHRO and in MUTE mode, UP held + Tn leaves what Tn alone leaves, except what UP alone changes (and there
     it leaves what UP alone leaves). The same state list as stocktrktrig. 1046: T11..T13 too, and a menu open (GLOBAL:
-    its list, where UP moves the cursor). STOCKUP_KEYS=11-13 (first-last) limits the keys."""
+    its list, where UP moves the cursor). t14: T14 too. STOCKUP_KEYS=11-13 (first-last) limits the keys."""
     kw = stock_kw(e)
-    lo, hi = (int(x) for x in os.environ.get("STOCKUP_KEYS", "6-13").split("-"))
+    lo, hi = (int(x) for x in os.environ.get("STOCKUP_KEYS", "6-14").split("-"))
     for ctx, pre in (("main", []), ("grid", [(10, "press", "RECORD")]), ("fltr", [(10, "press", "FLTR")]),
                      ("chro", [(10, "press", "CHRO")]), ("mute", [(10, "press", "MUTE")]),
                      ("menu", [(10, "press", "GLOBAL")])):
@@ -383,12 +384,12 @@ def t_stocktrigup(e):
 
 def t_upstock(e):
     """1046: where rui1046 / rui1047 bind nothing to UP + a key (AMP is bound since rui1047, FLTR since 7ae: stockupkeys shows stock leaves them free), the key does on rui1046 what it does on stock 1.73: for UP held +
-    SMPL / NO / PAGE / a pad / T14 on the main screen and in GRID REC, and with T1 held in GRID REC (a stock
+    SMPL / NO / PAGE / a pad / T15 / T16 (t14: T14 is a page request since, upt14) on the main screen and in GRID REC, and with T1 held in GRID REC (a stock
     track) UP + SRC / RECORD / PLAY / STOP, the items the gesture changes (against the same run without it) are the same
     on both, with the same new values for the pattern, the sequencer and the selected track (the two bases differ, so
     deltas are compared). UPSTOCK=A,B limits the keys."""
     kw = stock_kw(e)
-    plain = os.environ.get("UPSTOCK", "SMPL,NO,PAGE,SD,T14").split(",")
+    plain = os.environ.get("UPSTOCK", "SMPL,NO,PAGE,SD,T15,T16").split(",")   # t14: T14 the Sidecar's (upt14); fk: LEFT / RIGHT are uplr's
     held = os.environ.get("UPSTOCK_HELD", "SRC,RECORD,PLAY,STOP").split(",")
     for ctx, pre, keys in (("main", [], plain), ("grid", [(10, "press", "RECORD")], plain),
                            ("gridtrig", [(10, "press", "RECORD"), (20, "press", "T1:100")], held)):
@@ -426,7 +427,7 @@ def t_upamp(e):
 
 
 UPKEYS = ["TRIG", "SRC", "SMPL", "FLTR", "AMP", "LFO", "FX", "YES", "NO", "RECORD", "PLAY", "STOP", "PAGE",
-          "BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB", "T14", "T15", "T16"]
+          "BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB", "T14", "T15", "T16", "LEFT", "RIGHT"]
 
 
 def t_stockupkeys(e):
@@ -696,6 +697,42 @@ def t_upmappage(e):
           maps(y, 5)[:1] == [1] and modes(y["msgs"])[-1][1] == 0 and (0, 1, 0) not in modes(y["msgs"])[1:], modes(y["msgs"]))
 
 
+def t_upt14(e):
+    """t14 (0.5.0: the host's page 14, MORPH, rytm-teensy core/ui/page_keys.h): UP held + T14 is a page request as UP +
+    T1..T13 - 49 1 1 14, T14 eaten (in GRID REC no trig on BD: its track as in the run without the T14 press), no 31,
+    no map. UP + T15 / T16 stay stock's (no page of the host's; stock leaves them free [stockupkeys]): no 49 1 1, the
+    trig placed. With the page open and UP's map over it (49 1 5 1) the host's 34 lights T14 amber (63): LED 13 holds it
+    in every slot, through the UP + T14 press too, which goes to the host as 49 1 1 14, not 31."""
+    def pages(r):
+        return [m[7] for m in r["msgs"] if m[4:7] == b"\x49\x01\x01" and len(m) == 9]
+
+    def maps(r, sub):
+        return [m[7] for m in r["msgs"] if m[4:7] == bytes([0x49, 1, sub]) and len(m) == 9]
+    pre = [(10, "press", "RECORD"), (30, "press", "UP:120")]
+    ref = e.run("upt14-ref", 300, pre)
+    bd = e.peek(ref, 0x407DD8E3, 917)
+    for k in (14, 15, 16):
+        r = e.run(f"upt14-t{k}", 300, pre + [(50, "press", f"T{k}")])
+        same = e.peek(r, 0x407DD8E3, 917) == bd
+        print(f"  GRID REC, UP + T{k}: 49 1 1 {pages(r)}, 31 {keys(r['msgs'])}, map {maps(r, 4)}, BD as without T{k}: {same}")
+        if k == 14:
+            check("upt14: UP + T14 -> 49 1 1 14, no map, no 31", pages(r) == [14] and not maps(r, 4) and
+                  not keys(r["msgs"]), (pages(r), maps(r, 4), keys(r["msgs"])))
+            check("upt14: UP + T14 eaten: no trig on BD (its track as without the T14 press)", same)
+        else:
+            check(f"upt14: UP + T{k} stays stock's: no 49 1 1, the trig placed", not pages(r) and not same,
+                  (pages(r), same))
+    amber = [0] * 13 + [63, 0, 0]
+    op = [(20, "press", "TRK:60"), (30, "press", "YES"), (100, "press", "UP:150"), (120, "sx", leds(amber))]
+    a = e.run("upt14-led", 300, op + [(200, "press", "T14")])
+    s = e.panel(a)[0]
+    print(f"  page open, UP's map over it: 49 1 5 {maps(a, 5)}, 49 1 1 {pages(a)}, 31 {keys(a['msgs'])}, LED 13 {s.get(13)}")
+    check("upt14: page open, UP held: the map over it (49 1 5 1), UP + T14 -> 49 1 1 14, T14 no 31",
+          maps(a, 5)[:1] == [1] and pages(a) == [14] and not [k for k in keys(a["msgs"]) if k[0] == 13],
+          (maps(a, 5), pages(a), keys(a["msgs"])))
+    check("upt14: the host's 34: LED 13 (T14) amber 63 in every slot", s.get(13) == [63] * 4, s.get(13))
+
+
 def t_stocklockpush(e):
     """1050: the lock pages' new gestures - a long encoder push (that lock's COND) and FUNC + push (its SLIDE).
     (a) stock 1.73 on its own lock page (GRID REC, T1 held, SRC): PUSH_A held 0.5 s, and FUNC held + PUSH_A tapped, against
@@ -799,8 +836,157 @@ def t_upmapmenu(e):
     check("upmapmenu: the menu's screen after the held UP equals UP tapped to the top", h["oled"] == t["oled"])
 
 
+def t_uplr(e):
+    """fk (0.5.0: the host's GENERATOR / FILL, rytm-teensy core/ui/page_keys.h): UP held + LEFT / RIGHT are page requests
+    49 1 1 15 / 16 once the host claims them (4A 7E 1). The hello's caps2 (its 4th byte) bit 0 says the build can. Claimed,
+    on the main screen and in GRID REC: the request, no 31, no map, the arrow eaten (the screen and the pattern as with UP
+    alone held). Not claimed (no 4A 7E, or 4A 7E 0 after a 1), or claimed with T1 held in GRID REC (stock's micro timing),
+    in a menu (GLOBAL: its cursor), with TRK or FUNC held, or with the page open (the page's 31s): no request, the arrow
+    where it went before (stock's screen as the same run on stock 1.73 shows: upstock's LEFT / RIGHT)."""
+    def pages(r):
+        return [m[7] for m in r["msgs"] if m[4:7] == b"\x49\x01\x01" and len(m) == 9]
+
+    def fk(r):   # reqs LEFT, reqs RIGHT, stock (a build before fk has no fk: -1s)
+        if "rytm-0026-remote-ui:fk" not in e.syms:
+            return [-1] * 3
+        return [int.from_bytes(e.peek(r, e.sym("fk") + 4 * i, 4), "big") for i in range(3)]
+    claim, unclaim = (100, "sx", sx(0x4A, 0x7E, 1)), (140, "sx", sx(0x4A, 0x7E, 0))
+    up = (200, "press", "UP:60")
+    st = lambda r: stock_state(e, r)
+    for ctx, pre in (("main", []), ("grid", [(10, "press", "RECORD")])):
+        ref = st(e.run(f"uplr-{ctx}-up", 400, pre + [claim, up]))
+        nil, upn = st(e.run(f"uplr-{ctx}-nil", 400, pre)), st(e.run(f"uplr-{ctx}-uponly", 400, pre + [up]))
+        for k, code in (("LEFT", 15), ("RIGHT", 16)):
+            r = e.run(f"uplr-{ctx}-{k}", 400, pre + [claim, up, (220, "press", k)])
+            hello = [m for m in r["msgs"] if m[4] == 0x35]
+            a = st(r)
+            diff = [x for x in a if a[x] != ref[x]]
+            print(f"  {ctx} claimed UP + {k}: 49 1 1 {pages(r)}, 31 {keys(r['msgs'])}, fk {fk(r)}, vs UP alone {diff[:6]}, "
+                  f"hellos {[m.hex() for m in hello]}")
+            check(f"uplr {ctx}: claimed, UP + {k} -> 49 1 1 {code}, no 31", pages(r) == [code] and not keys(r["msgs"]),
+                  (pages(r), keys(r["msgs"])))
+            check(f"uplr {ctx}: claimed, UP + {k}: the arrow eaten (the state as with UP alone held)", not diff, diff[:6])
+            n = e.run(f"uplr-{ctx}-{k}-none", 400, pre + [up, (220, "press", k)])
+            u = e.run(f"uplr-{ctx}-{k}-unclaim", 400, pre + [claim, unclaim, up, (220, "press", k)])
+            check(f"uplr {ctx}: not claimed (no 4A 7E / 4A 7E 0 after 1), UP + {k}: no 49 1 1, the arrow stock's",
+                  not pages(n) and not pages(u) and fk(n)[2] == 1 and fk(u)[2] == 1, (pages(n), pages(u), fk(n), fk(u)))
+            # stock leaves UP + the arrow FREE (stockupkeys, 1.73 and 1.74): unclaimed, this build does the same - the
+            # arrow's own action plus UP's, nothing else (the same build's runs: the stock base's words differ, upstock
+            # compares absolute values and cannot hold for the arrows' 0x800067bc)
+            al = st(e.run(f"uplr-{ctx}-{k}-alone", 400, pre + [(220, "press", k)]))
+            bad = combo_only_parts(st(n), al, upn, nil)
+            check(f"uplr {ctx}: not claimed, UP + {k} = {k} alone + what UP alone leaves (stock's FREE)", not bad, bad[:6])
+            if ctx == "main" and k == "RIGHT":
+                hs = [m for m in r["msgs"] + n["msgs"] if m[4] == 0x35]
+                check("uplr: a hello in the runs carries caps2 (its 4th byte) bit 0", bool(hs) and all(
+                      len(m) == 11 and m[9] & 1 for m in hs), [m.hex() for m in hs])
+    for name, ev in (("gridtrig", [(10, "press", "RECORD"), (150, "press", "T1:200"), up, (220, "press", "RIGHT")]),
+                     ("menu", [(10, "press", "GLOBAL"), up, (220, "press", "RIGHT")]),
+                     ("trk", [(190, "press", "TRK:60"), up, (220, "press", "RIGHT")]),
+                     ("func", [(190, "press", "FUNC:60"), up, (220, "press", "RIGHT")]),
+                     ("open", [(20, "press", "TRK:60"), (30, "press", "YES"), up, (220, "press", "RIGHT")]),
+                     # fk2 (review M1): every guard pinned. The splash shown while UP is held (a frame committed, 36):
+                     # the arrow is not forwarded and ends the splash (splash_why S_KEY 4, which shows it was on)
+                     ("splash", [(110, "sx", sx(0x38, 1, 0, 0, 1, 1, *[0] * 10)), (112, "sx", sx(0x39, 1)),
+                                 (200, "press", "UP:100"), (230, "sx", sx(0x36, 60)), (260, "press", "RIGHT")]),
+                     # a poly track (seq mode: 2E, BD a seq track, GRID REC) with T1 held, then UP: UP is the poly
+                     # track's (u46.seq), never stock's
+                     ("seqtrig", [(10, "press", "RECORD"), (105, "sx", sx(0x2E, 1, 0, 0)), (150, "press", "T1:200"), up,
+                                  (220, "press", "RIGHT")]),
+                     # a stock list on top: SRC twice, the machine list (MachineListView: up_cursor's list branch)
+                     ("mlist", [(20, "press", "SRC"), (60, "press", "SRC"), up, (220, "press", "RIGHT")]),
+                     # the page stepped aside under stock's SCALE menu (FUNC + PAGE with the page open)
+                     ("aside", [(20, "press", "TRK:60"), (30, "press", "YES"), (100, "press", "FUNC:60"), (110, "press", "PAGE"),
+                                up, (220, "press", "RIGHT")])):
+        r = e.run(f"uplr-g-{name}", 400, [claim] + ev)
+        print(f"  claimed, {name}: 49 1 1 {pages(r)}, 31 {keys(r['msgs'])}, fk {fk(r)}")
+        ok = not pages(r) and fk(r)[:2] == [0, 0]
+        if name == "open":
+            ok = ok and (0x41, 1) in keys(r["msgs"]) and (0x41, 0) in keys(r["msgs"])
+        if name == "splash":
+            why = e.st(r, "splash_why")
+            print(f"  splash: splash_why {why} (4: a key ended it)")
+            ok = ok and why == 4
+        check(f"uplr: claimed, {name}: UP + RIGHT no request" + (" (the page's 31 0x41 down / up)" if name == "open" else ""),
+              ok, (pages(r), keys(r["msgs"]), fk(r)))
+
+
+
+def t_uplrclaim(e):
+    """fk2 (review M2): the claim 4A 7E <flags>. A short one (4A 7E, no flags) counts rx_bad and leaves the claim as it
+    was; a longer one (4A 7E 1 5) is taken by its first byte (L4: room for later claim bytes), no rx_bad; flags with bit
+    0 clear and the other bits set (7E) drop the claim, all bits (7F) set it; the host's release 4A 7E 0 drops it. The USB port's drop clears the claim: after
+    the host comes back (a hello again, 11 bytes, caps2 bit 0) UP + RIGHT is no request until the host claims again."""
+    def pages(r):
+        return [m[7] for m in r["msgs"] if m[4:7] == b"\x49\x01\x01" and len(m) == 9]
+
+    def rxbad(r):
+        return int.from_bytes(e.peek(r, e.syms["rytm-0026-remote-ui:rx_bad"], 4), "big")
+    claim = lambda at, *f: (at, "sx", sx(0x4A, 0x7E, *f))
+    upr = [(200, "press", "UP:60"), (220, "press", "RIGHT")]
+    ref = e.run("uplrc-ref", 400, [claim(100, 1)] + upr)
+    rb = rxbad(ref)
+    for name, ev, want, bad in (("short", [claim(100, 1), claim(140)], [16], 1),
+                                ("long", [claim(100, 0), claim(140, 1, 5)], [16], 0),
+                                ("bits0", [claim(100, 1), claim(140, 0x7E)], [], 0),
+                                ("bits1", [claim(100, 0), claim(140, 0x7F)], [16], 0),
+                                ("release", [claim(100, 1), claim(140, 0)], [], 0)):   # the host's 4A 7E 0 (FILL keys off)
+        r = e.run(f"uplrc-{name}", 400, ev + upr)
+        print(f"  {name}: 49 1 1 {pages(r)}, rx_bad {rxbad(r) - rb:+d} (ref {pages(ref)})")
+        check(f"uplrclaim {name}: 49 1 1 {want}, rx_bad {bad:+d}", pages(r) == want and rxbad(r) - rb == bad,
+              (pages(r), rxbad(r) - rb))
+    gone = ["--usb-host-gone", f"{e.clock + 130}M:{e.clock + 180}M"]
+    for name, ev, want in (("drop", [claim(100, 1), (400, "press", "UP:60"), (420, "press", "RIGHT")], []),
+                           ("drop-again", [claim(100, 1), claim(360, 1), (400, "press", "UP:60"), (420, "press", "RIGHT")],
+                            [16])):
+        r = e.run(f"uplrc-{name}", 560, ev, extra=gone)
+        hs = [m for m in r["msgs"] if m[4] == 0x35]
+        print(f"  {name}: 49 1 1 {pages(r)}, hellos {[m.hex() for m in hs]}")
+        check(f"uplrclaim {name}: the port dropped after the claim, a hello again (11 bytes, caps2 bit 0); UP + RIGHT: 49 1 1 "
+              f"{want}" + (" (claimed again)" if want else " (the drop cleared the claim)"),
+              pages(r) == want and bool(hs) and all(len(m) == 11 and m[9] & 1 for m in hs), (pages(r), [m.hex() for m in hs]))
+
+
+STOCK_ARROW_CTX = (("src", [(10, "press", "SRC")]), ("fltr", [(10, "press", "FLTR")]), ("amp", [(10, "press", "AMP")]),
+                   ("lfo", [(10, "press", "LFO")]), ("trig", [(10, "press", "TRIG")]), ("smpl", [(10, "press", "SMPL")]),
+                   ("bank", [(10, "press", "BANK_A:150")]), ("chro", [(10, "press", "CHRO")]),
+                   ("scne", [(10, "press", "SCNE")]), ("perf", [(10, "press", "PERF")]), ("mute", [(10, "press", "MUTE")]))
+
+
+def t_stockuparrows(e):
+    """fk2 (review M3): stock's UP held + LEFT / RIGHT where the claimed combo is forwarded and stockupkeys did not look:
+    the parameter pages (SRC FLTR AMP LFO TRIG SMPL), BANK A held (the pattern select) and the pad modes (CHRO SCNE PERF
+    MUTE). The same rule as stockupkeys: FREE (the arrow alone + what UP alone leaves), SEQ (UP tapped, then the arrow)
+    or CLASH (a combo of stock's own). Prints a table. ARROW_CTX=a,b limits the contexts."""
+    kw = stock_kw(e)
+    want = os.environ.get("ARROW_CTX")
+    table = {}
+    for ctx, pre in STOCK_ARROW_CTX:
+        if want and ctx not in want.split(","):
+            continue
+        n = stock_state(e, e.run(f"sua-{ctx}-none", 300, pre, **kw))
+        u = stock_state(e, e.run(f"sua-{ctx}-up", 300, pre + [(30, "press", "UP:60")], **kw))
+        for k in ("LEFT", "RIGHT"):
+            a = stock_state(e, e.run(f"sua-{ctx}-{k}", 300, pre + [(50, "press", k)], **kw))
+            b = stock_state(e, e.run(f"sua-{ctx}-up{k}", 300, pre + [(30, "press", "UP:60"), (50, "press", k)], **kw))
+            bad = combo_only_parts(b, a, u, n)
+            how = "FREE"
+            if bad:
+                seq = stock_state(e, e.run(f"sua-{ctx}-uptap{k}", 300, pre + [(30, "press", "UP:10"), (50, "press", k)], **kw))
+                bad = [x for x in b if b[x] != seq[x]]
+                how = "CLASH" if bad else "SEQ"
+            moves = [x for x in a if a[x] != n[x]]
+            table[(ctx, k)] = how
+            print(f"  {ctx}: {k} alone changes {moves[:8]}")
+            check(f"stockuparrows {ctx}: UP held + {k}: {how} ({k} alone changes {len(moves)} items)", not bad, bad[:6])
+    print("  ctx      LEFT     RIGHT")
+    for ctx, _ in STOCK_ARROW_CTX:
+        if (ctx, "LEFT") in table:
+            print(f"  {ctx:8s} {table[(ctx, 'LEFT')]:8s} {table[(ctx, 'RIGHT')]:8s}")
+
+
 TESTS = dict(levelhdr=t_levelhdr, stocktrktrig=t_stocktrktrig, stocktrkfx=t_stocktrkfx, stockyes=t_stockyes, stockup=t_stockup, stockupkeys=t_stockupkeys, stocktrigup=t_stocktrigup, upstock=t_upstock, upamp=t_upamp, kit=t_kit, hostclose=t_hostclose, stockcombo=t_stockcombo, combo=t_combo, leds=t_leds, ledexit=t_ledexit, bad=t_bad, trigs=t_trigs, trkled=t_trkled, upmap=t_upmap, menustock=t_menustock, upmappage=t_upmappage,
-             stocklockpush=t_stocklockpush, upmaplist=t_upmaplist, upmapmenu=t_upmapmenu)
+             stocklockpush=t_stocklockpush, upmaplist=t_upmaplist, upmapmenu=t_upmapmenu, upt14=t_upt14, uplr=t_uplr, uplrclaim=t_uplrclaim, stockuparrows=t_stockuparrows)
 
 
 def main():

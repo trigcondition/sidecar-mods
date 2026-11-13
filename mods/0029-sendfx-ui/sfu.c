@@ -34,6 +34,15 @@
 #define ID0     14
 #define NID     14
 #define OURS(id) ((uint32_t)((id) - ID0) < NID)
+/* sfx-basewidth (0.5.0): SEND FX 1 / 2's knobs G and H, BASE and WIDTH of the Sidecar's send FX return filter (its bus
+   1 / 2 POST EQ: HPF = BASE, LPF at BASE + WIDTH; rytm-teensy docs/INSERT-FX.md "BASE / WIDTH"). Records 1..4 (dead
+   'Error' records, 0004-lfo-rnd's ids 1..4, which 0029 excludes with 0013): FX k's BASE = 1 + 2k, WIDTH = 2 + 2k. Their
+   values live on the host (its kit file's PEQ line), not in the Rytm's kit (its words are full): the FX set's wrappers
+   answer them from bw[][], a turn goes to the host as 22 ver 2 (FX, BASE, WIDTH) and the host's 22 ver 2 sets them. No
+   p-locks (lock-set refused, as TYPE's). */
+#define BW0     1
+#define BW(id)  ((uint32_t)((id) - BW0) < 4)
+#define BW_HOLD (132000u * 500u)   /* 500 ms of DTCN0 (132 MHz): a host value this soon after our turn's send crossed it */
 
 typedef int32_t (*rd_fn)(void *set, int32_t id);
 typedef int32_t (*wr_fn)(void *set, int32_t id, int32_t v, int32_t a, int32_t b);
@@ -97,14 +106,15 @@ static const char l_fx1[] = "Send FX 1", l_fx2[] = "Send FX 2";
 static const char s_empty[] = "";
 static const char fmt_s[] = "%s", fmt_bang[] = "!%s", fmt_d[] = "%s%d", s_wide[] = "XXXX";
 static const char s_fx[] = "FX", s_ufx[] = "UFX";
+static const char s_base[] = "BASE", s_wid[] = "WID";
 
 /* page descriptors {name, ids[8]} for page ids 12, 13, 14 (page_info answers them) */
 static const char n_amp2[] = "AMPLITUDE 2", n_fx1[] = "SEND FX 1", n_fx2[] = "SEND FX 2";
 struct page { const char *name; uint32_t id[8]; };
 const struct page sfu_pages[3] = {
   {n_amp2, {ID0 + 0, ID0 + 1, 0, 0, 0, 0, 0, 0}},
-  {n_fx1, {ID0 + 2, ID0 + 3, ID0 + 4, ID0 + 5, ID0 + 6, ID0 + 7, 0, 0}},
-  {n_fx2, {ID0 + 8, ID0 + 9, ID0 + 10, ID0 + 11, ID0 + 12, ID0 + 13, 0, 0}},
+  {n_fx1, {ID0 + 2, ID0 + 3, ID0 + 4, ID0 + 5, ID0 + 6, ID0 + 7, BW0 + 0, BW0 + 1}},
+  {n_fx2, {ID0 + 8, ID0 + 9, ID0 + 10, ID0 + 11, ID0 + 12, ID0 + 13, BW0 + 2, BW0 + 3}},
 };
 /* the three views' page vectors (view factory 0x400ca9b2), count 2 each */
 const uint32_t sfu_vec_amp[2] = {7, 12}, sfu_vec_del[2] = {8, 13}, sfu_vec_rev[2] = {9, 14};
@@ -173,6 +183,15 @@ struct sfu_x {
   /* rui1038 (appended): a banked knob (ext_steps' bit 11: 0026's GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST, index
      << 8 | bank << 5): the knob's value carries the word's fraction bits 0xe0, a turn or a lock keeps the stored bank */
   uint8_t xk[NXR];
+  /* sfx-basewidth (appended): FX k's BASE / WIDTH (0..127) as the host last sent them or the knob last set them; bw_tx
+     bit k: FX k's turn not sent yet (UI task); bw_rx: a host value taken (MIDI task), the views redraw */
+  uint8_t bw[2][2];
+  uint8_t bw_tx;
+  volatile uint8_t bw_rx;
+  uint32_t bw_sent, bw_got;
+  /* sfx-basewidth review (appended): TIMER | 1 when FX k's last turn was sent (0 never); a host value for it within
+     BW_HOLD crossed that turn on the wire and is not taken (the host keeps the turn and its 2 s refresh says it) */
+  uint32_t bw_hold[2];
 };
 struct sfu_x sfu_x;   /* .bss (zeroed by core-ar2's boot copier) */
 #define X sfu_x
@@ -337,7 +356,7 @@ int32_t sfu_xtext(void *functor, int32_t value, void *str) {
   return xname(functor, value, str);
 }
 /* page_get_value's gate: our records, and 0021's while stepped (their locks through the set, not the raw word) */
-int32_t sfu_isext(int32_t id) { return xmode(id) != 0; }
+int32_t sfu_isext(int32_t id) { return BW(id) || xmode(id) != 0; }
 
 /* the wrapped vtable entries (ptr patches in the registry) */
 int32_t sfu_s_read(void *set, int32_t id) {
@@ -349,7 +368,9 @@ static void see_fxset(void *set) {
   if (set != X.fxset) { if (X.fxset) X.fxset_changes++; X.fxset = set; }
 }
 int32_t sfu_f_read(void *set, int32_t id) {
-  int32_t r = F_READ(set, id);
+  int32_t r;
+  if (BW(id)) return X.bw[(id - BW0) >> 1][(id - BW0) & 1] << 8;
+  r = F_READ(set, id);
   see_fxset(set);
   if (!OURS(id)) return r;
   if (st.init) sync(set);
@@ -376,6 +397,14 @@ static void fx_write_hi(void *set, int32_t c, int32_t w) {
   pk[1] = (uint8_t)w;
 }
 int32_t sfu_f_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
+  if (BW(id)) {   /* the host's: kept here and sent (sfu_tick), never into the kit */
+    int32_t i = id - BW0;
+    v >>= 8;
+    if (v < 0) v = 0;
+    if (v > 127) v = 127;
+    if (X.bw[i >> 1][i & 1] != v) { X.bw[i >> 1][i & 1] = (uint8_t)v; X.bw_tx |= (uint8_t)(1 << (i >> 1)); }
+    return 1;
+  }
   if (OURS(id)) {
     int32_t i = id - ID0, c = k_cidx[i];
     int32_t raw = F_READ(set, id);
@@ -397,7 +426,7 @@ int32_t sfu_s_lget(void *set, int32_t id, int32_t step) {
 }
 int32_t sfu_f_lget(void *set, int32_t id, int32_t step) {
   int32_t r;
-  if (OURS(id) && KITONLY(id - ID0)) return -1;
+  if (BW(id) || (OURS(id) && KITONLY(id - ID0))) return -1;
   r = F_LGET(set, id, step);
   if (!OURS(id) || r < 0) return r;
   if (st.init) sync(set);
@@ -418,6 +447,7 @@ int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
   return S_LSET(set, id, v, step);
 }
 int32_t sfu_f_lset(void *set, int32_t id, int32_t v, int32_t step) {
+  if (BW(id)) return 0;
   if (OURS(id)) {
     int32_t cur;
     if (KITONLY(id - ID0)) return 0;
@@ -542,6 +572,17 @@ int32_t sfu_sysex(const uint8_t *d, int32_t len) {
   return r;
 }
 static int32_t sysex_body(const uint8_t *d, int32_t len) {
+  if (len >= 10 && d[4] == 0x22 && d[5] == 2 && d[6] < 2) {   /* sfx-basewidth: the host's BASE / WIDTH of FX d[6] */
+    /* (a turn not sent yet wins: the host takes it next; one sent just now too: this value crossed it) */
+    if (!(X.bw_tx >> d[6] & 1) && !(X.bw_hold[d[6]] && TIMER - X.bw_hold[d[6]] < BW_HOLD) &&
+        (X.bw[d[6]][0] != (d[7] & 0x7f) || X.bw[d[6]][1] != (d[8] & 0x7f))) {
+      X.bw[d[6]][0] = d[7] & 0x7f;
+      X.bw[d[6]][1] = d[8] & 0x7f;
+      X.bw_rx = 1;   /* (only a change redraws: the host says both again every 2 s) */
+    }
+    X.bw_got++;
+    return 1;
+  }
   if (len < 8 || d[5] != 1) return 1;
   if (d[4] == 0x21) {
     int32_t k, j;
@@ -610,6 +651,24 @@ static void set_rec(int32_t i) {
     r[12] = (uint32_t)(p == 0 ? s_type : p == 1 ? s_route : X.lbl[fx][p - 2]);
   }
   r[11] = (uint32_t)s_empty;
+}
+
+/* sfx-basewidth: record BW0 + j (FX j >> 1; BASE j even, WIDTH odd), a plain dial 0..127 in the DELAY / REVERB group.
+   The container index (FX 29 / 0, the kit-only TYPE words) is never used: the FX set's wrappers answer these ids. */
+static void set_bw_rec(int32_t j) {
+  uint32_t *r = REC(BW0 + j);
+  r[0] = j < 2 ? 0x39 : 0x38;
+  r[1] = j < 2 ? 29 : 0;
+  r[2] = 0;
+  r[3] = 0x7f00;
+  r[4] = j & 1 ? 0x7f00 : 0;   /* the default: BASE 0, WID 127 (the filter off) */
+  r[5] = 0;
+  r[6] = 0xffffffffu;
+  r[7] = 0xffffffffu;
+  r[9] = 0;
+  r[10] = (uint32_t)(j < 2 ? l_fx1 : l_fx2);
+  r[11] = (uint32_t)s_empty;
+  r[12] = (uint32_t)(j & 1 ? s_wid : s_base);
 }
 
 static void copy_desc(int32_t to, int32_t from) {
@@ -753,6 +812,11 @@ static void tick_body(void *ctrl) {
       set_rec(i);
       copy_desc(ID0 + i, i < 2 ? REC_DEL : REC_DIAL);
     }
+    for (i = 0; i < 4; ++i) {
+      set_bw_rec(i);
+      copy_desc(BW0 + i, REC_DIAL);
+    }
+    if (!X.bw_got) X.bw[0][1] = X.bw[1][1] = 127;   /* BASE 0, WIDTH 127: the filter off, until the host says */
     X.dial = (int32_t (*)(void *, int32_t, void *))DESC(REC_DIAL)[8];
     DESC(ID0 + 2)[8] = (uint32_t)sfu_type1_text;
     DESC(ID0 + 8)[8] = (uint32_t)sfu_type2_text;
@@ -795,6 +859,18 @@ static void tick_body(void *ctrl) {
     relabel();
     *((volatile uint8_t *)ctrl + 0x20) = 1;
   }
+  /* sfx-basewidth: a host value redraws the page; a turn goes to the host (22 ver 2), the latest per FX, when USB lets */
+  if (X.bw_rx) { X.bw_rx = 0; *((volatile uint8_t *)ctrl + 0x20) = 1; }
+  for (g = 0; g < 2; ++g)   /* an expired hold cleared, so DTCN0's wrap (32.5 s) cannot bring it back */
+    if (X.bw_hold[g] && TIMER - X.bw_hold[g] >= BW_HOLD) X.bw_hold[g] = 0;
+  for (g = 0; g < 2; ++g)
+    if (X.bw_tx >> g & 1) {
+      uint8_t m[10] = {0xf0, 0x7d, 0x52, 0x54, 0x22, 0x02, (uint8_t)g, X.bw[g][0], X.bw[g][1], 0xf7};
+      if (!try_send(m, 10)) break;
+      X.bw_tx &= (uint8_t)~(1u << g);
+      X.bw_hold[g] = TIMER | 1u;
+      X.bw_sent++;
+    }
   if (st.asked < 2 && st.ask_div < 100) st.ask_div++;
   if (st.asked < 2 && st.ask_div >= 100 && send_ask()) st.ask_div = 0;   /* not sent: again next tick */
 }

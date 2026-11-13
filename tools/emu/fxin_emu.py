@@ -320,7 +320,64 @@ def t_mix(e):
     check("mix: BD and CH off main: the bits core/fx/master.cpp reads as stems 0 and 6", bool(r) and r[-1][1] == (1 << 3 | 1 << 4), str(r[-1:]))
 
 
-TESTS = {"switch": t_switch, "delay": t_delay, "reverb": t_reverb, "off": t_off, "gone": t_gone, "mix": t_mix}
+def t_dumpcut(e):
+    """No 50 inside a stock dump: 0030's report waits while the sender's SysEx state (0x413db244) is set, as 0026's send()
+    does (1052d). Eight pattern dumps asked at once (about 120 KB, fetchrace's fetch8) while BD's pan (CC 10) changes every
+    4 M, so a 50 is due at every 20 Hz tick through the whole transfer: every answer whole (14988 B, no F0 inside, its
+    checksum and length right) and the 50s still sent, deferred, the last one BD's last pan; the 50s due during the
+    transfer go out after it (back-to-back dumps keep the flag set at every tick: the reports wait the transfer out,
+    design.md); a 26 7F (ask) sent during the transfer is answered (27 00) and never inside a dump (fix round 1)."""
+    req = bytes.fromhex("f000203c0700640101000000" "0005f7")
+    at, end = 400, 1500
+    cc = [(t, "din", f"B00A{(20 if i % 2 else 100):02X}") for i, t in enumerate(range(at - 10, at + 900, 4))]
+    cc.append((at + 904, "din", "B00A14"))
+    e.run("dumpcut", end, [(at, "sx", b"".join(req[:9] + bytes([p]) + req[10:] for p in range(8)).hex().upper()),
+                           (at + 60, "sx", f"{HDR}267FF7")] + cc)
+    d = bytes(e.midi)
+    got, pos, i = [], [], 0
+    while True:
+        i = d.find(b"\xf0\x00\x20\x3c\x07\x00\x54", i)
+        if i < 0:
+            break
+        j = d.find(b"\xf7", i)
+        got.append(d[i:j + 1] if j >= 0 else d[i:])
+        pos.append((i, j))
+        i += 1
+    cut = [k for k, m in enumerate(got) if not (len(m) == 14988 and b"\xf0" not in m[1:]
+           and (m[-5] << 7 | m[-4]) == sum(m[10:-5]) & 0x3FFF and (m[-3] << 7 | m[-2]) == len(m) - 10)]
+    r = mix_reports(d)
+    inside = [got[k][got[k].find(b"\xf0", 1):][:6].hex(" ") for k in cut if b"\xf0" in got[k][1:]]
+    print(f"  answers {[len(m) for m in got]}; cut {cut} (inside: {inside}); 50 reports {len(r)}, last {r[-1:]}")
+    check("dumpcut: 8 dumps asked, 8 answers", len(got) == 8, len(got))
+    check("dumpcut: every dump whole (no 0030 message inside)", len(got) == 8 and not cut, cut)
+    check("dumpcut: the 50s still sent (deferred), the last one BD's last pan", len(r) >= 2 and r[-1][0][0] == 20, str(r[-1:]))
+    h = d.hex()
+    at50 = [m.start() // 2 for m in re.finditer(r"f07d525450(?:[0-9a-f]{2}){10}f7", h) if m.start() % 2 == 0]
+    mid = [a for a in at50 if pos and pos[0][0] < a < pos[-1][1]]
+    after = [a for a in at50 if pos and a > pos[-1][1]]
+    print(f"  50s during the transfer {len(mid)}, after it {len(after)}")
+    check("dumpcut: the 50s due during the transfer go out after it (deferred, not dropped)", len(after) > 0,
+          f"{len(mid)} during, {len(after)} after")
+    rep = reports(d)
+    check("dumpcut: the 26 7F asked during the transfer answered: 27 00 (port up), 27 00 (the ask)", rep == [0, 0], str(rep))
+
+
+def t_flagreset(e):
+    """Fix round 1 (the review's M1: a flag left set by a port reset): the sender's SysEx state 0x413db244 poked set
+    over the base, then the USB host enumerates: stock's port setup clears it (pc 0x4000275a, [measured] here) before
+    the sender's first write, so 0030 is not held: the 27 00 (port up) and the 50s go out. The emulator cannot hold the
+    flag set for longer (no timed poke; the port setup clears it), so the 2 s bound itself (try_send's txsx_wait, as
+    0026's) is shown by 0026's own test of the same code (sq_emu fetchrace, txsx_test: the wait runs out after 2 s)."""
+    e.run("flagreset", 500, extra=("--poke", "413db244=00000001", "--watch", "413db244"))
+    log = open(os.path.join(e.out, "fxin_flagreset.dt.txt")).read()
+    w = re.findall(r"watch: pc=([0-9a-f]+) \[413db244\]\.4 <- ([0-9a-f]+)", log)
+    r, k = mix_reports(e.midi), reports(e.midi)
+    print(f"  flag writes {len(w)}, first {w[:2]}; 50s {len(r)}, 27s {k}")
+    check("flagreset: stock's port setup clears the poked flag first (pc 0x4000275a, 0)", w[:1] == [("4000275a", "00000000")],
+          w[:1])
+    check("flagreset: 0030 not held: the 27 00 (port up) and the 50s sent", k[:1] == [0] and len(r) >= 2, (len(r), k))
+
+TESTS = {"switch": t_switch, "delay": t_delay, "reverb": t_reverb, "off": t_off, "gone": t_gone, "mix": t_mix, "dumpcut": t_dumpcut, "flagreset": t_flagreset}
 
 
 def main():

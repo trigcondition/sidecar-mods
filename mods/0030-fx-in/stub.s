@@ -12,7 +12,11 @@
 	.error	"fxin_ob reads the reverb at fx_delay_out - 256"
 	.endif
 fxin_ob:
-	move.l	0x401b9e64,%d0
+	tst.l	0x413db244
+	bne.s	3f
+	moveq	#1,%d0
+	move.l	%d0,fxin_txsx_gap
+3:	move.l	0x401b9e64,%d0
 	cmp.l	#0x46584931,%d0
 	bne.w	2f
 	lea	-12(%sp),%sp
@@ -50,50 +54,95 @@ fxin_ob:
 
 #NO_APP
 	.align	2
+	.type	txsx_wait, @function
+txsx_wait:
+	tst.l 1094562372
+	jne .L2
+	clr.l st+24
+	clr.l fxin_txsx_gap
+.L7:
+	clr.l %d0
+.L1:
+	rts
+.L2:
+	move.l st+16,%d0
+	tst.l st+24
+	jeq .L4
+	tst.l fxin_txsx_gap
+	jeq .L5
+.L4:
+	mov3q.l #1,st+24
+	move.l %d0,st+20
+	clr.l fxin_txsx_gap
+.L6:
+	mov3q.l #1,%d0
+	jra .L1
+.L5:
+	sub.l st+20,%d0
+	moveq #39,%d1
+	cmp.l %d0,%d1
+	jge .L6
+	addq.l #1,st+28
+	jra .L7
+	.size	txsx_wait, .-txsx_wait
+	.align	2
 	.type	try_send, @function
 try_send:
+	move.l %a2,-(%sp)
+	move.l %d2,-(%sp)
 	mov3q.l #1,%d0
 	cmp.l 1094562388.l,%d0
-	jne .L2
+	jne .L23
+	lea txsx_wait,%a2
+	jsr (%a2)
+	tst.l %d0
+	jeq .L10
+.L23:
+	clr.l %d0
+.L8:
+	move.l (%sp)+,%d2
+	move.l (%sp)+,%a2
+	rts
+.L10:
 	move.l #1123449384,-(%sp)
 	jsr 1073746332
 	addq.l #4,%sp
 	tst.l %d0
-	jeq .L1
-	move.l 1094562704,%a0
-	clr.l %d0
-.L4:
-	tst.l %a0
-	jeq .L5
-	move.l 52(%a0),%a0
-	addq.l #1,%d0
-	mov3q.l #4,%d1
-	cmp.l %d0,%d1
-	jne .L4
-.L5:
-	mvz.w #4027,%d1
-	cmp.l 1094562392.l,%d1
-	jlt .L7
-	subq.l #4,%d0
-	tst.l %d0
 	jeq .L8
-.L7:
+	move.l 1094562704,%a0
+	clr.l %d2
+.L12:
+	tst.l %a0
+	jeq .L13
+	move.l 52(%a0),%a0
+	addq.l #1,%d2
+	mov3q.l #4,%d0
+	cmp.l %d2,%d0
+	jne .L12
+.L13:
+	jsr (%a2)
+	tst.l %d0
+	jne .L15
+	mvz.w #4027,%d0
+	cmp.l 1094562392.l,%d0
+	jlt .L15
+	subq.l #4,%d2
+	tst.l %d2
+	jeq .L16
+.L15:
 	move.l #1123449384,-(%sp)
 	jsr 1073746414
 	addq.l #4,%sp
-.L2:
-	clr.l %d0
-.L1:
-	rts
-.L8:
-	move.l 4(%sp),-(%sp)
+	jra .L23
+.L16:
 	move.l 12(%sp),-(%sp)
+	move.l 20(%sp),-(%sp)
 	jsr 1073752544
 	move.l #1123449384,-(%sp)
 	jsr 1073746414
 	lea (12,%sp),%sp
 	mov3q.l #1,%d0
-	jra .L1
+	jra .L8
 	.size	try_send, .-try_send
 	.text
 .LC0:
@@ -105,6 +154,7 @@ try_send:
 	.type	fxin_tick, @function
 fxin_tick:
 	link.w %fp,#-44
+	addq.l #1,st+16
 	movem.l #1036,(%sp)
 	move.w 1075551848,%d2
 	move.l 1094562388,%d1
@@ -114,35 +164,35 @@ fxin_tick:
 	seq %d0
 	neg.l %d0
 	tst.b st+2.l
-	jne .L16
+	jne .L25
 	move.w %d2,st
 	move.b %d1,st+2
-.L16:
+.L25:
 	mov3q.l #1,%d1
 	tst.b st+3.l
-	jne .L17
+	jne .L26
 	cmp.l -32(%fp),%d1
-	jne .L19
+	jne .L28
 	moveq #1,%d1
 	move.b %d1,st+4
-	jra .L19
-.L17:
+	jra .L28
+.L26:
 	cmp.l -32(%fp),%d1
-	jeq .L19
+	jeq .L28
 	move.l #1180191025,%a0
 	cmp.l 1075551844.l,%a0
-	jne .L19
+	jne .L28
 	move.l #1180191024,%a1
 	move.l %a1,1075551844
-.L19:
+.L28:
 	move.b %d0,st+3
 	mvz.w st,%d1
 	mvz.w %d2,%d0
 	cmp.l %d1,%d0
-	jne .L20
+	jne .L29
 	tst.b st+4.l
-	jeq .L21
-.L20:
+	jeq .L30
+.L29:
 	mov3q.l #7,-(%sp)
 	pea .LC0
 	move.l %fp,%d3
@@ -160,26 +210,26 @@ fxin_tick:
 	jsr try_send
 	addq.l #8,%sp
 	tst.l %d0
-	jeq .L21
+	jeq .L30
 	clr.b %d0
 	move.w %d2,st
 	move.b %d0,st+4
-.L21:
+.L30:
 	mov3q.l #1,%d1
 	cmp.l -32(%fp),%d1
-	jne .L15
+	jne .L24
 	move.b st+5,%d2
 	mvz.b %d2,%d0
 	move.w %d2,%a1
 	moveq #19,%d2
 	move.l %d0,-32(%fp)
 	cmp.l %d0,%d2
-	jcs .L24
+	jcs .L33
 	clr.l %d1
-.L24:
+.L33:
 	sub.l %a0,%a0
 	move.l #stem_voice,%d2
-.L27:
+.L36:
 	mvz.b (%a0,%d2.l),%d0
 	add.l #1076432344,%d0
 	move.l %d0,%a2
@@ -188,21 +238,21 @@ fxin_tick:
 	muls.w #42,%d0
 	mvs.w 76(%a2,%d0.l*2),%d0
 	tst.l %d0
-	jlt .L32
+	jlt .L41
 	add.l #128,%d0
 	asr.l #8,%d0
 	cmp.l #128,%d0
-	jne .L26
+	jne .L35
 	moveq #127,%d0
-	jra .L26
-.L32:
+	jra .L35
+.L41:
 	clr.l %d0
-.L26:
+.L35:
 	move.b %d0,-26(%fp,%a0.l)
 	addq.l #1,%a0
 	moveq #8,%d0
 	cmp.l %a0,%d0
-	jne .L27
+	jne .L36
 	mvz.b -2147457946,%d0
 	moveq #127,%d2
 	move.l #-260222380,%a0
@@ -218,7 +268,7 @@ fxin_tick:
 	move.b %d2,-1(%fp)
 	move.l #st+6,%d2
 	move.b %d0,-12(%fp)
-.L28:
+.L37:
 	move.b -26(%fp,%a0.l),%d3
 	move.b (%a0,%d2.l),%d0
 	addq.l #1,%a0
@@ -231,34 +281,34 @@ fxin_tick:
 	or.l %d0,%d1
 	moveq #10,%d0
 	cmp.l %a0,%d0
-	jne .L28
+	jne .L37
 	move.l -32(%fp),%d0
 	cmp.l #255,%d0
-	jeq .L29
+	jeq .L38
 	move.l %a1,%d0
 	addq.l #1,%d0
 	move.b %d0,st+5
-.L29:
+.L38:
 	tst.l %d1
-	jeq .L15
+	jeq .L24
 	pea 16.w
 	pea -16(%fp)
 	jsr try_send
 	addq.l #8,%sp
 	tst.l %d0
-	jeq .L15
+	jeq .L24
 	clr.l %d0
-.L31:
+.L40:
 	lea -26(%fp,%d0.l),%a1
 	move.l %d2,%a0
 	moveq #10,%d1
 	move.b (%a1),(%a0,%d0.l)
 	addq.l #1,%d0
 	cmp.l %d0,%d1
-	jne .L31
+	jne .L40
 	clr.b %d2
 	move.b %d2,st+5
-.L15:
+.L24:
 	movem.l -44(%fp),#1036
 	unlk %fp
 	rts
@@ -268,10 +318,16 @@ fxin_tick:
 	.size	stem_voice, 8
 stem_voice:
 	.base64	"AAIHAQMFBAY="
+	.globl	fxin_txsx_gap
 	.section	.bss,"aw",@nobits
 	.align	2
+	.type	fxin_txsx_gap, @object
+	.size	fxin_txsx_gap, 4
+fxin_txsx_gap:
+	.zero	4
+	.align	2
 	.type	st, @object
-	.size	st, 16
+	.size	st, 32
 st:
-	.zero	16
+	.zero	32
 	.ident	"GCC: (GNU) 16.2.0"

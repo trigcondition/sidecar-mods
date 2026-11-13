@@ -490,8 +490,8 @@ def t_splash(e):
     r = e.run("spl-on", 2500, play, script=["--splash", "60"], counts=(TILE_FN,))
     h = evs(r, "hello")
     s1 = spl(e, r["snap"])
-    check("splash: hello (35) once with the Rytm's uptime (> 20 s, the base's boot) and caps 15 (36; 1049: 16 label tables; "
-          "1052: the 4B project reports; 7ae: 45)", len(h) == 1 and h[0]["up"] > 400 and h[0]["caps"] == 15, h)
+    check("splash: hello (35) once with the Rytm's uptime (> 20 s, the base's boot) and caps 127 (36; 1049: 16 label tables; "
+          "1052: the 4B project reports; 7ae: 45; 0.5.0: the host command, FUNC in the browser, pm)", len(h) == 1 and h[0]["up"] > 400 and h[0]["caps"] == 127, h)
     frame = open(os.path.join(e.out, "spl-on.frame"), "rb").read()
     check("splash: on, the panel shows the host's splash frame byte for byte", s1["splash_on"] == 1 and r["oled"] == frame,
           f"{s1}, {sum(a != b for a, b in zip(r['oled'] or b'', frame))} bytes differ")
@@ -562,6 +562,202 @@ def t_splash(e):
         print("    re-plug: skipped (no --usb-host-gone in this dtboot; RUI_DTBOOT)")
 
 
+# ---- 0.5.0 (design.md "0.5.0"): the QUICK PERF report (2D 01 0E), the scene report (0F), the host command (5A, its 10)
+QP_POS = 0x42f9210c          # the pot's position (u32) [measured, rytm-emu tests/qperf.rs]
+ACTIVE_KIT = 0x800067b8      # the active kit (u32, as 0026's mr)
+KIT_SCENE = 0x41256261       # kit 0's scene byte (kit + 0x97e; + 2531 a kit): 0..11, 0xff none [measured]
+MUTES = 0x41318997           # the mute object's + 0x20: u32, bit t = track t [measured]
+PERF_AMT = 0x8000e57c        # SRAM: the 12 macros' amounts, i16 value << 8 [measured]
+
+
+def states(r, kind):
+    """2D 01 <kind> reports as the host logged them: [(t s, [bytes after the kind])]."""
+    return [(x["t"], x["b"]) for x in evs(r, "state") if x["kind"] == kind]
+
+
+def qps(r):
+    return [(t, P.decode_qperf(b)) for t, b in states(r, P.SEQ_QPERF)]
+
+
+def usb(ms, m):
+    """an `extra` pair: bytes on the Rytm's USB MIDI in at ms (the host command, a 2E)"""
+    return ("--usb-midi", f"{m.hex()}@{ms}")
+
+
+def qp_diag(e, snap):
+    """0026's qp struct: the fields the tests read (rui.c "0.5.0")."""
+    b = e.peek(snap, e.sym("qp"), 88)
+    w = lambda o: int.from_bytes(b[o:o + 4], "big")   # noqa: E731
+    return dict(live=w(4), moved=w(24), sent=w(40), scns=w(52), cmds=w(72), refused=w(76), ack_drop=w(80), gmin=w(84))
+
+
+def kit_scene(e, snap):
+    k = int.from_bytes(e.peek(snap, ACTIVE_KIT, 4), "big") & 127
+    return e.peek(snap, KIT_SCENE + 2531 * k, 1)[0]
+
+
+def t_qperf_report_sweep(e):
+    """The pot's position as 0E: a 60 / s sweep 0..30 (every step a report: the MCU's 16.7 ms is above the 8 ms
+    gap), then 31..255 at one message a millisecond: at most one report per 8 ms, the last position always."""
+    r = e.run("qp-sweep", 3200, [], script=[],
+              extra=["--qperf-sweep", f"0:30@{e.at(1500)}", "--qperf-sweep", f"31:255@{e.at(2400)}/200000"])
+    q = qps(r)
+    print(f"    {len(q)} reports: {[x['pos'] for _, x in q][:8]} .. {[x['pos'] for _, x in q][-4:]}")
+    slow = {x["pos"] for t, x in q if t < 2.3}
+    check("qperf_report_sweep: the slow sweep's every position arrived (0..30)", set(range(31)) <= slow, sorted(slow))
+    fast = [(t, x) for t, x in q if t >= 2.3]
+    g = qp_diag(e, r["snap"])
+    check("qperf_report_sweep: the fast sweep (1 ms a step): never two reports within 12 audio blocks (8 ms; the mod's "
+          "own count, the host's arrival times jitter by a USB frame)", g["gmin"] >= 12 and g["sent"] == len(q), g)
+    check("qperf_report_sweep: the fast sweep's reports average at least 8 ms apart (arrival times)",
+          len(fast) > 2 and (fast[-1][0] - fast[0][0]) / (len(fast) - 1) >= 0.0079, len(fast))
+    check("qperf_report_sweep: the fast sweep's 225 steps in 224 ms: at most 224 / 8 + 2 reports",
+          0 < len(fast) <= 30, len(fast))
+    check("qperf_report_sweep: the last report is the last position (255)", q and q[-1][1]["pos"] == 255, q[-1:])
+    pos = [x["pos"] for _, x in q]
+    check("qperf_report_sweep: positions only rise", pos == sorted(pos), pos)
+    check("qperf_report_sweep: the OS's own word is 255", int.from_bytes(e.peek(r["snap"], QP_POS, 4), "big") == 255)
+
+
+def t_qperf_flag_moved_since_boot(e):
+    """The hello's 0E: pos 0, flags bit 1 clear (the knob has not sent since boot); after the first move bit 1 set;
+    FUNC held: bit 0; macro 1 put on the knob (QPER held + BD): the mask's bit 0, in a report of its own."""
+    r = e.run("qp-boot", 3200, [(1500, "press", "QPER", 200), (1600, "press", "BD"), (2400, "press", "FUNC", 300)],
+              script=[], extra=["--qperf", f"100@{e.at(2000)}"])
+    q = qps(r)
+    print(f"    {[(round(t, 3), x) for t, x in q]}")
+    check("qperf_flag_moved_since_boot: the first report (the hello's): pos 0, flags 0 (the mask the kit's: 0x201 in the "
+          "base)", q and q[0][1]["pos"] == 0 and q[0][1]["flags"] == 0, q[:1])
+    m1 = [x for t, x in q[1:] if x["flags"] & 2 == 0]
+    check("qperf_flag_moved_since_boot: QPER + BD: a report of the new mask (macro 1 alone, as the OS reads it) before "
+          "the knob moved", m1 and m1[0]["mask"] == 1 and m1[0]["pos"] == 0, m1[:1])
+    mv = [x for t, x in q if x["pos"] == 100]
+    check("qperf_flag_moved_since_boot: the move: pos 100 with flags bit 1", mv and all(x["flags"] & 2 for x in mv), mv)
+    f = [(t, x) for t, x in q if x["flags"] & 1]
+    check("qperf_flag_moved_since_boot: FUNC held: flags bit 0 (after the move), clear again at its release",
+          len(f) == 1 and mv and f[0][1]["pos"] == 100 and not q[-1][1]["flags"] & 1 and q[-1][1]["pos"] == 100,
+          (f, q[-1:]))
+    check("qperf_flag_moved_since_boot: no report repeats the one before (on change only)",
+          all(a[1] != b[1] for a, b in zip(q, q[1:])), q)
+
+
+def t_scene_report(e):
+    """0F <n>: the hello's (0, none); CC 92 = 3 on the auto channel (DIN): 3; SCNE (a tap: scene mode), then SD: 2;
+    CC 92 = 0: 0. (SCNE held + a pad selects nothing [measured, stock].)"""
+    r = e.run("qp-scene", 3000, [(2000, "press", "SCNE"), (2300, "press", "SD")], script=[],
+              extra=["--midi", f"bd5c03@{e.at(1500)}", "--midi", f"bd5c00@{e.at(2600)}"])
+    s = [b[0] for t, b in states(r, P.SEQ_SCENE)]
+    check("scene_report: 0F 0 (hello), 3 (CC 92), 2 (SCNE + SD), 0 (CC 92 = 0)", s == [0, 3, 2, 0], s)
+
+
+def t_host_cmd_mute(e):
+    """MUTE <set> <clr> by the stock setter: BD muted first by CC 94; set BD + SD: BD stays muted, SD muted, no other
+    track changes; then clr BD (and LT, never muted): SD alone."""
+    ex = ["--midi", f"b05e01@{e.at(1200)}", *usb(e.at(1600), P.host_mute(0x003, 0))]
+    r = e.run("qp-mute1", 2000, [], script=[], extra=ex)
+    m1 = int.from_bytes(e.peek(r["snap"], MUTES, 4), "big")
+    r2 = e.run("qp-mute2", 2400, [], script=[], extra=ex + list(usb(e.at(2000), P.host_mute(0, 0x011))))
+    m2 = int.from_bytes(e.peek(r2["snap"], MUTES, 4), "big")
+    check("host_cmd_mute_toggles_only_differing: set BD + SD over BD muted: BD + SD (0x003)", m1 == 0x003, hex(m1))
+    check("host_cmd_mute_toggles_only_differing: clr BD + LT: SD alone (0x002)", m2 == 0x002, hex(m2))
+    a = [b for t, b in states(r2, P.HOST_ACK)]
+    check("host_cmd_mute_toggles_only_differing: both answered done (10 01 00)", a == [[1, 0], [1, 0]], a)
+
+
+def t_host_cmd_scene(e):
+    """SCENE <n>: 5 engages scene 5 (the kit's byte 4, the 0F report 5); 0 ends it (0xff, 0F 0)."""
+    r = e.run("qp-scn1", 2000, [], script=[], extra=list(usb(e.at(1500), P.host_cmd(P.HOST_SCENE, 5))))
+    b1 = kit_scene(e, r["snap"])
+    r2 = e.run("qp-scn2", 2400, [], script=[], extra=list(usb(e.at(1500), P.host_cmd(P.HOST_SCENE, 5))) +
+               list(usb(e.at(2000), P.host_cmd(P.HOST_SCENE, 0))))
+    b2 = kit_scene(e, r2["snap"])
+    check("host_cmd_scene: SCENE 5: the kit's scene byte 4", b1 == 4, b1)
+    check("host_cmd_scene: SCENE 0: none (0xff)", b2 == 0xff, b2)
+    s = [b[0] for t, b in states(r2, P.SEQ_SCENE)]
+    check("host_cmd_scene: reported 0F 0, 5, 0", s == [0, 5, 0], s)
+
+
+def t_host_cmd_perf(e):
+    """PERF <macro> <value>: the macro's live amount = value << 8, as a PERF CC sets it; the others unchanged."""
+    ex = list(usb(e.at(1500), P.host_cmd(P.HOST_PERF, 1, 100))) + list(usb(e.at(1600), P.host_cmd(P.HOST_PERF, 12, 127)))
+    r = e.run("qp-perf", 2000, [], script=[], extra=ex)
+    a = e.peek(r["snap"], PERF_AMT, 24)
+    v = [int.from_bytes(a[2 * i:2 * i + 2], "big") for i in range(12)]
+    check("host_cmd_perf: macro 1 = 100 << 8, macro 12 = 127 << 8, 2..11 as the base", v[0] == 100 << 8 and
+          v[11] == 127 << 8 and a[2:22] == e.peek(e.snap, PERF_AMT + 2, 20), [hex(x) for x in v])
+
+
+def t_host_cmd_ack(e):
+    """Each op answered 10 <op> <status>: 0 done; 1 refused: macro 13, scene 13, an unknown op 7, a short MUTE. The
+    hello's caps bit 4 (16): the host command is there."""
+    msgs = [P.host_cmd(P.HOST_PERF, 2, 5), P.host_cmd(P.HOST_PERF, 13, 5), P.host_cmd(P.HOST_SCENE, 13),
+            P.host_cmd(7, 0), P.host_cmd(P.HOST_MUTE, 1, 0), P.host_cmd(P.HOST_SCENE, 0)]
+    ex = []
+    for i, m in enumerate(msgs):
+        ex += usb(e.at(1500 + 60 * i), m)
+    r = e.run("qp-ack", 2200, [], script=[], extra=ex)
+    a = [b for t, b in states(r, P.HOST_ACK)]
+    check("host_cmd_ack: 10 for each, in order: PERF done, PERF 13 / SCENE 13 / op 7 / short MUTE refused, SCENE 0 done",
+          a == [[3, 0], [3, 1], [2, 1], [7, 1], [1, 1], [2, 0]], a)
+    h = evs(r, "hello")
+    check("host_cmd_ack: the hello's caps have bit 4 (16: the host command)", h and h[0]["caps"] & P.HOST_CMD_CAPS, h)
+
+
+def t_save_kit_while_held(e):
+    """Task 46 Step 4 as a regression (the owner decides on it: design.md "0.5.0"): SCENE 3 and PERF 1 = 100 by the
+    host, SAVE KIT (YES + PLAY MODE), SCENE 0 and PERF 1 = 0, RELOAD KIT (NO + PLAY MODE): the scene comes back (SAVE
+    KIT stores the active scene), the macro amount does not (live state); no 2D 0B DIRTY from the ops."""
+    ex = (list(usb(e.at(1200), P._msg(P.SEQ_MASK, [0, 0, 0]))) + list(usb(e.at(1500), P.host_cmd(P.HOST_SCENE, 3))) +
+          list(usb(e.at(1550), P.host_cmd(P.HOST_PERF, 1, 100))) + list(usb(e.at(2400), P.host_cmd(P.HOST_SCENE, 0))) +
+          list(usb(e.at(2450), P.host_cmd(P.HOST_PERF, 1, 0))))
+    # YES + PLAY MODE saves; NO x 4 (as pj_emu's kit tests: the save's message away), then NO + PLAY MODE reloads
+    ev = ([(1800, "press", "YES", 400), (1900, "press", "PLAYMODE")] + [(2500 + 250 * i, "press", "NO") for i in range(4)] +
+          [(3500, "press", "NO", 400), (3600, "press", "PLAYMODE")])
+    r = e.run("qp-save", 4400, ev, script=[], extra=ex)
+    b = kit_scene(e, r["snap"])
+    amt = int.from_bytes(e.peek(r["snap"], PERF_AMT, 2), "big")
+    check("save_kit_while_held: after the reload the scene is the one held at the save (3: byte 2)", b == 2, b)
+    check("save_kit_while_held: the macro amount is not the one held at the save (0, not 100 << 8)", amt == 0, hex(amt))
+    s = [x[0] for t, x in states(r, P.SEQ_SCENE)]
+    check("save_kit_while_held: 0F 0, 3, 0, 3 (the reload's scene reported too)", s == [0, 3, 0, 3], s)
+    check("save_kit_while_held: no 2D 0B DIRTY", not states(r, P.SEQ_DIRTY), states(r, P.SEQ_DIRTY))
+
+
+def t_host_cmd_perf_8bit(e):
+    """Phase 7 review L2: a PERF value byte above 0x7f (USB-MIDI does not enforce 7-bit SysEx data) is refused (10 03
+    01), the macro's amount untouched; a 7-bit one after it is done."""
+    ex = list(usb(e.at(1500), P._msg(P.HOST_CMD, [P.HOST_PERF, 2, 0x80]))) + \
+        list(usb(e.at(1600), P.host_cmd(P.HOST_PERF, 3, 0x7f)))
+    r = e.run("qp-perf8", 2000, [], script=[], extra=ex)
+    a = [b for t, b in states(r, P.HOST_ACK)]
+    amt = e.peek(r["snap"], PERF_AMT, 6)
+    v = [int.from_bytes(amt[2 * i:2 * i + 2], "big") for i in range(3)]
+    base = e.peek(e.snap, PERF_AMT + 2, 2)
+    check("host_cmd_perf_8bit: PERF 2 0x80 refused, PERF 3 0x7f done (10 03 01, 10 03 00)", a == [[3, 1], [3, 0]], a)
+    check("host_cmd_perf_8bit: macro 2 as the base (no 0x80 << 8), macro 3 = 0x7f << 8",
+          amt[2:4] == base and v[2] == 0x7f << 8, [hex(x) for x in v])
+
+
+def t_qperf_replug_waits_hello(e):
+    """Phase 7 review L4: the host gone and back (a re-plug): no 0E / 0F / 10 reaches the new host before its hello,
+    though the knob moves (a 60 / s sweep) while the port comes up; after the hello the knob is reported again."""
+    hp = subprocess.run([DTBOOT, "--help"], capture_output=True, text=True)
+    if "--usb-host-gone" not in hp.stdout + hp.stderr:
+        print("    re-plug: skipped (no --usb-host-gone in this dtboot; RUI_DTBOOT)")
+        return
+    r = e.run("qp-replug", 5000, [(2000, "gone", 2800)], script=[],
+              extra=["--qperf-sweep", f"0:60@{e.at(2850)}"])
+    seq = [(x["t"], x["ev"]) for x in r["events"] if x["ev"] in ("hello", "state")]
+    h = [t for t, k in seq if k == "hello"]
+    print(f"    hellos at {h}; {len(seq) - len(h)} reports")
+    check("qperf_replug_waits_hello: two hellos (boot, re-plug)", len(h) == 2, h)
+    gap = [t for t, k in seq if k == "state" and len(h) == 2 and 2.0 <= t < h[1]]
+    check("qperf_replug_waits_hello: no 2D 01 report between the drop and the new hello", not gap, gap)
+    q = [x for t, x in qps(r) if len(h) == 2 and t >= h[1]]
+    check("qperf_replug_waits_hello: after the new hello the knob is reported (its last position 60)",
+          q and q[-1]["pos"] == 60, q[-3:])
+
+
 def ref0_at(e, ms):
     if not hasattr(e, "ref0s"):
         e.ref0s = {}
@@ -584,7 +780,7 @@ def t_boot(e):
     subprocess.run(["cp", "-c", os.path.join(EMU, e.card), c], check=True)
     e.run("boot-off", 600, [], extra=["--power-off", f"{e.clock + 40:g}M"], card=c, save=False)
     host = [(1, "gone", 1000)]
-    r = e.run("boot-on", 11500, host, script=["--splash", "60"], cold=True, card=c)
+    r = r0 = e.run("boot-on", 11500, host, script=["--splash", "60"], cold=True, card=c)
     h = evs(r, "hello")
     s1 = spl(e, r["snap"])
     check("boot: the Rytm cold boots with the host attached: one hello (35), its uptime >= 3 s (60 ticks: the host's "
@@ -602,9 +798,31 @@ def t_boot(e):
     check("boot: TRK + YES before the held hello: the hello within 0.3 s of the page's 30, the page open at the end, no "
           "splash", h and m and m[0]["on"] == 1 and abs(h[0]["t"] - m[0]["t"]) < 0.3 and e.st(r["snap"], "active") == 1
           and s2["splashes"] == 0, (h[:1], m[:1], s2))
+    # 0.5.0 (the 0.4.4 merge review): qperf in HELLO_UP's 3 s window - no 2D 01 before the hello, the hello's 0E report
+    # right after it, and a host command (2E) sent before the hello acked only after it (or not at all)
+    r = r0
+    h = evs(r, "hello")
+    st = [x["t"] for x in evs(r, "state")]
+    check("boot: qperf: no 2D 01 report before the boot hello", h and not [t for t in st if t < h[0]["t"]],
+          (h[:1], st[:3]))
+    q = [t for t, x in qps(r)]
+    check("boot: qperf: the hello's 0E report within 0.1 s after it", h and q and 0 <= q[0] - h[0]["t"] < 0.1,
+          (h[:1], q[:2]))
+    t_cmd = h[0]["t"] * 1000 - 1000 if h else 7600   # 1 s before the hello: 0026 ticking (~6.8 s), the hello held
+    r = e.run("boot-cmd", 11500, host, script=["--splash", "60"], cold=True, card=c,
+              extra=list(usb(e.at(t_cmd, cold=True), P.host_cmd(P.HOST_PERF, 2, 5))))
+    h = evs(r, "hello")
+    a = [t for t, b in states(r, P.HOST_ACK)]
+    check("boot: qperf: a host command sent 1 s before the hello: acked only after the hello, or not at all",
+          h and all(t >= h[0]["t"] for t in a), (t_cmd, h[:1], a))
 
 
 TESTS = dict(frame=t_frame, kill=t_kill, escape=t_escape, noread=t_noread, full=t_full, cost=t_cost, pass_=t_pass, splash=t_splash,
+             qperf_report_sweep=t_qperf_report_sweep, qperf_flag_moved_since_boot=t_qperf_flag_moved_since_boot,
+             scene_report=t_scene_report, host_cmd_mute_toggles_only_differing=t_host_cmd_mute,
+             host_cmd_scene=t_host_cmd_scene, host_cmd_perf=t_host_cmd_perf, host_cmd_ack=t_host_cmd_ack,
+             save_kit_while_held=t_save_kit_while_held, host_cmd_perf_8bit=t_host_cmd_perf_8bit,
+             qperf_replug_waits_hello=t_qperf_replug_waits_hello,
              boot=t_boot)
 EXTRA = dict(survey=t_survey)   # not in "all": 3 runs a key
 

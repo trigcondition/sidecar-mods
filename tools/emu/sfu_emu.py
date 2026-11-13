@@ -616,6 +616,112 @@ def glyphs(rows, y0, y1, x0=0, x1=140):
     return tuple(tuple(rows[y][xs[0]:xs[-1] + 1]) for y in range(ys[0], ys[-1] + 1))
 
 
+def bw_sent(e):
+    """The Rytm's 22 ver 2 messages (BASE / WIDTH turns) of the last run, decoded."""
+    return [P.decode_sendfx_bw(m[5:-1]) for m in e.sent if len(m) > 6 and m[4] == P.SENDFX_STATE and m[5] == P.SENDFX_BW_VER]
+
+
+def t_bw(e):
+    """BASE / WIDTH (0.5.0, sfx-basewidth): SEND FX 1 / 2's knobs G and H are BASE and WID, the host's send FX return
+    filter. They show what the host's 22 ver 2 says; a turn goes to the host as a 22 ver 2 (FX, BASE, WIDTH), never into
+    the kit (the FX words stay as they were); with a trig held they do nothing (no lock, nothing sent).
+    Screen bw-fx1.png."""
+    s0 = e.snap
+    fx0 = {i: w16(e, s0, FXW + 2 * i) for i in (0, 29, 38, 39, 40, 41)}
+    ev = [(20, "usb", P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)), (50, "press", "FX"), (150, "press", "SRC"),
+          (300, "turn", ("6:+20", 3, 20))]
+    s = e.run("bw-fx1", 500, ev, save=True)
+    m = bw_sent(e)
+    print(f"    sent {m}")
+    U.check("bw: SEND FX 1 knob G (BASE) turned up from the host's 40: 22 ver 2 FX 1, BASE above 40, WIDTH the host's 90",
+            bool(m) and all(x and x["fx"] == 0 and x["width"] == 90 for x in m) and m[-1]["base"] > 40, str(m))
+    names = [e.cstr(s, e.u32(s, REC(r) + 48), 5) for r in (1, 2, 3, 4)]
+    U.check("bw: records 1..4 are named BASE WID BASE WID", names == ["BASE", "WID", "BASE", "WID"], str(names))
+    fx = {i: w16(e, s, FXW + 2 * i) for i in fx0}
+    U.check("bw: no FX word of the kit changed (BASE / WIDTH live on the host)", fx == fx0,
+            " ".join(f"{i}:{fx0[i]:04x}->{fx[i]:04x}" for i in fx0))
+    ev = [(20, "usb", P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)), (50, "press", "FX"), (150, "press", "SMPL"),
+          (250, "press", "SMPL"), (400, "turn", ("7:-20", 3, 20))]
+    e.run("bw-fx2", 600, ev)
+    m = bw_sent(e)
+    print(f"    sent {m}")
+    U.check("bw: SEND FX 2 knob H (WID) turned down from the host's 127: 22 ver 2 FX 2, BASE the host's 10, WIDTH below",
+            bool(m) and all(x and x["fx"] == 1 and x["base"] == 10 for x in m) and m[-1]["width"] < 127, str(m))
+    ev = [(20, "usb", P.sendfx_bw(0, 40, 90)), (50, "press", "FX"), (150, "press", "SRC"), (250, "press", "RECORD"),
+          (350, "press", "T1"), (450, "press", "T1:500M"), (550, "turn", ("6:+20", 3, 20)), (700, "turn", ("7:+20", 3, 20)),
+          (1050, "press", "RECORD")]
+    s = e.run("bw-lock", 1250, ev, save=True)
+    m = bw_sent(e)
+    U.check("bw: with a trig held, G and H lock nothing and send nothing", not m and lock(e, s, 12, 0, 29) == 0xffff,
+            f"sent {m} lock 29 {lock(e, s, 12, 0, 29):04x}")
+
+
+X_BW = 5644 + DL       # sfx-basewidth: bw[2][2], bw_tx, bw_rx, then bw_sent, bw_got (after xk[127]; 2-byte alignment)
+X_BW_GOT = X_BW + 10
+
+
+def bw_x(e, s):
+    """sfu_x's BASE / WIDTH fields: ((FX 1 base, width), (FX 2 base, width)), bw_got."""
+    b = e.peek(s, sym(e, "sfu_x") + X_BW, 4)
+    return ((b[0], b[1]), (b[2], b[3])), e.u32(s, sym(e, "sfu_x") + X_BW_GOT)
+
+
+def t_bw2(e):
+    """BASE / WIDTH, the review's cases (2026-11-12): what knob G shows follows a host value that arrives while the page
+    is open (the redraw), as a fresh draw of that value; a ver-1 22 and a 22 ver 2 for FX 3 change nothing; a turn wins
+    over a host value that crosses it (pending, or within ~200 ms of its send: the host's 2 s refresh brings the rest);
+    a later host value is taken; the WID records' default is 127 (0x7f00), the filter off."""
+    gband = lambda path: glyphs(png_lit(path), 100, 148, 256, 320)   # noqa: E731  knob G's dial, not its label
+    ev_open = [(50, "press", "FX"), (150, "press", "SRC")]
+    s = e.run("bw2-late", 700, ev_open + [(400, "usb", P.sendfx_bw(0, 100, 90))], save=True)
+    late = gband(os.path.join(e.out, "bw2-late.png"))
+    (f1, f2), got = bw_x(e, s)
+    U.check("bw2: the fields hold the host's FX 1 value (the offset, the take)", f1 == (100, 90) and got >= 1,
+            f"{f1} {f2} got {got} raw {e.peek(s, sym(e, 'sfu_x') + X_BW - 4, 20).hex()}")
+    e.run("bw2-early", 700, [(20, "usb", P.sendfx_bw(0, 100, 90))] + ev_open, save=True)
+    early = gband(os.path.join(e.out, "bw2-early.png"))
+    e.run("bw2-none", 700, ev_open, save=True)
+    none = gband(os.path.join(e.out, "bw2-none.png"))
+    U.check("bw2: a host value while SEND FX 1 is open redraws knob G as a fresh draw of it (and not as before)",
+            late is not None and late == early and late != none, f"late==early {late == early} late!=none {late != none}")
+    old = P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)
+    bad = bytes([0xF0, 0x7D, 0x52, 0x54, 0x22, 0x02, 0x02, 5, 5, 0xF7])   # FX 3
+    ver1 = bytes([0xF0, 0x7D, 0x52, 0x54, 0x22, 0x01, 0x00, 1, 0]) + b"CHORUS\0\0\0\0\xf7"   # FX 1 CHORUS READY
+    s = e.run("bw2-bad", 500, [(20, "usb", old), (200, "usb", bad), (300, "usb", ver1)], save=True)
+    (f1, f2), got = bw_x(e, s)
+    U.check("bw2: a 22 ver 2 for FX 3 and a ver-1 22 leave BASE / WIDTH as they were", (f1, f2) == ((40, 90), (10, 127)),
+            f"{f1} {f2}")
+    ev = [(20, "usb", old)] + ev_open + [(300, "turn", ("6:+20", 3, 20)), (395, "usb", P.sendfx_bw(0, 5, 5))]
+    # (the turn's sends land between 330 and 380 ms; the host's value just after. BW_HOLD is 500 ms of DTCN0 at the
+    # hardware's 132 MHz, 100 ms here: rytm-emu's DTCN0 runs at 660 MHz against its event clock [measured])
+    s = e.run("bw2-cross", 700, ev, save=True)
+    m = bw_sent(e)
+    (f1, _), _ = bw_x(e, s)
+    U.check("bw2: a host value crossing the Rytm's turn (just after its send) does not undo the turn",
+            bool(m) and f1 == (m[-1]["base"], m[-1]["width"]) and f1[0] > 40, f"knob {f1} sent {m}")
+    s = e.run("bw2-after", 1200, ev + [(1000, "usb", P.sendfx_bw(0, 7, 7))], save=True)
+    (f1, _), _ = bw_x(e, s)
+    U.check("bw2: a host value well after the turn is taken", f1 == (7, 7), str(f1))
+    dflt = [e.u32(s, REC(r) + 16) for r in (1, 2, 3, 4)]
+    U.check("bw2: the records' defaults: BASE 0, WID 127 (0x7f00)", dflt == [0, 0x7f00, 0, 0x7f00], str([hex(x) for x in dflt]))
+
+
+def t_bwwrap(e):
+    """BASE / WIDTH hold (re-review 4): DTCN0 wraps every 2^32 counts (32.5 s on the unit, 6.51 s here at 660 MHz), so a
+    hold stamp left in place would come back for BW_HOLD one wrap after the turn and drop a host value then. The tick
+    clears an expired hold: a host value one wrap after the turn's send (6.51 s + 30..80 ms: inside the stale window for
+    any send between 330 and 380 ms) is taken."""
+    old = P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)
+    ev = [(20, "usb", old), (50, "press", "FX"), (150, "press", "SRC"), (300, "turn", ("6:+20", 3, 20)),
+          (6910, "usb", P.sendfx_bw(0, 9, 9))]
+    s = e.run("bwwrap", 7100, ev, save=True)
+    (f1, _), _ = bw_x(e, s)
+    hold = e.u32(s, sym(e, "sfu_x") + X_BW + 14)
+    U.check("bwwrap: a host value one timer wrap after a turn is taken (the expired hold was cleared)", f1 == (9, 9),
+            f"{f1} hold {hold:08x}")
+    U.check("bwwrap: the hold is clear once expired", hold == 0, f"{hold:08x}")
+
+
 def t_fmname(e):
     """(hardware report 2026-10-17) 6-OP FM PAT over the project's FM list: the patch's name is drawn where the dial was
     and the stock UI shows the knob's value text where the label is while it turns - that text is the step's number now,
@@ -639,7 +745,7 @@ def t_fmname(e):
 
 
 TESTS = {"fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
-         "labels": t_labels, "cost": t_cost, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
+         "labels": t_labels, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
 
 
 def main():

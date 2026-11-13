@@ -115,6 +115,20 @@ class MapTest(unittest.TestCase):
         pools = {p["name"] for p in reg.get("pool", [])}
         self.assertEqual(pools - set(self.doc.get("pool", {})), set())
 
+    def test_data_entries_agree(self):
+        """[[data]] (0.5.0): the same RAM in both OSes, each 1.74 site the map's translation of the 1.73 one (the
+        bytes themselves: tools/ostarget.py data OS, which needs the stock images)."""
+        a = {d["name"]: d for d in ostarget.load("1.73").get("data", [])}
+        b = {d["name"]: d for d in self.doc.get("data", [])}
+        self.assertEqual(set(a), set(b))
+        self.assertIn("qperf_pos", a)
+        for n in a:
+            with self.subTest(n):
+                self.assertEqual((a[n]["value"], a[n]["size"], a[n]["at"]), (b[n]["value"], b[n]["size"], b[n]["at"]))
+                self.assertEqual(self.m.tr(a[n]["site"]), b[n]["site"])
+                if a[n]["size"] == 4:   # an address the port leaves as it is (RAM)
+                    self.assertEqual(self.m.tr(a[n]["value"]), a[n]["value"])
+
     def test_port_refuses_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             rc = ostarget.port("1.74", Path(d) / "t", quiet=True)

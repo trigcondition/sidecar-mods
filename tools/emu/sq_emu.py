@@ -22,6 +22,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(ROOT), "rytm-emu"))
+TEENSY = os.environ.get("RYTM_TEENSY", os.path.join(os.path.dirname(ROOT), "rytm-teensy"))
 FAILS = []
 LIVE = 0x407DD8E3
 TRACK = 917
@@ -61,13 +62,14 @@ class Emu:
         os.makedirs(self.out, exist_ok=True)
         self.syms = json.load(open(os.path.join(self.out, "manifest.json")))["elek"]["symbols"]
 
-    def run(self, name, length, events=(), extra=(), base=None, env=None):
+    def run(self, name, length, events=(), extra=(), base=None, env=None, card=None):
         """events: (M, 'press', KEY[, hold M]) / (M, 'turn', 'ENC:DELTA', count, spacing M) / (M, 'usb', bytes).
-        base: (snapshot, its clock in M) instead of the tag's base."""
+        base: (snapshot, its clock in M) instead of the tag's base; (None, 0) a cold boot. card: another card image."""
         snap, start = base or self.base
         at = lambda t: f"{start + t:g}M"   # noqa: E731
         save = os.path.join(self.out, f"sq_{name}.snap")
-        cmd = [os.path.join(EMU, "target/release/dtboot"), self.fw, "--load", snap, "--card", self.card,
+        cmd = [os.path.join(EMU, "target/release/dtboot"), self.fw, *(["--load", snap] if snap else []),
+               "--card", card or self.card,
                "--instr", f"{length}M", "--every", "100000M", "--save", save, "--usb-host", "--usb-midi-real"]
         for e in events:
             if e[1] == "press":
@@ -76,6 +78,8 @@ class Emu:
                 cmd += ["--turn", f"{e[2]}@{at(e[0])}x{e[3]}/{e[4]}M"]
             elif e[1] == "midi":   # 1049: DIN MIDI in (bytes)
                 cmd += ["--midi", f"{e[2].hex()}@{at(e[0])}"]
+            elif e[1] == "usbfile":   # a long SysEx (a pattern write) from a file
+                cmd += ["--usb-midi-file", f"{e[2]}@{at(e[0])}"]
             else:
                 cmd += ["--usb-midi", f"{e[2].hex()}@{at(e[0])}"]
         cmd += list(extra)
@@ -166,9 +170,13 @@ def ticks(r):
     return out
 
 
+QP_KINDS = (0x0E, 0x0F, 0x10)   # 0.5.0 (design.md "0.5.0"): QPERF, SCENE, the host command's answer: no 2E needed
+
+
 def reps(r, kind=None):
-    """2D: [(kind, args)]."""
-    return [(m[6], list(m[7:-1])) for m in r["msgs"] if m[4] == 0x2D and m[5] == 1 and (kind is None or m[6] == kind)]
+    """2D: [(kind, args)] (without 0.5.0's 0E / 0F / 10 unless asked for by kind)."""
+    return [(m[6], list(m[7:-1])) for m in r["msgs"] if m[4] == 0x2D and m[5] == 1 and
+            (m[6] == kind if kind is not None else m[6] not in QP_KINDS)]
 
 
 def keys(r):
@@ -353,8 +361,9 @@ def t_stock(e):
     ev = [(350, "press", "RECORD"), (400, "press", "T1"), (450, "press", "T5"), (500, "press", "RECORD"),
           (550, "press", "PLAY"), (700, "press", "BD"), (900, "press", "STOP")]
     r = e.run("stock", 1000, ev)
-    new = [m for m in r["msgs"] if m[4] in (0x2C, 0x2D, 0x31, 0x32)]
-    check("stock: no 2C / 2D / 31 / 32 without a 2E", not new, [m.hex() for m in new[:3]])
+    new = [m for m in r["msgs"] if m[4] in (0x2C, 0x2D, 0x31, 0x32) and not (m[4] == 0x2D and m[6] in QP_KINDS)]
+    check("stock: no 2C / 2D / 31 / 32 without a 2E (0.5.0's 2D 0E / 0F / 10 aside: every host gets them)", not new,
+          [m.hex() for m in new[:3]])
     check("stock: GRID REC + T1 / T5 placed BD trigs", e.peek(r["snap"], LIVE, TRACK) != e.peek(e.base[0], LIVE, TRACK))
     d = e.sq(r["snap"])
     check("stock: reports off, nothing queued", d["on"] == 0 and d["queued"] == 0, (d["on"], d["queued"]))
@@ -765,6 +774,278 @@ def t_fetch(e):
         got.append(d[i:d.find(b"\xf7", i) + 1] if i >= 0 else b"")
     check("fetch: an unsaved trig is in the active pattern's answer; 00 and 80 answer the same", got[0] and got[0] == got[1]
           and got[0] != m, [len(x) for x in got])
+
+
+def fill_tool(e):
+    """tools/emu/fill_tool.cpp built against RYTM_TEENSY's core (the host's lockfill / rytm_dump); None without them."""
+    src = [os.path.join(TEENSY, "core/seq", f) for f in ("lockfill.cpp", "rytm_dump.cpp")]
+    if not all(os.path.exists(f) for f in src):
+        return None
+    exe = os.path.join(e.out, "fill_tool")
+    r = subprocess.run(["c++", "-std=c++17", "-O1", "-I" + os.path.join(TEENSY, "core"), "-I" + os.path.join(TEENSY, "core/host"),
+                        "-DCORE_POLY=0", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fill_tool.cpp"), *src,
+                        "-o", exe], capture_output=True, text=True)
+    return exe if r.returncode == 0 else None
+
+
+def t_fillwrite(e):
+    """0.5.0 FILL on the wire (the host's FILL: core/seq/patwrite.h, lockfill.h): trigs placed on BD in GRID REC (T1 T5
+    T9 T13, not saved), the working pattern read (0x6A -> 0x5A), BD's SAMPLE locks (P11 + fine, 10..13 UP) filled on
+    its trigs by the host's own code (fill_tool.cpp, RYTM_TEENSY's core), written as one 0x5A, read back: the same
+    pattern (the lock list in the Rytm's order), the locks on the trig steps only. The DIRTYs (2D 0B) a received 0x5A
+    makes are counted (the host's kOwnDirties = 2 rests on it). Each read is asked twice and the last whole answer
+    taken (a dump with a report inside it is not whole: printed as INFO). Then FUNC + NO's undo: the target as before put back on
+    a fresh read, written, read back: the pattern as first read. The undo's CHANGED SINCE check refuses a read whose
+    target is not as written."""
+    tool = fill_tool(e)
+    check("fillwrite: fill_tool built from RYTM_TEENSY's core/seq (lockfill.cpp, rytm_dump.cpp)", tool is not None, TEENSY)
+    if not tool:
+        return
+    req = bytes.fromhex("f000203c07006a0101000000" "0005f7")
+
+    cut = []
+
+    def answer(r, name):   # the last whole answer (a dump with another message inside it is not one: counted)
+        d = open(os.path.join(e.out, f"sq_{name}.usb"), "rb").read()
+        m, i = b"", 0
+        while True:
+            i = d.find(b"\xf0\x00\x20\x3c\x07\x00\x5a", i)
+            if i < 0:
+                break
+            j = d.find(b"\xf7", i)
+            x = d[i:j + 1] if j > 0 else d[i:]
+            if len(x) == 14988 and b"\xf0" not in x[1:]:
+                m = x
+            else:
+                k = x.find(b"\xf0", 1)
+                cut.append((name, len(x), x[k:k + 5].hex() if k > 0 else ""))
+            i += 1
+        f = os.path.join(e.out, f"fw_{name}.syx")
+        open(f, "wb").write(m)
+        return f, len(m)
+
+    def tl(*a):
+        r = subprocess.run([tool, *a], capture_output=True, text=True)
+        print("  " + r.stdout.strip().replace("\n", "\n  "))
+        return r.returncode, r.stdout
+    f = lambda n: os.path.join(e.out, n)   # noqa: E731
+    ev = [(300, "usb", mask2e(()))] + [(400 + 60 * i, "press", k) for i, k in enumerate(("RECORD", "T1", "T5", "T9", "T13",
+                                                                                         "RECORD"))]
+    ra = e.run("fw_read", 1400, ev + [(800, "usb", req), (1100, "usb", req)])
+    a, n = answer(ra, "fw_read")
+    check("fillwrite: the read: a 0x5A answer, 14988 B", n == 14988, n)
+    rc, out = tl("fill", a, f("fw_w.syx"), f("fw_w.rec"), f("fw_orig.rec"))
+    check("fillwrite: the host's steps_for picks BD's trigs 0 4 8 12; the fill patched", rc == 0 and "steps: 0 4 8 12\n" in out,
+          out.strip())
+    if rc:
+        return
+    rb = e.run("fw_write", 1100, [(100, "usbfile", f("fw_w.syx")), (500, "usb", req), (800, "usb", req)],
+               base=(ra["snap"], e.base[1] + 1400))
+    dirt = [m for m in rb["msgs"] if m[4] == 0x2D and m[6] == 0x0B]   # (the reads after it make none)
+    print(f"  2D 0B after the write: {[m.hex() for m in dirt]}")
+    check("fillwrite: a received 0x5A makes 2 DIRTYs (2D 0B; the host's kOwnDirties)", len(dirt) == 2, len(dirt))
+    b, n = answer(rb, "fw_write")
+    rc, out = tl("verify", f("fw_w.rec"), b)
+    check("fillwrite: read back = written (lockfill::same both ways); SAMPLE locks on 0 4 8 12 only (10..13, fine 20)",
+          rc == 0 and "smp: 0=200a 4=200b 8=200c 12=200d\n" in out, out.strip())
+    rc, _ = tl("verify", f("fw_orig.rec"), b)
+    check("fillwrite: the read-back differs from the pattern as first read", rc == 1, rc)
+    rc, out = tl("undo", f("fw_orig.rec"), f("fw_w.rec"), a, f("fw_x.syx"), f("fw_x.rec"))
+    check("fillwrite: the undo refuses a read whose target is not as written (CHANGED SINCE: NO UNDO)", rc == 3, out.strip())
+    rc, out = tl("undo", f("fw_orig.rec"), f("fw_w.rec"), b, f("fw_u.syx"), f("fw_u.rec"))
+    check("fillwrite: the undo patched the fresh read", rc == 0, out.strip())
+    if rc:
+        return
+    ru = e.run("fw_undo", 1100, [(100, "usbfile", f("fw_u.syx")), (500, "usb", req), (800, "usb", req)],
+               base=(rb["snap"], e.base[1] + 2500))
+    u, n = answer(ru, "fw_undo")
+    check("fillwrite: the undo's read-back: a whole 0x5A answer, 14988 B", n == 14988, n)
+    rc, out = tl("verify", f("fw_orig.rec"), u)
+    check("fillwrite: after the undo the read-back is the pattern as first read (no SAMPLE locks on BD)",
+          rc == 0 and "smp:\n" in out, out.strip())
+    # every read was asked twice: a stock dump with a Rytm-side report inside it (seen: 0030's mix report F0 7D 52 54
+    # 50, its try_send does not wait for stock's SysEx) is not whole; the host drops such an answer and asks again
+    print(f"  INFO  dumps cut by another message: {cut}")
+
+
+def t_fillpersist(e):
+    """fix/fill-persist (the owner, OS 1.74: a fill gone after SAVE PATTERN and a power-off): the host writes FILL's
+    pattern as a 0x54 (pattern n) to the active pattern n, not as a 0x5A (pattern X). Stock keeps two copies of a
+    pattern: the live expanded one the sequencer plays (0x407dd8e3, BD's lock words at 0x407e0774) and the stored compact
+    one (13101 B a pattern at 0x405c8f38 + 13101 (n + 1), its 72 lock slots at +0x2091) inside the working state the
+    power-fail handler saves and the boot loads (0x405c8e10..0x407c89cb) [measured, rytm-emu 1.73: notes
+    fill-persist-report]. A01 and A02: GRID REC trigs on BD (T1 T5 T9 T13), the read (0x6A), the stored copy equal to
+    it (the addresses hold on this OS), BD's SAMPLE locks filled by the host's code (fill_tool), written as 0x54 to n:
+    2 DIRTYs, the read-back the same, the stored copy gains the (10, 0) pair and its fine half (2 slots more), the live
+    BD locks change; a power-off (--power-off on a copy of the card) and a cold boot: both copies still hold the fill.
+    The control: the same fill as a 0x5A leaves the stored copy as read, and after the power-off and cold boot the
+    fill is gone from both (stock; the host must not write so)."""
+    tool = fill_tool(e)
+    check("fillpersist: fill_tool built from RYTM_TEENSY's core/seq", tool is not None, TEENSY)
+    if not tool:
+        return
+    q64 = lambda n: bytes.fromhex(f"f000203c0700640101{n:02x}000000" "0005f7")   # noqa: E731
+    stored0, slots_at, live_bd = 0x405C8F38, 0x2091, 0x407E0774
+    f = lambda n: os.path.join(e.out, n)   # noqa: E731
+
+    def answer(name, n):   # the last whole 0x54 answer of pattern n in a run's USB out (as the host takes it: byte 9 = n)
+        d = open(f(f"sq_{name}.usb"), "rb").read()
+        m, i = b"", 0
+        while True:
+            i = d.find(b"\xf0\x00\x20\x3c\x07\x00\x54", i)
+            if i < 0:
+                break
+            j = d.find(b"\xf7", i)
+            x = d[i:j + 1] if j > 0 else d[i:]
+            if len(x) == 14988 and b"\xf0" not in x[1:] and x[9] == n:
+                m = x
+            i += 1
+        y = bytearray(m)
+        if y:
+            y[6] = 0x5A   # (fill_tool reads the 0x5A framing; the payload is the same; byte 9 kept: n)
+        open(f(f"{name}.syx"), "wb").write(y)
+        return f(f"{name}.syx"), len(m)
+
+    def tl(*a):
+        r = subprocess.run([tool, *a], capture_output=True, text=True)
+        return r.returncode, r.stdout
+
+    def slots(rec):   # the used lock slots: (type, track, {step: value})
+        out = []
+        for i in range(72):
+            s = rec[slots_at + 66 * i: slots_at + 66 * i + 66]
+            if s[0] != 0xFF:
+                out.append((s[0], s[1], {k: s[2 + k] for k in range(64) if s[2 + k] != 0xFF}))
+        return out
+
+    def pair(rec):   # BD's SAMPLE slot (type 10, track 0) and the fine half after it, 132 B; None: not there
+        for i in range(71):
+            o = slots_at + 66 * i
+            if rec[o:o + 2] == bytes([10, 0]) and rec[o + 66:o + 68] == b"\x80\x80":
+                return rec[o:o + 132]
+        return None
+
+    def has_fill(rec):   # the pair as the host wrote it (10..13 on steps 0 4 8 12, fine 0x20: fill_tool's)
+        return pair(rec) is not None and pair(rec) == pair(open(f(f"fp{cur[0]}_w.rec"), "rb").read())
+
+    cur = [""]
+
+    def case(tag, n, wid):
+        cur[0] = tag
+        stored = stored0 + 13101 * (n + 1)
+        bd = live_bd + 85760 * n   # the live arrays: one 85760-B block a pattern [measured here: A02's at +85760]
+        ev = [(300, "usb", mask2e(()))]
+        if n:   # stopped: BANK_A + T2 switches to A02 at once
+            ev += [(330, "press", "BANK_A", 40), (340, "press", "T2")]
+        ev += [(400 + 60 * i, "press", k) for i, k in enumerate(("RECORD", "T1", "T5", "T9", "T13", "RECORD"))]
+        req = q64(n)
+        ra = e.run(f"fp{tag}_read", 1400, ev + [(800, "usb", req), (1100, "usb", req)])
+        os174 = "OS 1.74" in ra["out"]
+        pats = [list(m[7:9]) for m in ra["msgs"] if m[4] == 0x2D and m[6] == 0x02]
+        check(f"fillpersist {tag}: the 1.74 profile; the active pattern {n} (2D 02 {pats[-1:] })",
+              os174 and pats and pats[-1][0] == n, (os174, pats))
+        a, ln = answer(f"fp{tag}_read", n)
+        rc, out = tl("fill", a, f(f"fp{tag}_w.syx"), f(f"fp{tag}_w.rec"), f(f"fp{tag}_orig.rec"))
+        # (A01 is empty in the base: the 4 GRID REC trigs; A02 holds BD trigs of its own, which T1 .. T13 toggle)
+        check(f"fillpersist {tag}: the read (14988 B) and the host's fill on BD's trigs",
+              ln == 14988 and rc == 0 and ("steps: 0 4 8 12\n" in out if n == 0 else "steps: " in out), (ln, out.strip()))
+        if rc:
+            return
+        orig = open(f(f"fp{tag}_orig.rec"), "rb").read()
+        s0 = e.peek(ra["snap"], stored, 13101)
+        check(f"fillpersist {tag}: the stored copy at 0x{stored:08x} is the pattern as read (the address holds)", s0 == orig,
+              sum(x != y for x, y in zip(s0, orig)))
+        w = bytearray(open(f(f"fp{tag}_w.syx"), "rb").read())
+        w[6] = wid   # 0x54: the read answer as it came (byte 9 = n), as the host's patwrite writes it; 0x5A: the control
+        open(f(f"fp{tag}_w{wid:02x}.syx"), "wb").write(w)
+        rb = e.run(f"fp{tag}_write", 1100, [(100, "usbfile", f(f"fp{tag}_w{wid:02x}.syx")), (500, "usb", req), (800, "usb", req)],
+                   base=(ra["snap"], e.base[1] + 1400))
+        dirt = [m for m in rb["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+        b, ln = answer(f"fp{tag}_write", n)
+        rc, out = tl("verify", f(f"fp{tag}_w.rec"), b)
+        check(f"fillpersist {tag}: a 0x{wid:02x} write: 2 DIRTYs; the read-back = written", len(dirt) == 2 and rc == 0,
+              (len(dirt), out.strip()))
+        s1 = e.peek(rb["snap"], stored, 13101)
+        l0, l1 = e.peek(ra["snap"], bd, 5674), e.peek(rb["snap"], bd, 5674)
+        if wid == 0x54:
+            check(f"fillpersist {tag}: the stored copy gains the pair: slots {len(slots(orig))} -> {len(slots(s1))}",
+                  has_fill(s1) and len(slots(s1)) == len(slots(orig)) + 2, (len(slots(orig)), len(slots(s1))))
+        else:
+            check(f"fillpersist {tag}: control: a 0x5A leaves the stored copy as read", s1 == orig,
+                  sum(x != y for x, y in zip(s1, orig)))
+        check(f"fillpersist {tag}: the live BD locks hold the fill", l1 != l0, sum(x != y for x, y in zip(l0, l1)))
+        card = f(f"fp{tag}_card.img")
+        if os.path.exists(card):
+            os.remove(card)
+        subprocess.run(["cp", "-c", os.path.join(EMU, e.card), card], check=True)
+        clk = e.base[1] + 2500
+        e.run(f"fp{tag}_power", 400, base=(rb["snap"], clk), extra=["--power-off", f"{clk + 200}M"], card=card)
+        rc_ = e.run(f"fp{tag}_cold", 4500, base=(None, 0), card=card)
+        s2 = e.peek(rc_["snap"], stored, 13101)
+        l2 = e.peek(rc_["snap"], bd, 5674)
+        if wid == 0x54:
+            check(f"fillpersist {tag}: power-off + cold boot: the stored copy still holds the fill", has_fill(s2),
+                  len(slots(s2)))
+            check(f"fillpersist {tag}: power-off + cold boot: the live BD locks as after the write", l2 == l1,
+                  sum(x != y for x, y in zip(l1, l2)))
+        else:
+            check(f"fillpersist {tag}: control: power-off + cold boot: the fill gone (stored as read, live BD as before)",
+                  not has_fill(s2) and s2 == orig and l2 == l0, (len(slots(s2)), sum(x != y for x, y in zip(l0, l2))))
+        os.remove(card)
+
+    case("a01", 0, 0x54)
+    case("a5a", 0, 0x5A)
+    case("a02", 1, 0x54)
+
+
+def t_fillqueue(e):
+    """fix/fill-persist round 1: which pattern a dump request answers while a switch is queued (playing). A01 plays
+    (empty in the base), BANK_A + T2 queues A02 (BD trigs of its own) at step 7, its switch at step 16. Requests: 0x64 00
+    (pattern 0 by number) and 0x6A (pattern X, the working buffer) mid-queue and in the queue's last step, and 0x64 00 /
+    0x64 01 after the switch. Each answer: its id, byte 9, and whose content (BD's trigs: none = A01, some = A02).
+    FILL's read is 0x64 n with n = the active pattern; the host takes an answer only when its byte 9 is n."""
+    tool = fill_tool(e)
+    check("fillqueue: fill_tool built", tool is not None, TEENSY)
+    if not tool:
+        return
+    q64 = lambda n: bytes.fromhex(f"f000203c0700640101{n:02x}000000" "0005f7")   # noqa: E731
+    q6a = bytes.fromhex("f000203c07006a0101000000" "0005f7")
+    reqs = [(600, q64(0)), (640, q6a), (740, q64(0)), (765, q6a), (900, q64(0)), (940, q64(1)), (980, q6a)]
+    ev = [(300, "usb", mask2e(())), (400, "press", "PLAY"), (400 + 7 * 24, "press", "BANK_A", 40),
+          (400 + 7 * 24 + 10, "press", "T2")] + [(t, "usb", m) for t, m in reqs] + [(1150, "press", "STOP")]
+    r = e.run("fillqueue", 1250, ev)
+    d = open(os.path.join(e.out, "sq_fillqueue.usb"), "rb").read()
+    got, i = [], 0
+    while True:   # every whole stock dump answer (0x54 / 0x5A), in order
+        i = d.find(b"\xf0\x00\x20\x3c\x07\x00", i)
+        if i < 0:
+            break
+        j = d.find(b"\xf7", i)
+        x = d[i:j + 1]
+        if len(x) == 14988 and x[6] in (0x54, 0x5A):
+            f = os.path.join(e.out, f"fq_{len(got)}.syx")
+            y = bytearray(x)
+            y[6] = 0x5A   # (fill_tool reads the 0x5A framing; the payload is the same)
+            open(f, "wb").write(y)
+            out = subprocess.run([tool, "dump", f], capture_output=True, text=True).stdout
+            bd = next((ln for ln in out.splitlines() if ln.startswith("t0 ")), "")
+            got.append((hex(x[6]), x[9], "A02" if "trigs: " in bd and bd.split("trigs:")[1].strip() else "A01", bd))
+        i = j + 1
+    seq_ = [(m[6], list(m[7:9])) for m in r["msgs"] if m[4] == 0x2D and m[6] in (2, 3)]
+    print(f"  2D 02/03 in order: {seq_}")
+    for k, g in enumerate(got):
+        print(f"  answer {k}: id {g[0]} byte9 {g[1]} content {g[2]}   [{g[3]}]")
+    check("fillqueue: 7 whole answers", len(got) == 7, len(got))
+    if len(got) == 7:
+        check("fillqueue: 0x64 00 while A02 is queued: byte 9 = 0 and A01's content (both times)",
+              all(got[k][:3] == ("0x54", 0, "A01") for k in (0, 2)), [got[k][:3] for k in (0, 2)])
+        check("fillqueue: every answer's byte 9 names its content's pattern (A01 0, A02 1)",
+              all(g[1] == (0 if g[2] == "A01" else 1) for g in got), [g[:3] for g in got])
+        print(f"  INFO  0x6A mid-queue / in the queue's last step answered: {got[1][2]} / {got[3][2]} (the queued A02 "
+              "here: why FILL reads by number)")
+        check("fillqueue: after the switch 0x64 00 still A01 (byte 9 = 0), 0x64 01 A02 (byte 9 = 1), 0x6A A02",
+              got[4][:3] == ("0x54", 0, "A01") and got[5][:3] == ("0x54", 1, "A02") and got[6][2] == "A02",
+              [g[:3] for g in got[4:]])
 
 
 def t_fetchrace(e):
@@ -1399,10 +1680,175 @@ def t_upseq(e):
           pages == [11, 12, 13] and all(c == 0 for c, _ in keys(r)), (pages, keys(r)))
 
 
+# ---- polyuser-3 probe: does the SEQ page's seq mode (2D 08 1) switch on for a seq track that is not selected?
+SEL = 0x41318982
+GRIDPTR = 0x419F28D8
+STEP_M = 200 * 60 / 127.0 / 4    # one 16th at 127 BPM in M (23.6)
+
+
+def seqmodes(r):
+    return [tuple(a) for k, a in reps(r, 8)]
+
+
+def track_log(e, r):
+    """the status lines' DTBOOT_PEEK words: [(M, selected, grid object, its +353 byte, its +360 byte)]"""
+    out = []
+    obj = int.from_bytes(e.peek(e.base[0], GRIDPTR, 4), "big")
+    for m in re.finditer(r"^ *(\d+)M .*\n  peek (.*)", r["out"], re.M):
+        w = dict((int(a, 16), int(v, 16)) for a, v in re.findall(r"\[([0-9a-f]{8})\]=([0-9a-f]{8})", m.group(2)))
+        sel = w.get(SEL & ~3, 0) >> (8 * (3 - (SEL & 3))) & 0xFF
+        g353 = w.get((obj + 353) & ~3, 0) >> (8 * (3 - ((obj + 353) & 3))) & 0xFF
+        g360 = w.get(obj + 360, 0) >> 24
+        out.append((int(m.group(1)) - (r.get("start") or e.base[1]), sel, w.get(GRIDPTR, 0), g353, g360))
+    return out
+
+
+def run_logged(e, name, length, ev, extra=(), base=None):
+    obj = int.from_bytes(e.peek(e.base[0], GRIDPTR, 4), "big")
+    pk = ",".join(f"{a:x}" for a in (SEL & ~3, GRIDPTR, (obj + 353) & ~3, obj + 360))
+    r = e.run(name, length, ev, extra=["--every", "2M", "--watch", f"{SEL:x}"] + list(extra),
+              env=dict(DTBOOT_PEEK=pk), base=base)
+    r["start"] = (base or e.base)[1]
+    lg = track_log(e, r)
+    open(os.path.join(e.out, f"sq_{name}.track.txt"), "w").write(
+        "\n".join(f"{t:8.1f}M sel {s:3d} obj {o:08x} +353 {a} +360 {b}" for t, s, o, a, b in lg) + "\n" +
+        "\n".join(re.findall(r"^watch: .*", r["out"], re.M)) + "\n")
+    sels = sorted({x[1] for x in lg})
+    grid = sorted({(x[3], x[4]) for x in lg})
+    wr = re.findall(r"^watch: (.*)", r["out"], re.M)
+    hits = re.findall(r"watch_hits[= ](\d+)", r["out"])
+    print(f"  {name}: 2D 08 {seqmodes(r)}; selected seen {sels}; (+353,+360) seen {grid}; "
+          f"{len(wr)} selection writes logged {wr[:6]}")
+    return r, lg
+
+
+def bt_steps(play_at, steps, bars=2):
+    """46 SILENT toggles as the host sends them while a pinned seq track BT plays at those steps: open (46 0) one
+    planning lead before the step, silent (46 BT) 150 ms after it."""
+    ev = []
+    for b in range(bars):
+        for s in steps:
+            t = play_at + (16 * b + s) * STEP_M
+            ev += [(round(t - 6, 1), "usb", silent46(())), (round(t + 30, 1), "usb", silent46((4,)))]
+    return ev
+
+
+def t_otherplay(e):
+    """polyuser-3: 2E BT a pinned seq track; BD selected; GRID REC; PLAY 2 bars with the host's 46 toggles at BT's steps
+    (0, 4, 8, 12): no 2D 08 1 (seq mode stays off, BD selected throughout)."""
+    ev = [(300, "usb", mask2e_pin((4,), 0, (4,))), (320, "usb", silent46((4,))), (350, "press", "RECORD"),
+          (400, "press", "PLAY")] + bt_steps(400, (0, 4, 8, 12)) + [(400 + 34 * STEP_M, "press", "STOP")]
+    r, lg = run_logged(e, "otherplay", 1300, ev)
+    sm = seqmodes(r)
+    check("otherplay: no 2D 08 1 (seq mode never on with BD selected)", all(a[0] == 0 for a in sm), sm)
+    check("otherplay: the selection byte BD (0) at every 10 ms sample", lg and all(x[1] == 0 for x in lg),
+          sorted({x[1] for x in lg}))
+    check("otherplay: GRID REC on from RECORD to the end (+353 and +360 set)",
+          all(x[3] and x[4] for x in lg if x[0] > 360), sorted({(x[3], x[4]) for x in lg if x[0] > 360}))
+
+
+def t_otherplay_live(e):
+    """polyuser-3, H4: BT the seq track and selected (TRK + BT); live REC (RECORD held + PLAY), 2 bars with the 46
+    toggles; then the same in GRID REC + PLAY. The 2D 08 sequence and +353 / +360 every 10 ms: does seq mode flicker?"""
+    pre = [(300, "usb", mask2e_pin((4,), 0, (4,))), (320, "usb", silent46((4,))), (330, "press", "TRK", 20),
+           (340, "press", "BT", 10)]
+    ev = pre + [(380, "press", "RECORD", 60), (400, "press", "PLAY")] + bt_steps(400, (0, 4, 8, 12)) + \
+        [(400 + 34 * STEP_M, "press", "STOP")]
+    r, lg = run_logged(e, "otherplay_live", 1300, ev)
+    sm = seqmodes(r)
+    on = [a for a in sm if a[0] == 1]
+    check("otherplay_live: live REC on BT: no seq mode blip while playing (one 08 1 4 / 08 0 pair at most, at RECORD's "
+          "press before PLAY)", len(on) <= 1, sm)
+    g = [x for x in lg if x[4]]
+    print(f"    live: GRID REC flag (+360) set from {g[0][0] if g else None} to {g[-1][0] if g else None} M "
+          f"({len(g)} samples of 2 M); PLAY at 400 M")
+    ev = pre + [(360, "press", "RECORD"), (400, "press", "PLAY")] + bt_steps(400, (0, 4, 8, 12)) + \
+        [(400 + 34 * STEP_M, "press", "STOP")]   # (RECORD released before PLAY: RECORD held + PLAY is live REC)
+    r, lg = run_logged(e, "otherplay_grid_bt", 1300, ev)
+    sm = seqmodes(r)
+    check("otherplay_grid_bt: GRID REC on BT while playing: one 08 1 4, no flicker", [a for a in sm if a[0] == 1] == [(1, 4)]
+          and sm[-1] == (1, 4), sm)
+
+
+def t_otherprobe(e):
+    """polyuser-3, the likely triggers of a selection change at BT's steps, each with BD selected and GRID REC on, BT
+    the pinned seq track: (a) stock trigs on BT (placed before the 2E); (b) the host's 34 / 2F LED frames at BT's steps;
+    (c) MIDI notes in at BT's steps: note 4 on the auto channel (14, a BT pad trigger), note 60 on BT's channel (5),
+    on USB and on DIN; (d) live REC + PLAY with BD selected and stock trigs on BT. Reports what moves the selection."""
+    trigs = [(60, "press", "TRK", 20), (70, "press", "BT", 10), (100, "press", "RECORD")] + \
+        [(120 + 15 * i, "press", f"T{1 + 4 * i}") for i in range(4)] + \
+        [(200, "press", "RECORD"), (220, "press", "TRK", 20), (230, "press", "BD", 10)]
+    mk = [(300, "usb", mask2e_pin((4,), 0, (4,))), (320, "usb", silent46((4,)))]
+    end = [(400 + 34 * STEP_M, "press", "STOP")]
+    steps = [400 + (16 * b + s) * STEP_M for b in range(2) for s in (0, 4, 8, 12)]
+    c34 = [0x0F] * 8 + [0x6F] * 8
+    cases = dict(
+        stocktrig=trigs + mk + [(350, "press", "RECORD"), (400, "press", "PLAY")] + bt_steps(400, (0, 4, 8, 12)) + end,
+        leds=mk + [(350, "press", "RECORD"), (400, "press", "PLAY")] + bt_steps(400, (0, 4, 8, 12)) +
+        [(round(t + 1, 1), "usb", sx(0x34, 1, *c34)) for t in steps] +
+        [(round(t + 1, 1), "usb", sx(0x2F, 0x2F, 0x2B, 0x2B, 0x7F)) for t in steps] + end,
+        usbauto=mk + [(350, "press", "RECORD"), (400, "press", "PLAY")] +
+        sum([[(round(t, 1), "usb", bytes([0x9D, 4, 100])), (round(t + 20, 1), "usb", bytes([0x8D, 4, 0]))] for t in steps], []) + end,
+        usbch5=mk + [(350, "press", "RECORD"), (400, "press", "PLAY")] +
+        sum([[(round(t, 1), "usb", bytes([0x94, 60, 100])), (round(t + 20, 1), "usb", bytes([0x84, 60, 0]))] for t in steps], []) + end,
+        dinauto=mk + [(350, "press", "RECORD"), (400, "press", "PLAY")] +
+        sum([[(round(t, 1), "midi", bytes([0x9D, 4, 100])), (round(t + 20, 1), "midi", bytes([0x8D, 4, 0]))] for t in steps], []) + end,
+        dinch5=mk + [(350, "press", "RECORD"), (400, "press", "PLAY")] +
+        sum([[(round(t, 1), "midi", bytes([0x94, 60, 100])), (round(t + 20, 1), "midi", bytes([0x84, 60, 0]))] for t in steps], []) + end,
+        livestock=trigs + mk + [(380, "press", "RECORD", 60), (400, "press", "PLAY")] + bt_steps(400, (0, 4, 8, 12)) + end,
+        btpad=mk + [(350, "press", "RECORD"), (400, "press", "PLAY"), (400 + 4 * STEP_M, "press", "BT", 10)] + end,
+    )
+    only = os.environ.get("OTHERPROBE")
+    for name, ev in cases.items():
+        if only and name not in only.split(","):
+            continue
+        r, lg = run_logged(e, f"op_{name}", 1300, ev)
+        sm = seqmodes(r)
+        moved = [(round(x[0]), x[1]) for x in lg if x[0] > 300 and x[1] != 0]
+        runs, cur = [], None
+        for t, s in [(round(x[0]), x[1]) for x in lg if x[0] > 300]:
+            if s != 0 and cur is None:
+                cur = [t, t, s]
+            elif s != 0:
+                cur[1] = t
+            elif cur is not None:
+                runs.append(tuple(cur)); cur = None
+        if cur is not None:
+            runs.append(tuple(cur))
+        print(f"    {name}: selection off BD at {len(moved)} samples, runs (from M, to M, track) {runs[:10]}")
+        if name == "btpad":      # control: a real BT key press selects BT (stock) and the host is told (2D 08 1 4)
+            check("otherprobe btpad (control): the BT key press selects BT, 2D 08 1 4 follows",
+                  (1, 4) in sm and bool(runs) and runs[0][2] == 4, (sm, runs[:6]))
+            continue
+        check(f"otherprobe {name}: no 2D 08 1, the selection stays BD", all(a[0] == 0 for a in sm) and not moved,
+              (sm, runs[:6]))
+
+
+def t_otherfm(e):
+    """polyuser-3 on a Sidecar machine: BT on 6-OP FM (machine 40: 0021's ext render, as JUNO), BD selected again, then
+    t_otherplay's run (2E BT pinned seq track, GRID REC, PLAY 2 bars, 46 toggles): no 2D 08 1, the selection BD."""
+    keys_ = ["SRC", "SRC"] + ["DOWN"] * 20 + ["YES", "NO"]
+    ev = [(100, "press", "TRK", 20), (110, "press", "BT", 10)] + \
+        [(200 + 100 * i, "press", k) for i, k in enumerate(keys_)] + [(2700, "press", "TRK", 20), (2710, "press", "BD", 10)]
+    b = e.run("fmbt_base", 2900, ev)
+    m = tuple(e.peek(b["snap"], 0x4125590D + 152 * t + 104, 1)[0] for t in (4, 0))   # MACHINE_OF (kit 1)
+    sel = e.peek(b["snap"], SEL, 1)[0]
+    print(f"  fmbt base: MACHINE_OF (BT, BD) {m}, selected {sel}")
+    base = (b["snap"], e.base[1] + 2900)
+    ev = [(300, "usb", mask2e_pin((4,), 0, (4,))), (320, "usb", silent46((4,))), (350, "press", "RECORD"),
+          (400, "press", "PLAY")] + bt_steps(400, (0, 4, 8, 12)) + [(400 + 34 * STEP_M, "press", "STOP")]
+    r, lg = run_logged(e, "otherfm", 1300, ev, base=base)
+    sm = seqmodes(r)
+    check("otherfm: BD selected at the start", sel == 0, sel)
+    check("otherfm: no 2D 08 1 (BT on a Sidecar machine)", all(a[0] == 0 for a in sm), sm)
+    check("otherfm: the selection byte BD at every sample", lg and all(x[1] == 0 for x in lg), sorted({x[1] for x in lg}))
+
+
 TESTS = dict(recleds=t_recleds, savereload=t_savereload, jump=t_jump, fill=t_fill, ticks=t_ticks, switch=t_switch, pause=t_pause, mode=t_mode, stock=t_stock, rec=t_rec, state=t_state, solo=t_solo,
              hello=t_hello, pin=t_pin, pinvel=t_pinvel, edits=t_edits, seqedit=t_seqedit, scale=t_scale, dirty=t_dirty,
              fetch=t_fetch, fetchrace=t_fetchrace, freezeprobe=t_freezeprobe, noreload=t_noreload, yestime=t_yestime, trktrig=t_trktrig, trkfx=t_trkfx, trkyes=t_trkyes, playmode=t_playmode, lockkeys=t_lockkeys, yes=t_yes, disp=t_disp,
-             seqpage=t_seqpage, trigkey=t_trigkey, trkpad=t_trkpad, upcombo=t_upcombo, upseq=t_upseq)
+             seqpage=t_seqpage, trigkey=t_trigkey, trkpad=t_trkpad, upcombo=t_upcombo, upseq=t_upseq, fillwrite=t_fillwrite, fillpersist=t_fillpersist, fillqueue=t_fillqueue,
+             otherplay=t_otherplay, otherplay_live=t_otherplay_live, otherprobe=t_otherprobe, otherfm=t_otherfm)
 
 
 def main():

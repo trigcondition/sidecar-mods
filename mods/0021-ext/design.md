@@ -1030,3 +1030,53 @@ rytm-teensy core/midim/midim.h.
 rytm-teensy core/arp/arp.h reads 10 opaque bits. **Stored:** slot 46 (+0x78 / +0x79). **Live:** +0x6d and the two bits above the tag (+0x6e bits 6, 7): the last spare bits of a live sound, which is what raw copies carry
 (sound-tag-research.md). `us_tag_load_c` / `us_tag_save_c` carry them for every machine; the three writers of the live tag keep the two bits. An old sound's slot is 0, OFF; a stock save zeroes it. `us_snd_init`, a new detour in
 `sound_init_defaults` (0x400122e6): a fresh sound's spare bytes are the allocator's, so all three are cleared there. 0026 writes and reports the code (below in its design). Tests: tools/emu/ar_emu.py.
+
+## 0.5.0: SAMPLER (machine 43; 2026-11-11, emulator only)
+
+The host's Digitakt-style sample player as a machine of its own; DSP SAMPLE (45) stays exactly as before.
+
+- **Slot:** 43 (FUNC. GEN.; 0014 `funcgen=0` is already required, so 43 is unlisted without this): engine entry
+  0x40290428 = ext_render, SRC row 0x402882d8 (registry, gate `slots`), mask 0x401bf1d2 and names 0x401bf0fc /
+  0x401bf100 = 0026's `cu_sa_name` / `cu_sa_short` ("SAMPLER" / "SMPR"). In BD's machine list it comes after
+  DIGIDRUM (23 downs from BD PLASTIC): every Sidecar machine above 43 is one DOWN further than before (the suites' counts).
+- **Voice flag 0x20** (`us_flag_tab[8]`), DSP SAMPLE's: the 33's machine byte is 43. The sample layer stays muted
+  (ext_layer_kept as for 0x20).
+- **Sound tag 0x29C1** (`SAMPLER_TAG`, 14 bits): ext_render puts it in the last two bytes of every 03 / 04 of a
+  machine-43 voice instead of us_tag, on the wire **53 41** ('S' 'A'). DSP SAMPLE always reports 0, MD 0x224D, so the host
+  tells SAMPLER from DSP SAMPLE by the tag on 0x20 (as MD from its flag-mates on 0x40). Fixed, not stored in the sound.
+- **P1..P8 are reported as 0** (ext_render; the kit words stay what they are, SAMPLER has no SRC records for them, and
+  sound_param_id_for_index has none for 43's words 9..16).
+- **Knobs, all on the SRC page** (the SMPL page empty: `us_page_record` -1, after calling 0026's set-up):
+
+  | knob | name | P | word | record | range, steps (0026) |
+  |---|---|---|---|---|---|
+  | A | SMP  | P11 | 19 | 441 (DSP SAMPLE's SMP) | banked list, as DSP SAMPLE |
+  | B | STRT | P13 | 21 | 460 | 0..120 |
+  | C | END  | P14 | 22 | 403 | 0..120 |
+  | D | PLAY | P12 | 20 | 459 | 9 zones (zone v x 9 / 128): FWD REV FLP RLP SLICE GRAIN STRCH PLUCK WAVE |
+  | E | TUNE | P9  | 17 | 438 | 4..124 (-60..+60), stock TUNE look 39 |
+  | F | FINE | P10 | 18 | 457 | 0..127, centred |
+  | G | LOOP | P15 | 23 | 404 | 0..120, 0 = OFF |
+  | H | LEV  | P16 | 24 | 405 | 0..127, fader |
+
+  **Knob order (owner, 2026-11-12 hardware test):** STRT and END on B and C (their values show in the waveform), TUNE
+  and FINE on E and F (where the display shows values); it was SMP TUNE FINE PLAY / STRT END LOOP LEV. Only the SRC row
+  (registry 0x402882d8) and 0026's `sv_word` knob map changed: the P-numbers stay the words (P9..P16 = words 17..24),
+  so stored sounds, locks, LFO / XY targets and the host's 48 / 2A / 03 / 04 mean the same as before.
+
+  `us_param_record(17..24, 43)` answers the same records (word 19: 441, the rest us_p2rec), so the page, locks and the
+  host's 48 agree. **Not DSP SAMPLE's own sample-word records:** 39 is stock's shared TUNE (40..88), 444's 7-zone text
+  renames 445..447 and 447 is a 0..1 switch, and no record is free (334..460 are all 0021's); so the shared records,
+  labelled per selected machine by 0026 (us_cubox), as MULTISAMPLE's page 2. Defaults at a choice in the machine list
+  (0026's cu_defs): words 17..24 = 64 64 0 0 0 120 0 100, word 19 (SMP) kept when the track came from DSP SAMPLE or
+  SAMPLER (0026's "SAMPLER after the review").
+- **0.4.4 Rytm** with a kit holding 43 on a track [measured, `sa44_emu.py`: saved on saa, cold-booted on 0.4.4's f44b]:
+  the track loads as DISABLE (27; 43's mask is 0 there), no fault, silent.
+- **0.4.4 host** with this Rytm: 0x20 with a tag it ignores: plays it as a dry DSP SAMPLE (P1..P8 0); SMP TUNE FINE
+  STRT END LEV mean the same there, PLAY / LOOP do not.
+- **1.74:** the five claims are 1.73 addresses; `ostarget.py check 1.74` classifies all as moved (0x40290788,
+  0x40288638, 0x401bf482, 0x401bf3ac, 0x401bf3b0), none refused; re/os/1.74.toml needs `derive` for the four new
+  claims' [expect] hashes (0x401bf1d2 is there from 0014) before an OS=1.74 build.
+
+Tests [measured, rytm-emu-mdpage]: `cu_emu.py TAG sa saknobs`, `bk_emu.py TAG salist`, `sa44_emu.py TAG`; all fail
+on bfd (43 not in the list: 23 downs reach PLAITS), pass on saa.

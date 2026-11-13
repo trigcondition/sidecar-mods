@@ -23,6 +23,10 @@ tools/emu/suites.py TAG rled sq                   # named suites
 - Output: one line a suite (verdict, PASS / FAIL counts, seconds, log path), a failing suite's FAIL lines, the wall
   clock. **Read a log only when its suite failed**, and then grep it (`grep -n FAIL build/suites/rled.log`): the logs
   are 1..63 KB of PASS lines.
+- `RYTM_TEENSY` must point at a Sidecar host checkout of the build's version (its `sim/protocol.py` and
+  `sim/remote_ui.py`; for 0.5.0 builds a 0.5.0 one such as `sidecar/firmware-050t`). The default `../rytm-teensy`
+  rarely exists beside a worktree, and an older protocol module makes `rui`, `pm` and their importers stop with a
+  traceback (no `HOST_CMD`) instead of failing a check.
 - `-j N` (default 6). `rui` is rerun alone when it fails in the parallel phase (real-time host threads; it can flake
   under load); the alone result is its verdict, and both are in `build/suites/summary.txt`.
 - `rled` runs as 7 shards (subsets of its tests, `UPKEYS` / `STOCKUP_KEYS` for its two key sweeps), each its own

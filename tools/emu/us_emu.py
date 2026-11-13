@@ -224,8 +224,8 @@ def t_variants(e):
     want = (bytes.fromhex("0402") if v else bytes(2)) + b"\xff" * 10   # 0021 lists 35..39 itself (home -1, every voice)
     check(f"variants: 34 BT IMPROVED {'04 02' if v else '00 00 (variants=0)'}, 35..39 ff ff (0021's user slots)", m == want,
           m.hex())
-    f = e.peek(s, 0x401bf1d2, 2)    # 43 FUNC. GEN.
-    check("variants: 43 FUNC. GEN. unlisted (funcgen=0)", f == b"\0\0", f.hex())
+    f = e.peek(s, 0x401bf1d2, 2)    # 43: FUNC. GEN. unlisted (funcgen=0); 0.5.0: 0026's SAMPLER there (home -1, every voice)
+    check("variants: 43 SAMPLER ff ff (0026; FUNC. GEN. itself stays out: funcgen=0)", f == b"\xff\xff", f.hex())
 
 
 def t_takeover(e):
@@ -477,7 +477,7 @@ def t_dspmod(e):
     if e.params.get("0021-ext", {}).get("diag", 0):
         check("dspmod: a diag = 0 build", False, "this build has 0021 diag = 1")
         return
-    ev, t = walk_list(100, 24)
+    ev, t = walk_list(100, 25)   # (0.5.0: SAMPLER, 43, before it)
     s = e.run("dspmod", t + 300, ev + [(t, "press", "SMPL")], save=True)
     m = e.peek(s, 0x8000ea00, 1)[0]
     sh = e.cstr(s, e.u32(s, rec(444) + 48), 5)

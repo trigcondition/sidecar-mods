@@ -360,7 +360,7 @@ def t_trk(e):
 def t_dsp(e):
     """BD set to DSP SAMPLE (its SMPL page holds the sample knobs): the 2A after its 29 0 1 carries P9..P16 = the
     sound's knob words 8..15 (1027c: not words 17..24)."""
-    keys = UI["list_open"] + ["DOWN"] * 24 + [UI["list_confirm"]]
+    keys = UI["list_open"] + ["DOWN"] * 25 + [UI["list_confirm"]]
     ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)]
     r = e.run("dsp", 500 + 500 * (len(keys) - 1) + 1500, ev)
     a = evs(r, "v2a")
@@ -397,7 +397,7 @@ G = None   # the GRANULAR snapshot (BD on GRANULAR, the stock SRC page: no frame
 def gran(e):
     global G
     if G is None:
-        keys = UI["list_open"] + ["DOWN"] * 26 + [UI["list_confirm"]]
+        keys = UI["list_open"] + ["DOWN"] * 27 + [UI["list_confirm"]]
         ev = [(500 + 300 * i, "press", k) for i, k in enumerate(keys)]
         r = e.run("gran", 500 + 300 * len(keys) + 1500, ev, answer=False)
         G = r["snap"]

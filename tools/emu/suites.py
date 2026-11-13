@@ -69,21 +69,23 @@ SUITES = {
     "fxin": dict(mods={"0030", "0022", "0024"}, est=43),
     "td":   dict(mods={"0023"}, imports={"us"}, est=37),
     "frz":  dict(mods={"0029"}, est=22),
+    "sa44": dict(mods={"0021", "0026", "0014"}, imports={"us", "sfx"}, est=120),   # 0.5.0: SAMPLER on a 0.4.4 Rytm (needs build/emu/f44b)
+    "pm":   dict(mods={"0026"}, imports={"rui"}, est=160),   # 0.5.0: the Rytm's own params modulated (ops 04..07)
 }
 # rled's 24 tests by their dtboot runs (rel0-3-0's job dir): stockupkeys 254, stockup 116, stocktrigup 44, upstock 38,
 # menustock 23 (long runs), upamp 20, the rest 6..18 each. Every rled test is independent (Emu keeps no run state;
 # stock_kw makes sections/rled_stock.snap only when it is missing: then rled is not sharded, see shards()).
 RLED_UPKEYS = ["TRIG", "SRC", "SMPL", "FLTR", "AMP", "LFO", "FX", "YES", "NO", "RECORD", "PLAY", "STOP", "PAGE",
-               "BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB", "T14", "T15", "T16"]
+               "BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB", "T14", "T15", "T16", "LEFT", "RIGHT"]
 RLED_REST = ["levelhdr", "stocktrktrig", "stocktrkfx", "stockyes", "kit", "hostclose", "stockcombo", "combo", "leds",
              "ledexit", "bad", "trigs", "trkled", "upmap", "menustock", "upmappage", "stocklockpush", "upmaplist",
-             "upmapmenu"]
+             "upmapmenu", "upt14", "uplr", "uplrclaim", "stockuparrows"]
 RLED_SHARDS = [   # (tests, env, est s after the stock_state peek change)
     (["stockupkeys"], {"UPKEYS": ",".join(RLED_UPKEYS[0:10])}, 260),
     (["stockupkeys"], {"UPKEYS": ",".join(RLED_UPKEYS[10:19])}, 240),
-    (["stockupkeys"], {"UPKEYS": ",".join(RLED_UPKEYS[19:28])}, 240),
+    (["stockupkeys"], {"UPKEYS": ",".join(RLED_UPKEYS[19:30])}, 290),
     (["stockup"], {"STOCKUP_KEYS": "6-9"}, 170),
-    (["stockup", "stocktrigup"], {"STOCKUP_KEYS": "10-13"}, 290),
+    (["stockup", "stocktrigup"], {"STOCKUP_KEYS": "10-14"}, 290),
     (["upstock", "upamp"] + RLED_REST[:7], {}, 330),
     (RLED_REST[7:], {}, 260),
 ]

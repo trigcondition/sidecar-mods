@@ -2395,3 +2395,444 @@ order), `dinbad`, `dinburst` (1000 messages at once: no fault; the emulator's UA
 `45 01 <track> <lo7> <hi3>` both ways. The MIDI task queues a host write; `arp_tick` (UI task, behind `mr_tick`) writes the active kit's live sound and the project copy, then compares the 12 sounds with what it last said and reports a change: a kit or
 pattern change, a load, a paste and a reload all land there; a hello or an open reports all twelve. Cost: 12 byte compares a tick, 10 B a change. It does not follow a sound lock. Hello caps bit 3 (15). UP + FLTR: 30 page 4 (the ARP page), not under a
 held trig; stock leaves it free [rled_emu.py stockupkeys, UPKEYS=FLTR]. 0022's router passes 45. The design of what the code means: rytm-teensy core/arp/arp.h.
+
+
+## 0.5.0: the QUICK PERF knob, the Rytm's scene, a host command (plan-050 Tasks 46, 47; emulator only)
+
+Host half: rytm-teensy core/mod/scene.h (the QPERF knob as the morph fader), core/mod/rytm_out.h (the host command).
+Tags: [measured] rytm-emu `feature/qperf` (the pot modelled, `--qperf-sweep`) on the stock images, [code] the
+disassembly; every address below is 1.73's, 1.74's by the map (`re/os/1.74.toml`; the code at each one is 1.73's byte
+for byte once translated [code, `compare`]). The RAM ones are `[[data]]` entries in both OS tomls, each checked against
+the stock instruction that names it (`tools/ostarget.py data OS`).
+
+**Task 46, what the stock OS has (2026-11-05):**
+
+| what | where | how known |
+|---|---|---|
+| the pot's position, u32 0..255, never cleared | 0x42f9210c, both OSes | [measured] tests/qperf.rs on 1.73 and 1.74: follows every step of a sweep; the panel parser's kind-4 store `move.l d0,0x42f9210c` (0x40082184 / 1.74 0x400821f0) |
+| its time stamp (cleared when posted) | 0x42f92110 | [code] the same case, 0x4008217e |
+| FUNC held | panel key state 0x418d1340 + 6, bit 5 (0x20) | [measured] FUNC held: byte 6 = 0x20, else 0 |
+| the macros on the pot (12 bits) | kit + 0x9bb, a long clamped to 0..0xfff by its reader | [code] accessor 0x400a6da2 (the type-5 handler's), on the object app + 352 |
+| the active scene | kit + 0x97e: 0..11, 0xff off (kit 0: 0x41256261) | [measured] SCNE + SD: 01; CC 92 = 3: 02; CC 92 = 0: ff; watch: the only writer is scene_set 0x400a7d68 |
+| the mutes | the mute object's + 0x20, bit t = track t (0x41318997 + 3) | [measured] CC 94 on BD's channel and MUTE + SD: written by mute_set 0x400b7902; 0x407c23c3 (SEQUENCER.md's word) is a copy 0x40009a74 makes |
+| the PERF macros' live amounts | SRAM 0x8000e57c, 12 x i16, value << 8 | [measured] CC 35 = 0x64: 0x6400 by 0x4011f69e |
+
+`app()` is 0x4017f83e (a singleton, built at boot: 0x419f28a8). The kit is what the object's virtual +52 returns
+(app + 352: the active kit's record, 0x412558e3 + 2531 x kit, the base 0026's MACHINE_OF uses).
+
+The stock paths behind the three host ops [measured: `--break` at each setter, the caller and the running task's TCB
+(0x42f67924)], 1.73 and 1.74 alike:
+
+- **SCENE:** `scene_set(app + 352, scene 0..11 / -1 off, send)` 0x400a7d04. The SCENE pad (UI task, TCB 0x41943f00) calls
+  it through 0x400d1840 with send 1; **CC 92** (the MIDI task, TCB 0x418f4c20) jumps to it from 0x4008558a with
+  `value - 1` and send 0 (no CC echoed).
+- **MUTE:** `mute_set(app + 48, track 0..11, on, send)` 0x400b786c: **a setter** (bit set or cleared, observers told),
+  not a toggle. The MUTE pad calls `mute_toggle` 0x400b79ca (reads the bit, calls mute_set with its inverse, send 1);
+  **CC 94** (MIDI task) jumps to mute_set from 0x400854fe with on = value != 0, send 0.
+- **PERF:** **a PERF CC** (MIDI task) goes 0x400855b0 -> 0x400b0498 (finds the CC in the 12-entry table 0x401ddf44)
+  -> `perf_amount(perf(), macro 0..11, value << 8)` 0x400b90a4, `perf()` 0x40194888 (a singleton). The pot instead
+  calls `macro_set` 0x400b2bfe (the UI task), which skips the amount when the kit's state (+0xa0) is 2 and posts the CC.
+- All three are what the OS itself runs **from the MIDI task**, without a lock of its own around them (the MIDI-in
+  dispatcher 0x40082fce calls them directly) [code]. 0026's rui_sysex runs in the same task [measured: TCB 0x418f4c20 at its entry, a
+  3C over USB] (0022's router, the MIDI-in SysEx path), so the host command calls them there, as a CC would: no UI-task queue.
+- The macros-muted flag (FUNC + QPER): not found. A watch on the kit state words (+0xa0, +0xa4 of the object macro_set
+  reads) saw no write on FUNC + QPER or FUNC + PERF. The report's flags bit 2 stays 0.
+
+**SAVE KIT while the Sidecar holds a scene or a macro** [measured, stock 1.73: CC 92 / CC 35 as the host command calls
+the same setters]: a scene set, YES + PLAY MODE (save), the scene changed, NO + PLAY MODE (reload): **the reload brings
+back the scene set before the save** (kit + 0x97e: 02 after scene 3) - **SAVE KIT stores the active scene** (it is a
+kit field; without the save the reload gives 0xff). The macro amounts: not restored by a reload, and the kit record is
+unchanged by a save with an amount set (2531 B compared): they are live state, not saved with the kit. **For the
+owner** (spec-050 5.2's risk row): a scene the Sidecar engages (RYTM:SCN) is saved with the kit as a scene the user
+engages on the pads is; the macro values are not.
+
+**The poll rate:** 0026's fastest periodic hook is ev_render_in (rui_render_in, the audio interrupt's entry, 1500 a
+second [measured, fp.blocks]); the UI tick is 50 ms. So the pot is polled there, one load a block, no detour of the
+type-5 handler, and the report leaves from the interrupt by isr_send (0021's rules: the mutex free, no stock SysEx under
+way, room in the ring and the request pool; else the next block), at most one per 12 blocks (8 ms).
+
+**Task 47, what 0026 does with it** (the wire as rui.c's "0.5.0" block; rytm-teensy sim/protocol.py SEQ_QPERF,
+SEQ_SCENE, HOST_CMD, HOST_ACK; the engine's side core/mod/scene.h `qperf`, `rytm_scene_seen`, core/mod/rytm_out.h):
+
+- **2D 01 0E <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>**, Rytm -> host, from the audio interrupt (qp_isr in
+  rui_render_in, every block): pos the OS's word & 0xff; mask the kit's macros on the knob (the stock accessor's value,
+  clamped as the type-5 handler clamps it; read at the UI tick); flags bit 0 FUNC held, bit 1 the knob has sent since
+  boot (the word or its stamp changed since 0026's first block, or the word was not 0 then: the MCU's message can only
+  have put it there), bit 2 macros muted: 0 (not located). Sent when any of them changes, or a hello owes one, at most
+  one per 12 blocks (8 ms), by isr_send (none while the mutex is held, a stock SysEx is under way or the ring / pool is
+  short: the next block tries again); nothing before this connection's hello (qp.hello, cleared when the port drops:
+  Phase 7 review L4) or while the port is down. The newest value goes
+  when the gap allows: values in between are skipped, the last never is.
+- **2D 01 0F <n>**, Rytm -> host, the UI tick: the active kit's scene byte (kit + 0x97e) as 1..12 / 0, on a change (the
+  pads, CC 92, the host command, a kit load or reload) and after each hello.
+- **5A 01 <op> ...**, host -> Rytm (0022's router passes 5A with rui=1), the MIDI task (sysex_body -> qp_cmd):
+  01 MUTE `<set lo7> <set hi5> <clr lo7> <clr hi5>`: mute_set(app + 48, t, 1 / 0, send 0) for each track named (set
+  wins over clr): a setter, so nothing is read first and nothing toggles. 02 SCENE `<n 0..12>`: scene_set(app + 352,
+  n - 1, send 0). 03 PERF `<macro 1..12> <value 0..0x7f>`: the amount value << 8 through the macros' owner, as a PERF
+  CC (a value byte above 0x7f is refused: USB-MIDI does not enforce 7-bit SysEx data; review L2).
+  Anything else (a bad op, length or range) is refused. Each is answered **2D 01 10 <op> <status>** (0 done, 1
+  refused) from a 4-place queue the UI tick empties (a fifth before the tick: run, its answer dropped, ack_drop).
+  A refusal the full queue would drop is kept apart (ref_op, ref_n: the latest such op) and sent after the queue
+  (review L1): the host acts only on refusals (back to CCs), so a dropped "done" loses nothing and a refusal is never
+  lost; every op is a setter, so a repeat or a reordered answer changes nothing. The entry's stores are ordered before
+  the index that publishes it by a compiler barrier (review L3). The port dropping discards the old connection's
+  answers.
+- **Hello caps bit 4 (16)**: the host command and these reports (caps 31).
+- Cost: the area grows 1064 B in the rui test set (32,344 -> 31,280 B spare); per block a few loads and compares; per UI
+  tick the accessor, the kit getter and a compare.
+
+Tests [measured, tools/emu/rui_emu.py with RYTM_TEENSY's sim/remote_ui.py logging the 2D reports, rytm-emu `feature/qperf`]:
+`qperf_report_sweep` (a 60 / s sweep: every position; a 1 ms sweep: never two reports within 12 blocks (qp.gmin), on
+average 8 ms apart, the last position 255), `qperf_flag_moved_since_boot` (the hello's report: pos 0, flags 0; QPER + BD:
+a report of the new mask; the move: bit 1; FUNC: bit 0 and back), `scene_report` (0, CC 92 = 3, SCNE then SD, CC 92 =
+0), `host_cmd_mute_toggles_only_differing` (BD muted by CC 94; set BD + SD: 0x003; clr BD + LT: 0x002), `host_cmd_scene`,
+`host_cmd_perf`, `host_cmd_ack` (refusals; caps), `host_cmd_perf_8bit` (PERF 0x80 refused, the amount untouched),
+`qperf_replug_waits_hello` (the host gone and back while the knob moves: no 2D 01 report before the new hello),
+`save_kit_while_held` (Task 46's result kept as a regression: the scene
+saved with the kit, the macro amount not; no 2D 0B). SCNE held + a pad selects nothing on stock [measured]: the scene
+test taps SCNE first. NO + PLAY MODE right after a save does nothing: the test presses NO four times first, as
+pj_emu.py's kit tests do.
+
+
+## t14: UP + T14 asks for page 14 (MORPH) (0.5.0, emulator only)
+
+The 0.5.0 host's page map (rytm-teensy core/ui/page_keys.h `sc_rytm_mk2_pages`) puts MORPH on code 14, UP + T14. rui.c
+forwarded UP + T1..T13 only (`code <= 12`); now `code <= 13` in rui_key (the 1036b block): UP held + T14 is eaten (press
+and release), sets `dp.page_req` = 14 (49 1 1 14 from dp_tick), counts in `dp.pages` and marks the hold a combo
+(k44.up_trig: no map at UP's release), as T1..T13 do. The build changes one instruction: `moveq #12,%d6` -> `moveq
+#13,%d6` at rui_key + 0xa8e (0x47bedd14 in the area, the rui test set); same size, no code space used (area spare
+30,652 B before and after). No stock address: the area is the same on 1.73 and 1.74.
+
+**Stock first** [measured, rytm-emu, the stock images 1.73 and 1.74, `rled_emu.py stockupkeys` (UPKEYS=T14,T15,T16) and
+`stockup` (STOCKUP_KEYS=14-16)]: on both OSes UP held + T14 / T15 / T16 is FREE in all four stockupkeys contexts (main
+screen, GRID REC, GRID REC with T1 held, GLOBAL's menu) and leaves what the trig alone leaves plus what UP alone leaves
+in stockup's six (main, GRID REC, FLTR, CHRO, MUTE; the menu: UP tapped, then the trig). A control: T14 alone in GRID
+REC changes BD's pattern words on 1.74 too (the 1.73 RAM address holds there). So T14 takes no stock combo.
+
+**T15 / T16 stay stock's.** Stock leaves them free as well, but no page of the host's asks for them (the map ends at
+14); taking them would only eat a trig for nothing. They are the next free page keys if a page needs one: then a
+`code <= 15` here and a row in the host's table.
+
+**An older host** (0.4.4: no page 14 in its table): `49 1 1 14` fails `sc_page_of_code` in remote_sysex's kDisplay
+case, falls to the end of the switch and counts `s.stats.bad` (core/ui/remote.cpp at v0.4.4 and 0.5.0 alike): no page,
+no popup, nothing else. On that host UP + T14 does nothing (before: T14 alone, stock's).
+
+**LEDs.** The trig LEDs are the host's 34 (T1..T16, any slot) whenever it sends one; UP held shows the host's map (KEYS,
+keys_leds: T14 amber 63 for MORPH, a Rytm-screen page). [measured, `rled_emu.py upt14`]: with the page open and UP's
+map over it, a 34 with T14 = 63: LED 13 holds 63 in every slot, through the UP + T14 press as well.
+
+Tests [measured, `rled_emu.py upt14`, t14a = feature/qperf 9fe8039 (syx b501059b..), t14b = this change]: GRID REC,
+UP + T14: 49 1 1 14, no map, no 31, BD's track as without the T14 press; UP + T15 / T16: no 49 1 1, the trig placed
+(stock's); page open, UP's map up: 49 1 5 1, UP + T14 -> 49 1 1 14 and no 31 for T14; LED 13 amber. On t14a three
+checks FAIL (no 49 1 1 14, the trig placed on BD, T14 sent as 31 0 13); on t14b all pass. `upstock` now checks T15 /
+T16 (T14 is the Sidecar's) and `stockup` runs to T14 (its second shard 10-14).
+
+## Browser FUNC: FUNC-held keys in the list as 31 .. 2 (0.5.0, emulator only)
+
+The sample browser's FUNC keys (preview, file menu, bank -/+). Until now the host could not tell them apart: `ls_key`
+forwarded LEFT..NO as `31 <code> 1/0` with no FUNC information. **While the list is open (`ls.on`, the slot list or the
+host's file browser)** a forwarded nav press (LEFT RIGHT UP DOWN YES NO) made with FUNC held (the same
+`stock_down | both_down | our_down` test as 1040's FUNC + YES) is queued with down byte **2**: `31 <code> 2`. Its release
+stays `31 <code> 0`; a plain press stays 1. `queue_key` stores the byte as given (0, 1, 2); flush sends it as is.
+
+- **Slot list:** FUNC + LEFT / RIGHT / UP / DOWN -> 2. **FUNC + NO** is forwarded (2) instead of closing the list: it
+  is the host's (a clear key); plain NO still closes (4A why 2). FUNC + YES still opens the browser (1040 / 1049, 4A 3,
+  its YES never a 31).
+- **FM's / JUNO's preset list** (`ls.mach` 40 / 41, 0.4.0): FUNC + NO closes the list as plain NO does (4A 0 why 2,
+  not forwarded: no 31). The host closes its preset list on that 4A, so both sides close together; forwarding
+  `31 NO 2` as well would reach the host after the 4A (flush sends the list's 4A before the keys) as a stray NO.
+- **The host's browser** (after its 4A 1): FUNC + any of the six -> 2.
+- FUNC itself is never a 31 and stays stock's; outside the open list nothing changed.
+- **Hello caps bit 5 (32)** says this build does it (the hello's caps 31 -> 63).
+- **An older host** reads any non-zero down byte as a press (core/ui/remote.cpp `b[2] != 0`), so 2 is today's press.
+  With an old host FUNC + NO in the slot list does nothing (the host drops a NO outside its browser; before, the list
+  closed): plain NO closes it.
+
+No stock address is new (code in the area only); nothing to port for 1.74. Area spare 30,652 -> 30,640 B.
+
+Tests [measured, rytm-emu-mdpage, `bk_emu.py TAG browsefunc`]: bfa's baseline t14b FAILS (FUNC + RIGHT/LEFT/YES as 1,
+FUNC + NO closed the list); bfa passes: in the list FUNC + RIGHT / LEFT / NO -> 2, plain RIGHT 1, FUNC + YES -> 4A 3; in
+the browser FUNC + YES / RIGHT -> 2, plain YES / DOWN 1; releases 0; no 31 for FUNC; the list closed: FUNC + RIGHT
+sends nothing. `rui_emu.py splash` and `pj_emu.py hello` expect caps 63. Regressions `browse dspbrowse list dsplist` pass.
+The preset-list FUNC + NO [measured, `bk_emu.py TAG preset`]: bfa FAILS (31 45 2 / 0, the list stayed open), bfd
+passes for JUNO and FM (4A 0 why 2, no 31, PAT unchanged).
+
+## Preview level: knob H in the host's browser (0.5.0, emulator only)
+
+The owner's hardware test of the 0.5.0 browser (mods 0.5.0-dev 27fe3653): the preview was too quiet and should have a
+level knob on one of the browser view's unused encoders. Until now `ls_enc` closed the list (why 3) on any knob but
+A, so no other turn reached the host while a Sidecar list was open. **While the host's file browser is open
+(`ls.on && ls.browse`, from FUNC + YES / 4A on 3 until the host's 4A 0 or the close)** a turn of **knob H (encoder 7,
+`LS_PREV_KNOB`)** is summed into `st.acc[7]` and flushed: the host gets `32 7 <delta + 64> <func>` (the func byte is
+not refreshed on this path; the host ignores it for knob H) and the turn is eaten (stock's P8 unchanged, the list
+stays open). `ls_close` clears `st.acc[7]` with `st.acc[0]`. In the slot list (`ls.browse` 0), and for every other
+knob, nothing changed: the list closes (why 3) and the turn is stock's. No caps bit: an older host gets `32 7` with
+its page closed and ignores it (core/ui/remote.cpp: `src_bank_enc` false, `on_enc` only with the page open); with an
+older 0026 the host never sees knob H in the browser. The host: PREVIEW LEVEL (rytm-teensy docs/SRC-BANKS.md 8).
+
+The hold preview needed no change: in the host's browser a FUNC-held YES goes out as `31 44 2` and its release as
+`31 44 0` while FUNC is still held (`ls_release` forwards the release of every forwarded nav key; FUNC itself is never
+forwarded) [measured, below and `browsefunc`]. The host stops the preview on YES's release.
+
+No stock address is new (code in the area only); nothing to port for 1.74. elekloader RAM spare 29,648 -> 29,616 B.
+
+Tests [measured, rytm-emu-mdpage, `bk_emu.py TAG browseknob`]: the baseline ph0 (feature/up-t14 5d789f1) FAILS (knob H
+closed the list, why 3, and edited P8 0x0000 -> 0x2000); ph1 passes: in the browser knob H -> 32 7 (+16 +8 +8), 4A
+stays [on, 3], P8 unchanged; FUNC + YES held 250 ms with FUNC held over it -> 31 44 2, 31 44 0; after the host's 4A 0 0
+knob H closes the list (why 3) and edits P8; knob B in the browser still closes it. Regressions `browse browsefunc list`
+pass.
+
+**Review fixes (ph2).**
+- M1: not in FM's / JUNO's card-preset browser (`ls.mach` 40 / 41: FUNC + YES there opens the host's preset files,
+  also `ls.browse`). There knob H closes the list (why 3) and edits stock's P8 as before; the host has no level there.
+- L1: `st.acc[7]` is also cleared when the browser ends without a close (the host's 4A <t> 0, the 1 s no-ack timeout),
+  so a remainder a busy USB left behind never goes out as a stray `32 7`.
+- Tests [measured, `bk_emu.py ph2 browseknob preset browse browsefunc`, ALL PASS]: on JUNO and FM, FUNC + YES -> 4A on
+  1 / 3 (why 6), the host's 4A 0 1, knob H -1 x 6 -> 4A 0 why 3, P8 0x7f00 -> 0x7600, no 32 7 (ph1 FAILS: 32 7 sent,
+  P8 kept; ph0 passes); browseknob-off: no 32 7 after the host's 4A 0 0. L1's remainder needs a refused USB send and
+  has no emulator test.
+- elekloader RAM spare 29,616 -> 29,572 B. 1.74: port 1344 / 0 refused, check none refused, data ok, crosscheck 0
+  problems and 9 LOOK words: the 8 known ones and one inside the new 0026 block whose value moves with the code
+  (ph1 +0x6098 0x40204cd7, ph2 +0x65d6 0x40164fef; ph0 has only the 8): instruction bytes, not an address.
+
+## SAMPLER: machine 43's labels, texts and SMP list (0.5.0, emulator only)
+
+0021 makes machine 43 SAMPLER (its design.md "0.5.0: SAMPLER": flag 0x20, tag 0x29C1 = bytes 53 41, P1..P8 reported 0).
+0026's part, MULTISAMPLE's path:
+
+- **Names and mask** (registry): 0x401bf0fc / 0x401bf100 = `cu_sa_name` "SAMPLER" / `cu_sa_short` "SMPR"; mask
+  0x401bf1d2 = ffff (home -1, every voice). `mr_flag[8]` 0x7f -> 0x20: its 33 says machine 43, voice byte 0x20.
+- **Records:** its SRC row (0021's registry patch) is 441 (SMP, DSP SAMPLE's) and the shared sample-word records
+  `cu_p2`, knobs A..H 441 460 403 459 / 438 457 404 405 = SMP STRT END PLAY / TUNE FINE LOOP LEV (owner, 2026-11-12;
+  was 441 438 457 459 / 460 403 404 405). `cu_tab(43, 1)` = `cu_sap2k`, in word order 17..24 (the entry for word 19 is
+  unused: SMP is 441), set up by `cu_setup` through 0021's us_page_record (every UI tick for the selected track) and
+  `cu_prep` / `cu_defs_tick` at a choice (words 17..24 = 64 64 0 0 0 120 0 100). `cu_tab(43, 0)` = 0: the SRC records
+  `cu_src` are not touched. Group SMPR.
+- **`struct cu_knob` gets lo / hi** (in the padding: still 16 B): `cu_knob` sets the record's range lo..hi when hi is
+  not 0 (else 0..127 as before). TUNE 4..124 with the stock SMPL TUNE look (39: -60..+60), STRT END LOOP 0..120.
+- **Texts:** PLAY kind 33 (9 zones, `v x 9 >> 7`: FWD REV FLP RLP SLICE GRAIN STRCH PLUCK WAVE), steps 0x109 (0029's
+  zones: 0 15 29 43 57 72 86 100 114); LOOP kind 19 (0 OFF, else the number); SMP 441's kind 12 (the SAMPLES list's
+  names, banked) as DSP SAMPLE's.
+- **SMP list on knob A** as DSP SAMPLE's: `SMP_M(m)` (45 or 43) in `ls_enc`, 1049's FUNC + YES, 1046's UP + SRC and
+  the 48 lock (P11 with trigs held); `sv_word`'s knob map for 43 (since the 2026-11-12 layout change): P11 A, P13 B, P14 C, P12 D, P9 E, P10 F, P15 G,
+  P16 H, P1..P8 none (was P11 A, P9 B, P10 C, P12..P16 D..H).
+  The host's 48 to P9..P16 answers 1 (busy) until the shared records are SAMPLER's (as LIVE IN / CHOP / MIDI).
+- **No caps bit** (bit 6 stays free): the host knows SAMPLER by the 33's machine byte and the reports' tag.
+
+No stock address is new beyond the three claims above (1.74: moved, see 0021's section). Area spare 30,628 (bfd) ->
+29,900 B (saa).
+
+Tests [measured, rytm-emu-mdpage]: `cu_emu.py TAG sa` (names, row, labels, group, ranges, defaults, the 04: 0x20, P1..P8
+0, P9..P16 the words, tag 53 41), `saknobs` (TUNE 4 / 124 and -60 on the glass, PLAY zones to 114 WAVE and its text, LOOP
+0, END 120), `bk_emu.py TAG salist` (4A with P11, the 48 write, the lock on held steps): fail on bfd, pass on saa.
+
+### SAMPLER after the review (0.5.0, emulator only)
+
+- **SMP kept from a sample machine (owner):** a choice of SAMPLER writes words 17..24 = 64 64 . 0 0 120 0 100 and keeps
+  word 19 (SMP) when the track came from DSP SAMPLE (45) or SAMPLER (43), the machines whose word 19 is a host sample
+  (`SMP_M`); from any other machine SMP is 0 (OFF), from a stock machine too (its word 19 is stock's own sample slot).
+  "Came from" is `cu.home`, the selected track's machine taken every UI tick while the machine list is not on top (so
+  the list's previews on the way do not count), copied to `cu.dfrom` where the choice is noted (cu_prep, cu_steps'
+  SOUND-menu path), and only when the chosen track is the track `cu.home` was taken from (`cu.home_t`), else SMP 0.
+  `cu.home` / `home_t` are frozen while the list is up (a pad press closes the list and selects that track; measured,
+  `cu_emu sakeep`). Known limit (re-review F2): in the SOUND menu every step is a choice, so from DSP SAMPLE the steps
+  pass PLAITS (44) first and SMP is 0: SMP is kept only through the machine list. Choosing SAMPLER again on a SAMPLER
+  track is no machine change: nothing is reset.
+- **The host's 48 to SAMPLER's SMP (P11)** is never busy: its record is DSP SAMPLE's own 441, not a shared one (review
+  M1; the host's sample editor writes P11 to tracks that are not selected and does not retry). After the re-review
+  P9..P16 are never busy for SAMPLER either: the shared page-2 records (438 457 458 459 460 403 404 405) have kind
+  0x36 (>= 53, measured on base, 43, 52 and 48), so the drain writes the kit word whatever machine they are set up for,
+  and kit_param_changed does not clamp to the record's range. Only the SRC P1..P8 of the shared-SRC machines need the
+  busy (their cu_src records' kind is the machine); LI / CP / MI keep their precautionary page-2 busy, MS / WT / GR / FM
+  have none.
+- **49 1 3 for SAMPLER** sends the labels of P1..P8 with value 0 (re-review F4; the host labels SAMPLER from its own
+  table).
+- **P1..P8 0 in the 2A and in 49 1 3** too (`sv_word`, `dp_tick`), as in the 03 / 04.
+- **Record 458** (word 19's shared record, not on SAMPLER's page) is labelled "-" while SAMPLER is set up.
+
+Tests [measured, rytm-emu-mdpage]: fail on saa, pass on sac: `cu_emu sa` (458 "-"), `sakeep` (DSP SAMPLE -> SAMPLER keeps
+SMP 2, LEV back to 100; BD PLASTIC with stock SMP 3 -> 0), `bk_emu salist` (2A and 49 1 3 P1..P8 0), `sabusy` (48 1 10
+on SD's SAMPLER with BD MULTISAMPLE selected: 0 and written; 48 1 12: 1). Pass on both (the review's gaps): `cu_emu sadsps`
+(DSP SAMPLE's 04 tag 00 00, records 39 / 441 unchanged), `sarestore` (SAMPLER -> MULTISAMPLE: 438 457 458 0..127),
+`sasound` (SAMPLER by the SOUND menu: the defaults), `bk_emu saopen` (UP + SRC, FUNC + YES), `browsefunc` (FUNC + UP /
+DOWN -> 2). `sa44` is a suite in suites.py now. Area spare 29,900 (saa) -> 29,684 B (sac). Re-review (sad): fail on sac, pass on sad: `bk_emu sabusy` (48 1 12
+STRT 30 and 48 1 8 TUNE 100 to SD's SAMPLER with BD MULTISAMPLE selected: 0 and written; BD and SD both SAMPLER: 48 1
+11..15 to SD written), `sa44_emu` boot48 (48 1 12 / 1 8 / 1 10 to SD's SAMPLER after a cold boot, p2m 0: 0 and written).
+`cu_emu sakeep` adds SAMPLER -> SAMPLER and the pad-with-list-open case (pass on both).
+
+## pm: the Sidecar modulates the Rytm's own sound parameters (0.5.0, emulator only)
+
+The contract and the owner's decisions are in the maintainer's design notes (the param-mod contract: OWNER
+DECISIONS O1 / O3 / O5, M0 ANSWERS, CONTRACT CHANGES), with the research beside them. This
+section is the Rytm side's map: every address it uses and what it means. 1.73 first, 1.74 in brackets (both from
+`tools/ostarget.py check` / `data`; the RAM addresses are the same on both and have `[[data]]` entries in
+`re/os/1.73.toml` and `re/os/1.74.toml` naming the stock instruction that uses each).
+
+**What it does.** The host sends 5A 01 04 OFFSET / 05 OVERRIDE / 06 CLEAR / 07 STATUS (rui.c's protocol comment above
+`pmo_word_ok`). Per (track t 0..12, word w) one entry of 128: an offset and an override with a mix. Words: 1..41 the
+sound words (not 0 and 4; the FX track 12 has no 29, 38..41), 48..51 VELOCITY MOD 1..4 and 52..55 AFTERTOUCH 1..4
+amounts (offsets only, tracks 0..11), 56 trig velocity (tracks 0..11). The MIDI task checks a message (`pmo_cmd`, from
+`qp_cmd` for ops 4..7) and pushes 8-byte records into a 256-record ring (one writer, one reader; a full ring counts
+`ring_drop`); a message for another kit is dropped (`kit_drop`), and each record carries the kit byte (`pad`) so the
+drain drops one pushed for the kit before a change too. The audio interrupt owns everything else.
+
+**The sites.**
+
+| site | 1.73 (1.74) | what |
+|---|---|---|
+| `jsr lfo_block` in the block ISR, 6 B | `0x40120fae` (`0x4012101a`) | detour `pmo_lfo_det`: `pmo_pre`, the stock `lfo_block` `0x4009e790` (`0x4009e7fc`) with its argument re-pushed, `pmo_post`, back at `0x40120fb4` (`0x40121020`). The site of the unreleased 0004 (O5: mod.toml `excludes`) |
+| trig_fire, 6 B `movel %sp@(60),%d0; addal %a2,%a3` | `0x4009afa0` (`0x4009b00c`) | detour `pmo_vel_det`: the two instructions re-emitted, `d0 = pmo_vel(track 92(sp), velocity 60(sp))`, the step's own velocity << 8 at 72(sp) (-1 none) rewritten as 0003 did; back at `0x4009afa6` (`0x4009b012`). The site of the unreleased 0003 |
+| stage E's route4 | `0x4011ddbe` (`0x4011de2a`) | called as stage E does, `(s32 src, {u16 amount, u16 g} x 4)`: `eff[g] = sat(eff[g] + (src x amount x 2) >> 16)` (EMAC, MACSR 0x20 as the LFO code leaves it) |
+
+**The RAM it reads and writes** (SRAM, g = 26 + 42 t + w):
+
+| address | type | meaning | pm |
+|---|---|---|---|
+| `0x8000f774` | u16 [g], 8.8, 0..0x7fff | the effective words the voices read; stage A rebuilds them from the state every block | writes: `eff = clamp(eff + mix x (ovr - base) + off)` |
+| `0x8000ee84` | u32 [g], value << 16 | the smoother's state; holds a p-lock for the whole step (M0a) | reads: the override's base |
+| `0x8000ecac` | u16 [48] | the active scene's locks' g (25: none) | reads: the scene mask (O3) |
+| `0x8000fce8` | u32 | a scene engaged (stage D writes its locks) | reads |
+| `0x800067c4` | u16 [t], velocity << 8 | the last trig's velocity, stage E's VM source | reads |
+| `0x8000e53c` | u32 [t] | bit 3: stage E adds effective word 39 (ACC) to the source | reads |
+| `0x800067de` | s16 [t] | the aftertouch, stage E's AT source | reads |
+| `0x8000ea3c + 32 t` | {u16 amount, u16 g} x 4, then AT x 4 at +16 | the VELOCITY MOD / AFTERTOUCH routes, copied from the sound (`+0x70` / `+0x8c`, 3 B a route) by 1.73 `0x4011f59e` (1.74 `0x4011f60a`) | reads: each route's g |
+| `0x800067b8` | int | the active kit (0026's `ACTIVE_KIT`) | reads: a kit change frees every entry |
+
+Nothing else is written: not the kit, the sound, the pattern, the screen. The trig velocity changes the stack copy
+in trig_fire only (test `velocity`: the pattern's 85760 bytes as without an entry).
+
+**Stage S, per block** (`pmo_pre` before the LFO, `pmo_post` after it):
+
+1. A kit change (`ACTIVE_KIT`) or a reload (`kt_reloaded`, `pmo.reload_n`): every entry freed at once. A new hello
+   (flush, `pmo.hello_n`) or a USB port drop (`pmo.lost_n`): everything fades to 0 over 32 blocks (21 ms), and the
+   records still in the ring (the old link's) are discarded (`link_drop`): no drain that block (re-review N1 / N2).
+2. Drain at most 64 records from the ring (`pmo_take`): an offset sets its target and ramp, an override its value
+   (at once for a new one) and its mix target (ramp 0 with the jump flag). CLEARs in a row are ORed into one mask
+   (the last one's ramp) and faded once after the drain; a record after them waits for the next block, so a block
+   makes one CLEAR pass at most (review F1: 64 CLEARs had been 64 passes, 816 us). Merged CLEARs fade with the last
+   one's ramp (re-review N5: the host sends one 06 at a time, so this is harmless). A new entry takes a slot from the
+   free-slot stack (`fstk`, pushed when an entry is freed) or the next one above the top: O(1) (review F3).
+3. 375 blocks (250 ms) without a 04..06: a timeout, everything fades out (`timeouts`), unless the block already
+   faded (a hello, a port drop, a CLEAR): then the next block. So a block makes one fade pass at most.
+4. With a scene engaged and an entry live: the 48 scene g into a 572-bit mask, every block (so an override's
+   first block already sees it; review F4).
+5. One pass over the entries: the ramps; an entry with offset and mix at 0 and no ramp left is freed; words 1..8
+   applied (LFO 1's own settings, which `lfo_block` reads); VM / AT offsets collected per track.
+6. VM / AT: the sources as stage E took them (velocity + accent, aftertouch); each track's 8 routes read once into
+   both halves of `rtab` (into words 1..8 / 9..41, `rany` says which have a change); route4 for the routes into
+   words 1..8 now, the other half in `pmo_post` (re-review: building the tables twice had cost some 15 us). The accent word 39 is read here, after stages F / G: CONTROL IN or PERF on ACC
+   would shift the source slightly from the one stage E used (negligible; review F8).
+7. (the stock `lfo_block`)
+8. `pmo_post`: words 9..41 applied, route4 for the routes into 9..41, the VEL words for trig_fire (`pmo.velw[t]`:
+   s16 offset, override value, mix). When the last entry is gone the VEL words are cleared once (`vel_on`).
+
+**Ramps without a divide.** A ramp's step is `((d >> 9) x pmo_rcp[ramp]) >> 6` with `pmo_rcp[r] = 32768 / r`: no
+`divs.l` in the interrupt (on the V4e a divide takes some 35 cycles, which the emulator counts as one instruction, so
+the fades had looked cheaper there than they are). The last step snaps to the target.
+
+**Units.** OFFSET v (1/64 step) -> `off = v << 10` (8.8 << 8); OVERRIDE v (1/128 step) -> `ovr = v << 9`, mix 127 ->
+`1 << 23` (1.0), else `mix x 66052`. VM / AT: the stored amount is the displayed amount << 8 (M0c), so the wire's
+1/64 displayed step is `off >> 8` on the amount. VEL: `vel' = vel + (mix x (ovr - vel) + 64) >> 7 + round(off / 256)`,
+clamped 1..127 (so a VEL word turns a velocity 0 trig into 1: the contract's range; review F9).
+
+**Scene locks (O3).** A word in the scene mask keeps the scene's value: the override is skipped (counted, 07's flags
+bit 0 for 1500 blocks), the offset still adds (test `scene`).
+
+**Answers.** 07: `2D 01 11 <slots, 127 max> <ring drops hi lo> <kit drops hi lo> <timeouts, 127 max> <flags>` (15 B,
+the UI task's `pmo_tick` once the hello is out); slots full: `2D 01 10 <op> 2` at most once every 20 ticks; a
+refusal `2D 01 10 <op> 1` through `qp_cmd`'s kept-refusal path; a done 04..06 nothing. Hello caps 127 (bit 6).
+
+**Velocity and pads [measured].** The BD pad's trig does not pass trig_fire's velocity site (its velocity stays 127
+with a VEL entry): VEL acts on sequenced trigs only (CONTRACT CHANGES).
+
+**Cost [measured, emulator at 132 MHz, test `cost`, build pmg].** Stage S per 667 us block: idle 0.2 us; 16 entries
+6.6 us mean (15.8 max); 64: 20.5 (35.0); 128: 37.6 (51.0). Worst cases with 128 live: 64 CLEARs queued 57.3 us, 64 new
+entries into freed slots in a burst 77.7 us, a timeout fade of 128 65.6 us. The bound for any message mix: one pass
+over 128 entries (about 51 us), at most 64 records at O(1) each (about 27 us), at most one CLEAR fade (about 15 us) and
+a hello / port-drop fade (about 15 us; a timeout cannot meet a drained record, which restarts its clock): about 110 us,
+17 % of a block (estimated from the parts; the measured cases stay under 100 us). The real ISR's headroom is for
+hardware to show (the emulator's timing is not the Rytm's).
+
+**Tests** (`tools/emu/pm_emu.py`, suite `pm` in suites.py): caps, offset, ramp, stack, override, override_plock, scene,
+lifetime, kit, kitload, never_kit, velocity, vm, refuse, full, status, clear, fx, cost; after the review scene_first,
+ovr_ramp, hello_fade, and in kit / vm / cost: a record for the old kit in the ring, AFTERTOUCH, a route into words
+1..8, track 1, a route at none, the worst cases; the M0 probes m0a, m0c, m0d
+(not in `all`). On the baseline (5d789f1, build pma) the pm tests fail; on this build they pass.
+
+## fk: UP + LEFT / RIGHT ask for pages 15 / 16 (GENERATOR / FILL), when the host claims them (0.5.0, emulator only)
+
+The 0.5.0 host's track FILL menu opens on UP + RIGHT. Its PATTERN GENERATOR (0.5.1) will open on UP + LEFT. The design
+is in the maintainer's design notes (sampler lock fill, section 2). Before this change, 0026 did not handle UP with LEFT
+or RIGHT at all: both went to stock, or to an open page as 31s.
+
+**The wire.**
+- Rytm -> host: `49 1 1 15` is UP + LEFT (GENERATOR) and `49 1 1 16` is UP + RIGHT (FILL). These are the next page codes
+  after T14's 14, sent by dp_tick like UP + Tn's.
+- Rytm -> host: the hello gets a 4th data byte, caps2: `35 1 <up hi> <up lo> <caps> <caps2>`. caps2 bit 0 (1) means
+  "this build forwards UP + LEFT / RIGHT once claimed". The caps byte is full: bit 6 (64) is pm's. The host's kHello
+  reads `n >= 3`, so the extra byte is safe for every host since 1023. rytm-teensy sim/protocol.py's decoder needs
+  `len(b) >= 3`.
+- Host -> Rytm: the claim, `4A 7E <flags>`, flags bit 0 (1): "I take UP + LEFT / RIGHT" (0 gives them back). It sits
+  next to 0.4.0's `4A 7F <0/1>` (the presets flag), and bits 1..6 are left for later claims. fk2: any length from one
+  flags byte up is taken (`n >= 2`), only the first byte read, so a later longer claim is not a bad message here;
+  `4A 7E` without a flags byte counts rx_bad and leaves the claim as it was. A host sends it after each
+  hello whose caps2 has bit 0. An older Rytm counts `4A 7E` as a bad message (b[0] > 11) and nothing else happens.
+  The claim (`fk_claim`, written by the MIDI task) is cleared when the USB port goes down, as ls_host_presets is.
+
+**The rule: when the arrow is the host's.** UP must be held (stock's UP, page closed), and the arrow is forwarded only
+when all of these hold:
+- the host claims the keys;
+- the page is closed: on an open page UP and the arrow stay the page's 31s, so a host page reads UP + RIGHT itself
+  (FILL closes on it);
+- no splash is showing;
+- no bank list is open (its nav keys);
+- no stock menu, window, browser or list is on top (`up_cursor(sv.top_vt)`, 1051's rule: UP and the arrows are its
+  cursor);
+- neither TRK nor FUNC is held;
+- no trig is held: neither stock's in GRID REC (where stock uses a held trig + arrow for its popup or micro timing,
+  stocktrigup) nor seq mode's (where 1046's u46.seq takes UP).
+
+When all of this holds, the arrow's press and release are eaten (`st.eat`), `dp.page_req` = 15 / 16, the hold counts
+as a combo (k44.up_trig: no map at UP's release), and UP stays stock's. In every other case the arrow goes where it
+went before this change, and `fk.stock` counts it. Diagnostics: `fk.reqs[0]` / `fk.reqs[1]` count LEFT / RIGHT
+requests.
+
+**Stock first (E0)** [measured, rytm-emu, `rled_emu.py stockupkeys` UPKEYS=LEFT,RIGHT]:
+- On stock 1.73, UP held + LEFT / RIGHT is FREE in GRID REC, on the main screen and with T1 held in GRID REC: it
+  leaves what the arrow alone leaves, plus what UP alone leaves.
+- In GLOBAL's menu it is SEQ: UP tapped, then the arrow, each its own cursor move.
+- So, claimed, the combo takes no stock function. While UP is held, it only takes the arrow's own action (on the main
+  screen LEFT / RIGHT alone change the next-pattern words at 0x800067b0), as UP + T14 takes T14's.
+- The menu case is excluded by the up_cursor guard anyway.
+- Stock 1.74 gives the same table [measured, rytm-emu-qperf, stockupkeys on the rled_stock_os1.74 base].
+- **fk2 (review M3): the other contexts, measured** [`rled_emu.py stockuparrows`: stock 1.73 on rytm-emu-mdpage, the 1.74
+  port on rytm-emu-qperf]. UP held + LEFT / RIGHT is FREE on both OSes on the parameter pages SRC, SMPL, FLTR, AMP, LFO,
+  TRIG, with BANK A held (the pattern select) and in the pad modes CHRO, SCNE, PERF, MUTE: it leaves what the arrow alone
+  leaves plus what UP alone leaves, and the arrow alone changes only the word at 0x800067b0 (the next-pattern / kit words)
+  in each. Stock has no function of its own on UP + arrow there, so no guard is added: claimed, the arrow is forwarded in
+  all of these, and costs only that word's change while UP is held (as on the main screen). FX (the send FX page) was not measured.
+- **fk2 (review L3, documented, not changed):** UP pressed with the page open (so it reaches the host as a 31 and sits in
+  our_down, which HELD counts), the page then closed with UP still down: the next arrow tap counts as UP + arrow and is
+  forwarded. For FILL that means a second UP + RIGHT after the host closed FILL opens it again. This is what the combo
+  means while UP is held; a fix would need a held-since-closed flag for the one case.
+
+**An older host** (no claim): nothing changes, and UP + LEFT / RIGHT stay stock's. **An older Rytm** with a new host:
+no caps2, so the host sends no claim, and FILL is reached from the SIDECAR MENU only.
+
+**Code.** rui.c: K_LEFT / K_RIGHT, `fk_claim`, struct `fk` (a new static, so no existing offsets move), the 4A 7E case
+in sysex_body, the clear at the port's drop, an 11-byte hello, and the block in rui_key after UP + T1..T14. The area
+spare went from 29,648 B (fka) to 29,368 B (fk1). **No stock address is new**: everything is in the area code and uses
+existing symbols, so there is nothing new to port for 1.74.
+
+**Tests.**
+- fk2 (review round): `uplr` also pins the splash, seq-mode trig (poly track, T1 held), machine list and page-stepped-aside
+  guards, with a non-vacuous hello check; `uplrclaim` (short, longer, bit 0 clear with other bits set, all bits, the
+  port drop clearing the claim); `bk_emu.py uplrlist` (bank list open); `stockuparrows` (M3, above).
+- `rled_emu.py uplr` (new). Claimed, on the main screen and in GRID REC: 49 1 1 15 / 16, no 31, and the state the same
+  as with UP alone held. Not claimed, and 4A 7E 0 after a 1: no request, the arrow stock's (fk.stock 1). The hello is
+  11 bytes with caps2 bit 0. Claimed with T1 held in GRID REC, in a menu, with TRK or FUNC held: no request. With the
+  page open: the page's 31 0x41 down / up.
+- Unclaimed, UP + LEFT / RIGHT = the arrow alone + what UP alone leaves (stock's FREE rule, in the same build: `uplr`).
+  `upstock` cannot take the arrows: they move a word at 0x800067bc whose start value differs between the stock base
+  and the mod's, so its absolute compare fails on the baseline (fka) as well. fka and fk1 give identical values there.
+- `stockupkeys` UPKEYS adds LEFT and RIGHT (shard 3 is 19:30).
