@@ -440,3 +440,47 @@ after the turn and dropped a host value then.
   (inside the stale window for any send between 330 and 380 ms) is taken, and the hold reads 0.
 - **Results:** it fails on sbw4 (the value is dropped; the hold is still 0x30f4ac77) and passes on sbw5 [measured].
 - **Build:** sbw5, .syx 6dc37d77d6eaf4e1b14c39cbd91b05ef347037659154d0b13a9b49d23ae2b244.
+
+## 12. sfx-full-names (2026-11-16, issue #14): the effect's full name in the upper left while turning P2..P5
+
+Before this, the upper left showed "Send FX 1" / "Send FX 2" for P2..P5 whatever the TYPE. It now shows the effect's
+own name for the knob ("Pre-delay", "High decay"), as the stock DELAY / REVERB pages do.
+
+- **Message: 51 SENDFX FULL NAMES (host -> Rytm).** The host sends it right after each TYPE's 24, on the same triggers:
+  `F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7`.
+  - `first p` counts the effect's own P1..P16, so the Rytm's P2..P5 are `first p` 1, n 4.
+  - Names past the effect's P4 are for the pages of #15. This mod ignores them.
+  - The 24 is left alone: `take_labels` drops a 24 of any other length, so an older 0029 would lose the labels too.
+  - An older 0029 ignores 51 (and an older 0022 does not route it). An older Sidecar never sends it. Either way P2..P5
+    keep "Send FX n".
+- **0022:** its sfx router also passes 51 to 0029's mailbox.
+- **0029, appended to `struct sfu_x`** (the emulator tests' offsets stay as they were):
+  - `lng[NLT][4][17]`: the full names, beside `lab[]`.
+  - `lng_ok`: bit k means `lng[k]` belongs to `lab[k]`'s TYPE.
+  - `lname[2][4][17]`: P2..P5's record long names now.
+  - `lng_rx`, `lng_drop`: counters.
+- **MIDI task:**
+  - `take_labels` clears `lng_ok` bit k, because a new 24 means new names follow.
+  - `take_names` needs the TYPE's 24 first, since its entry holds the names. It fills `lng[k]` with bit k clear, then sets
+    the bit and bumps `gen`. Trailing spaces are trimmed.
+  - A 21 replace already frees the entries, which takes the names with it.
+- **UI task:** `relabel` (on a TYPE or `gen` change) copies the names into `lname` and points records
+  `ID0 + 4 + 6k + j` field 10 (the long name) at `lname[k][j]`. With no name, field 10 points at `l_fx1` / `l_fx2` as
+  before.
+- **Cost:** 1224 B more `.bss`; the elekloader RAM still has 12124 B spare (OS 1.74 build). The work only happens on a
+  24 / 51 or a relabel.
+- **Tests:**
+  - The parsing and `relabel` were checked on the host: sfu.c compiled for macOS with `REC` as an array, the asm gates
+    taken out and `set_look` stubbed. 14 checks pass, covering:
+    - a 24 alone: "Send FX 1";
+    - after its 51: Decay / Pre-delay;
+    - a name cut at 16 characters;
+    - FX 2 on another TYPE: "Send FX 2";
+    - a new 24 without a 51: back to "Send FX n";
+    - a 51 for an id without a 24, and a short 51: both dropped;
+    - a 51 for P5..: P2..P5 unchanged;
+    - a 21 replace: the names are gone.
+  - **The emulator suites were not run.** On the OS 1.74 port, `sfu_emu.py labels` already fails on the unchanged rc5b
+    build (no labels reach it over USB; a strict write at pc 0x40121206). FX, SRC, SRC also stays on DELAY there, so
+    SEND FX never opens. They need the OS 1.73 tree.
+  - Hardware: OS 1.74 + Pi 4, pending.
