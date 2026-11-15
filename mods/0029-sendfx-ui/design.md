@@ -480,7 +480,16 @@ own name for the knob ("Pre-delay", "High decay"), as the stock DELAY / REVERB p
     - a 51 for an id without a 24, and a short 51: both dropped;
     - a 51 for P5..: P2..P5 unchanged;
     - a 21 replace: the names are gone.
-  - **The emulator suites were not run.** On the OS 1.74 port, `sfu_emu.py labels` already fails on the unchanged rc5b
-    build (no labels reach it over USB; a strict write at pc 0x40121206). FX, SRC, SRC also stays on DELAY there, so
-    SEND FX never opens. They need the OS 1.73 tree.
+  - **Emulator (OS 1.74 port, build `sfxui` of section 4 with this change):** `sfu_emu.py sfxui fullnames`, 15/15:
+    - RINGS on SEND FX 1 names P2..P5 Pitch / Model / Brightness / Decay, and its labels stay PTCH MODL BRIT DCY;
+    - SEND FX 2 on OFF keeps "Send FX 2";
+    - STUTTER on SEND FX 2 names "Decay / pitch" (13 characters);
+    - without any 51, "Send FX 1";
+    - a 51 before its 24 is not used.
+    The screen `fullnames-rings.png` shows PITCH in the upper left while P2 turns.
+  - **The whole suite** (`sfu_emu.py sfxui all`): 233 pass and 2 fail, both in `ext` (PLAITS ENG steps / lock, 0021's
+    records). They fail the same way on unchanged rc5b (`sfxbase`), so they are not this change's.
+  - **On 1.74 the suites need rytm-emu's strict page-0 PCs for 1.74.** Its 1.73 list let the OS take an access error
+    at 0x40121206 (1.73's 0x4012119a) from the first instruction, so nothing reached SEND FX. That is a rytm-emu
+    change, not this branch's.
   - Hardware: OS 1.74 + Pi 4, pending.
