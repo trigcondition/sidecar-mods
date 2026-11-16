@@ -440,3 +440,122 @@ after the turn and dropped a host value then.
   (inside the stale window for any send between 330 and 380 ms) is taken, and the hold reads 0.
 - **Results:** it fails on sbw4 (the value is dropped; the hold is still 0x30f4ac77) and passes on sbw5 [measured].
 - **Build:** sbw5, .syx 6dc37d77d6eaf4e1b14c39cbd91b05ef347037659154d0b13a9b49d23ae2b244.
+
+## 12. sfx-full-names (2026-11-16, issue #14): the effect's full name in the upper left while turning P2..P5
+
+Before this, the upper left showed "Send FX 1" / "Send FX 2" for P2..P5 whatever the TYPE. It now shows the effect's
+own name for the knob ("Pre-delay", "High decay"), as the stock DELAY / REVERB pages do.
+
+- **Message: 51 SENDFX FULL NAMES (host -> Rytm).** The host sends it right after each TYPE's 24, on the same triggers:
+  `F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7`.
+  - `first p` counts the effect's own P1..P16, so the Rytm's P2..P5 are `first p` 1, n 4.
+  - Names past the effect's P4 are for the pages of #15. This mod ignores them.
+  - The 24 is left alone: `take_labels` drops a 24 of any other length, so an older 0029 would lose the labels too.
+  - An older 0029 ignores 51 (and an older 0022 does not route it). An older Sidecar never sends it. Either way P2..P5
+    keep "Send FX n".
+- **0022:** its sfx router also passes 51 to 0029's mailbox.
+- **0029, appended to `struct sfu_x`** (the emulator tests' offsets stay as they were):
+  - `lng[NLT][4][17]`: the full names, beside `lab[]`.
+  - `lng_ok`: bit k means `lng[k]` belongs to `lab[k]`'s TYPE.
+  - `lname[2][4][17]`: P2..P5's record long names now.
+  - `lng_rx`, `lng_drop`: counters.
+- **MIDI task:**
+  - `take_labels` clears `lng_ok` bit k, because a new 24 means new names follow.
+  - `take_names` needs the TYPE's 24 first, since its entry holds the names. It fills `lng[k]` with bit k clear, then sets
+    the bit and bumps `gen`. Trailing spaces are trimmed.
+  - A 21 replace already frees the entries, which takes the names with it.
+- **UI task:** `relabel` (on a TYPE or `gen` change) copies the names into `lname` and points records
+  `ID0 + 4 + 6k + j` field 10 (the long name) at `lname[k][j]`. With no name, field 10 points at `l_fx1` / `l_fx2` as
+  before.
+- **Cost:** 1224 B more `.bss`; the elekloader RAM still has 12124 B spare (OS 1.74 build). The work only happens on a
+  24 / 51 or a relabel.
+- **Tests:**
+  - The parsing and `relabel` were checked on the host: sfu.c compiled for macOS with `REC` as an array, the asm gates
+    taken out and `set_look` stubbed. 14 checks pass, covering:
+    - a 24 alone: "Send FX 1";
+    - after its 51: Decay / Pre-delay;
+    - a name cut at 16 characters;
+    - FX 2 on another TYPE: "Send FX 2";
+    - a new 24 without a 51: back to "Send FX n";
+    - a 51 for an id without a 24, and a short 51: both dropped;
+    - a 51 for P5..: P2..P5 unchanged;
+    - a 21 replace: the names are gone.
+  - **Emulator (OS 1.74 port, build `sfxui` of section 4 with this change):** `sfu_emu.py sfxui fullnames`, 15/15:
+    - RINGS on SEND FX 1 names P2..P5 Pitch / Model / Brightness / Decay, and its labels stay PTCH MODL BRIT DCY;
+    - SEND FX 2 on OFF keeps "Send FX 2";
+    - STUTTER on SEND FX 2 names "Decay / pitch" (13 characters);
+    - without any 51, "Send FX 1";
+    - a 51 before its 24 is not used.
+    The screen `fullnames-rings.png` shows PITCH in the upper left while P2 turns.
+  - **The whole suite** (`sfu_emu.py sfxui all`): 233 pass and 2 fail, both in `ext` (PLAITS ENG steps / lock, 0021's
+    records). They fail the same way on unchanged rc5b (`sfxbase`), so they are not this change's.
+  - **On 1.74 the suites need rytm-emu's strict page-0 PCs for 1.74.** Its 1.73 list let the OS take an access error
+    at 0x40121206 (1.73's 0x4012119a) from the first instruction, so nothing reached SEND FX. That is a rytm-emu
+    change, not this branch's.
+  - **Hardware** (2026-11-16, Rytm MKII OS 1.74 + Pi 4, with a ZOIA port as UFX1): the upper left shows the effect's full
+    names while P2..P5 turn.
+
+## 13. sfx-pages (2026-11-16, issue #15): a user effect's P5..P16 on SEND FX pages 2 and 3
+
+A user effect (API 3) can have P1..P16; SEND FX showed P1..P4 only (as P2..P5). Now an effect with more has pages:
+
+| page | A | B | C | D | E | F | G | H |
+|---|---|---|---|---|---|---|---|---|
+| 1 (as before) | TYPE | ROUT | P2 | P3 | P4 | P5 | BASE | WID |
+| 2 | P5 | P6 | P7 | P8 | P9 | P10 | P11 | P12 |
+| 3 | P13 | P14 | P15 | P16 | - | - | - | - |
+
+(P = the effect's own; the Rytm's P2..P5 are its P1..P4.) The title says the page: `SEND FX 1 2/3`. An effect with only P1..P4
+(every built-in) has one page and nothing changes: no title suffix, no key held back.
+
+- **Keys: SRC (SEND FX 1) / SMPL (SEND FX 2) held + DOWN / UP** = the next / previous page, no cycling (the user's choice:
+  the left hand on SRC / SMPL, the right on the arrows; no FUNC). An `ev_key` subscriber, order 5 (before 0026's 10):
+  - on that FX's SEND FX page, an effect with pages, FUNC up: SRC's press is held back (stock would cycle to DELAY at
+    once). At its release, if no arrow paged meanwhile, the press is given to stock (`STOCK_KEY` 0x400a02ca, 0026's) and
+    the release follows: the page key cycles on its release there. If an arrow paged, neither reaches stock.
+  - UP / DOWN with SRC / SMPL held there: taken (press and release); any other time, stock's / 0026's as before.
+  - 0026 binds **UP held, then SRC** (the source list, 1046); this is the other order and only on SEND FX.
+- **Which page is the screen** (`top_page`, each tick): the view the SEND FX knobs were read through (`sfu_get` keeps it)
+  is in the controller's view list (ctrl + 28) before SamplerLedView, nothing but a pad mode's view after that, and its
+  knob A is TYPE's record. [measured, rytm-emu 1.74, class names by RTTI: MainScreenView TransportView PatternGridView
+  KeyboardView **FxPageView** PatternSelectionView HelpBubbleView QuickPerformanceView SamplerLedView on SEND FX 1;
+  REVERB is another FxPageView object; GLOBAL leaves one menu view alone]
+- **No free parameter records** [measured: the 1.74 record table (469 records) read from a booted base: 0 is the
+  sentinel, 1..4 BASE / WID, 5 7 11 12 13 carry stock CC fields, 6 8 9 10 are live (TYP, Solo, Mute, LEV), 14..27 are
+  0029's, the rest stock or 0021's]. So the FX's own 8 records switch while a page past 1 shows (`apply_page`): the FX
+  set's wrappers take `pq()` first - read answers `pv[fx][q] << 8`, write keeps it and marks it to send, lock-get -1,
+  lock-set refused (no p-locks, as BASE / WIDTH) - plain dials 0..127, the 51's names (short; long in the upper left,
+  else "Send FX n"), and page 3's E..H get id 0 in the page descriptor (stock draws REVERB's gaps the same way: empty).
+  Page 1 again (`restore_recs`): `set_rec`, the value texts, TYPE / ROUT's looks, `set_bw_rec`, the ids; then `relabel`.
+  The kit's words are never touched: the switch is in the wrappers, before any word.
+- **The page stays** when SEND FX is left and comes back (not measured against a stock multi-page view); another TYPE
+  with fewer pages (a kit change) puts it back to page 1 (`page_count`).
+- **Protocol** (both sidecar-firmware `sim/protocol.py`):
+  - 51 SENDFX FULL NAMES chunks P5..P8, P9..P12, P13..P16 (first p 5 / 9 / 13), each with the short name too; the page
+    count is the highest P named (`np`). Built-ins send none.
+  - **22 ver 3 SENDFX XKNOBS**, both ways: `F0 7D 52 54 22 03 <fx> <first p 5..16> <n 1..12> <values> F7`. The tick
+    sends a turned FX's P5..P(4 + nx) with try_send; a host value is taken unless a turn is pending or was sent within
+    `BW_HOLD` (the crossing rule of section 11). An older 0029 drops ver 3 (its ver checks); 0022 routes 0x22 already.
+- **State**: `struct sfu_p` (its own symbol, so sfu_x's offsets stay): names (`xsh`, `xlng`, `np` per label entry),
+  `pg` / `npg` / `nx` / `pv` / `pv_tx` / `pv_hold` per FX, the key state, `fxview`, `ctrl`, the paged names and titles,
+  counters. `sfu_pages` is writable now (the title and page 3's empty ids).
+- **Cost**: `sfu_p` 4.7 kB `.bss`; the full hardware set (`sfp1`: + 0026, 0030) leaves 4276 B of elekloader RAM (12124
+  with #14 alone). The key handler is a few compares a key; `top_page` walks <= 16 views a tick.
+- **Tests** [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py TAG xpages` (14 checks), on `sfxui` and on the full set
+  `sfp1`:
+  - FX16 (a user TYPE 66 with P1..P16: its 24, 51 x 4, 22 ver 3) gives SEND FX 1 three pages, FX 2 one;
+  - SRC held + DOWN: page 2, title `SEND FX 1 2/3`, A..H named X5..X12 (upper left Extra P5..), the host's values,
+    SRC not given to stock; a turn of C goes out as 22 ver 3; the kit's FX words unchanged;
+  - DOWN again: page 3, A..D X13..X16, E..H id 0; DOWN there stays (no cycling); UP x 3: page 1 with TYPE ROUT MOD LEV
+    P3 P4 BASE WID and the ids back, P2's upper left Mode;
+  - a trig held on page 2: no lock on FX words 29 / 38 / 39;
+  - a host 22 ver 3 (P9..P12) while page 2 shows lands on E..H;
+  - SRC tapped on SEND FX 1: held back, given to stock: DELAY (TIM turns);
+  - SMPL held + DOWN on SEND FX 2: its page 2 (`SEND FX 2 2/3`), FX 1 on page 1;
+  - CHORUS: one page, nothing held back.
+  Screens `xpages-2.png`, `xpages-3.png` (E..H drawn empty), `xpages-1.png`.
+- **Hardware** (2026-11-16, Rytm MKII OS 1.74 + Pi 4, the full set `sfp1`, a 16-control ZOIA port as UFX1): pages 2 / 3
+  page with SRC / SMPL held + DOWN / UP, the knobs change the sound, SRC tapped still leaves for DELAY, the values
+  come back after a kit change and a Sidecar reboot, SEND FX 2 the same, 0026's UP combos as before. One step to
+  know: an effect replaced on the card is reloaded only by `um=fx:<n>:<id>` again (until then the old one, here
+  with 4 controls, plays and the Rytm shows one page).
