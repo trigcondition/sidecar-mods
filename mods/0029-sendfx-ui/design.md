@@ -492,4 +492,5 @@ own name for the knob ("Pre-delay", "High decay"), as the stock DELAY / REVERB p
   - **On 1.74 the suites need rytm-emu's strict page-0 PCs for 1.74.** Its 1.73 list let the OS take an access error
     at 0x40121206 (1.73's 0x4012119a) from the first instruction, so nothing reached SEND FX. That is a rytm-emu
     change, not this branch's.
-  - Hardware: OS 1.74 + Pi 4, pending.
+  - **Hardware** (2026-11-16, Rytm MKII OS 1.74 + Pi 4, with a ZOIA port as UFX1): the upper left shows the effect's full
+    names while P2..P5 turn.
