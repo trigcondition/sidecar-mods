@@ -350,6 +350,131 @@ def t_fullnames(e):
     U.check("fullnames: a 51 before its 24 is not used", long_names(e, s, 0) == ["Send FX 1"] * 4,
             str(long_names(e, s, 0)))
 
+# ---- sendfx-pages (issue #15): struct sfu_p (sfu.c; offsets from m68k-elf-gcc offsetof)
+PG_PG, PG_NPG, PG_NX, PG_PV, PG_ONTOP, PG_KDEF = 4240, 4242, 4244, 4246, 4275, 4276
+PG_CNT = 4290                      # pv_sent pv_got steps replays defers retitles
+PG_TTL = 4706
+FX16 = 66                          # UFX3 holding a user effect with P1..P16 (the Sidecar's api3_fx16)
+
+
+def fx16_msgs(nx=12):
+    """What the Sidecar sends for FX16 after its 21: the 24 (P2..P5's labels), then 51s for P1..P4 and P5..P(4 + nx)."""
+    out = P.sendfx_labels(FX16, ("MOD", "LEV", "P3", "P4"), [])
+    out += P.sendfx_full_names(FX16, 1, [("MOD", "Mode"), ("LEV", "Level"), ("P3", "Three"), ("P4", "Four")])
+    xn = [(f"X{p}", f"Extra P{p}") for p in range(5, 5 + nx)]
+    for c in range(0, nx, 4):
+        out += P.sendfx_full_names(FX16, 5 + c, xn[c:c + 4])
+    return out
+
+
+def pg_state(e, s):
+    a = sym(e, "sfu_p")
+    b = e.peek(s, a + PG_PG, 6)
+    return dict(pg=list(b[0:2]), npg=list(b[2:4]), nx=list(b[4:6]), pv=list(e.peek(s, a + PG_PV, 24)),
+                ontop=e.peek(s, a + PG_ONTOP, 1)[0], cnt=[e.u32(s, a + PG_CNT + 4 * i) for i in range(6)],
+                ttl=e.cstr(s, a + PG_TTL, 16), ttl2=e.cstr(s, a + PG_TTL + 16, 16))
+
+
+def rec_names(e, s, ids):
+    """(short, long) names of records ids, as the page draws them."""
+    return [(e.cstr(s, e.u32(s, REC(r) + 48), 5), e.cstr(s, e.u32(s, REC(r) + 40), 17)) for r in ids]
+
+
+def page_ids(e, s, fx):
+    """SEND FX fx's page descriptor ids (sfu_pages[1 + fx]: name, ids[8])."""
+    a = sym(e, "sfu_pages") + 36 * (1 + fx) + 4
+    return [e.u32(s, a + 4 * i) for i in range(8)]
+
+
+def t_xpages(e):
+    """sendfx-pages (issue #15): a user effect with P1..P16 on SEND FX 1 - SRC held + DOWN: page 2 (A..H = P5..P12, the
+    51's names, the host's values, title SEND FX 1 2/3), again: page 3 (A..D = P13..P16, E..H empty), UP: back; page 1
+    as before (TYPE, labels MOD LEV P3 P4). A turn on page 2 goes to the host (22 ver 3) and leaves the kit's FX words
+    alone; with a trig held nothing locks. A host value redraws it. SRC tapped still leaves for DELAY (its press held
+    back and given to stock at the release); an effect without P5.. holds nothing back. Screens: xpages-*.png."""
+    names = b"".join(P.sendfx_names([(0, "OFF"), (1, "CHORUS"), (FX16, "FX16")]))
+    vals = P.sendfx_xknobs(0, 5, [7 * p for p in range(5, 17)])
+    host = names + fx16_msgs() + label_msgs((1,)) + vals
+    ex = poke_type(e, 0, FX16)
+    fx0 = {i: w16(e, e.snap, FXW + 2 * i) for i in (0, 29, 38, 39, 40, 41)}
+    go = [(20, "usb", host), (50, "press", "FX"), (150, "press", "SRC")]
+    # page 2, a turn of knob C (P7)
+    ev = go + [(400, "press", "SRC:300M"), (500, "press", "DOWN"), (800, "turn", ("2:+8", 3, 10))]
+    s = e.run("xpages-2", 1100, ev, save=True, extra=ex)
+    g = pg_state(e, s)
+    U.check("xpages: FX16's 51s give SEND FX 1 three pages (P5..P16), FX 2 one", g["npg"] == [3, 1] and g["nx"] == [12, 0],
+            str(g))
+    U.check("xpages: SRC held + DOWN on SEND FX 1 = page 2, title SEND FX 1 2/3, no SRC given to stock",
+            g["pg"] == [1, 0] and g["ttl"] == "SEND FX 1 2/3" and g["ontop"] == 1 and g["cnt"][3] == 0, str(g))
+    nm = rec_names(e, s, [16, 17, 18, 19, 20, 21, 1, 2])
+    U.check("xpages: page 2's knobs A..H are named X5..X12 (the upper left: Extra P5..)",
+            [n[0] for n in nm] == [f"X{p}" for p in range(5, 13)] and nm[0][1] == "Extra P5" and nm[7][1] == "Extra P12",
+            str(nm))
+    U.check("xpages: the host's values (7 x P), knob C turned up from 49", g["pv"][0] == 35 and g["pv"][2] > 49 and
+            g["pv"][11] == 112, str(g["pv"]))
+    x3 = [m for m in e.sent if len(m) > 9 and m[4] == 0x22 and m[5] == 3]
+    d = P.decode_sendfx_xknobs(x3[-1][5:-1]) if x3 else None
+    U.check("xpages: the turn went to the host as 22 ver 3 (FX 1, P5..P16, P7 turned)",
+            bool(d) and d["fx"] == 0 and d["first"] == 5 and len(d["values"]) == 12 and d["values"][2] == g["pv"][2],
+            f"{len(x3)} sent, last {d}")
+    fx = {i: w16(e, s, FXW + 2 * i) for i in fx0}
+    U.check("xpages: the kit's FX words are untouched by page 2 (TYPE stays FX16)", all(
+        fx[i] == fx0[i] for i in (0, 38, 39, 40, 41)) and (fx[29] >> 8) == FX16, " ".join(f"{i}:{fx[i]:04x}" for i in fx))
+    # page 3 (E..H empty), then UP twice: page 1 again
+    ev = go + [(400, "press", "SRC:500M"), (500, "press", "DOWN"), (650, "press", "DOWN")]
+    s = e.run("xpages-3", 1000, ev, save=True, extra=ex)
+    g = pg_state(e, s)
+    nm = rec_names(e, s, [16, 17, 18, 19])
+    U.check("xpages: DOWN again = page 3, SEND FX 1 3/3, A..D = X13 X14 X15 X16, E..H empty (ids 0)",
+            g["pg"][0] == 2 and g["ttl"] == "SEND FX 1 3/3" and [n[0] for n in nm] == ["X13", "X14", "X15", "X16"] and
+            page_ids(e, s, 0)[4:] == [0, 0, 0, 0], f"{g} {nm} {page_ids(e, s, 0)}")
+    ev = go + [(400, "press", "SRC:700M"), (500, "press", "DOWN"), (650, "press", "DOWN"), (800, "press", "DOWN"),
+               (950, "press", "UP"), (1100, "press", "UP"), (1250, "press", "UP")]
+    s = e.run("xpages-1", 1400, ev, save=True, extra=ex)
+    g = pg_state(e, s)
+    nm = rec_names(e, s, [16, 17, 18, 19, 20, 21, 1, 2])
+    U.check("xpages: no cycling (DOWN on page 3 stays), UP back to page 1: TYPE ROUT MOD LEV P3 P4 BASE WID, ids restored",
+            g["pg"][0] == 0 and g["ttl"] == "SEND FX 1 1/3" and [n[0] for n in nm] == ["TYPE", "ROUT", "MOD", "LEV", "P3",
+                                                                                      "P4", "BASE", "WID"] and
+            page_ids(e, s, 0) == [16, 17, 18, 19, 20, 21, 1, 2], f"{g} {nm} {page_ids(e, s, 0)}")
+    U.check("xpages: page 1's P2 is named Mode in the upper left again", nm[2][1] == "Mode", str(nm[2]))
+    # a trig held on page 2: the turn locks nothing (and is not sent to the host either: lock-set refused)
+    ev = go + [(300, "press", "RECORD"), (400, "press", "T1"), (500, "press", "SRC:300M"), (600, "press", "DOWN"),
+               (900, "press", "T1:400M"), (1000, "turn", ("0:+20", 3, 20)), (1400, "press", "RECORD")]
+    s = e.run("xpages-lock", 1600, ev, save=True, extra=ex)
+    g = pg_state(e, s)
+    U.check("xpages: with a trig held on page 2 no lock lands on FX words 29 / 38 / 39",
+            g["pg"][0] == 1 and all(lock(e, s, 12, 0, i) == 0xffff for i in (29, 38, 39)),
+            f"pg {g['pg']} locks " + " ".join(f"{lock(e, s, 12, 0, i):04x}" for i in (29, 38, 39)))
+    # a host value while page 2 shows: taken (no turn of ours pending)
+    ev = go + [(400, "press", "SRC:300M"), (500, "press", "DOWN"), (900, "usb", P.sendfx_xknobs(0, 9, [1, 2, 3, 4]))]
+    s = e.run("xpages-host", 1100, ev, save=True, extra=ex)
+    g = pg_state(e, s)
+    U.check("xpages: a host 22 ver 3 (P9..P12) lands on page 2's knobs E..H", g["pv"][4:8] == [1, 2, 3, 4] and
+            g["cnt"][1] >= 2, str(g))
+    # SRC tapped on SEND FX 1: still DELAY (the press held back, then given to stock)
+    ev = go + [(400, "press", "SRC"), (700, "turn", ("0:+20", 2, 20))]
+    s = e.run("xpages-tap", 900, ev, save=True, extra=ex)
+    g = pg_state(e, s)
+    U.check("xpages: SRC tapped on SEND FX 1 is held back and given to stock: DELAY (knob A = TIM, FX word 9)",
+            g["cnt"][4] == 1 and g["cnt"][3] == 1 and g["ontop"] == 0 and w16(e, s, FXW + 18) != w16(e, e.snap, FXW + 18),
+            f"{g} TIM {w16(e, e.snap, FXW + 18):04x} -> {w16(e, s, FXW + 18):04x}")
+    # SEND FX 2 the same with SMPL (FX16 on both: each FX its own page)
+    ev = [(20, "usb", host), (50, "press", "FX"), (150, "press", "SMPL"), (300, "press", "SMPL"), (550, "press", "SMPL:300M"),
+          (650, "press", "DOWN")]
+    s = e.run("xpages-fx2", 1000, ev, save=True, extra=ex + poke_type(e, 1, FX16))
+    g = pg_state(e, s)
+    U.check("xpages: SMPL held + DOWN on SEND FX 2 = its page 2 (SEND FX 2 2/3), FX 1 stays on page 1",
+            g["pg"] == [0, 1] and g["ttl2"] == "SEND FX 2 2/3" and g["ontop"] == 2 and
+            [n[0] for n in rec_names(e, s, [22, 23, 3, 4])] == ["X5", "X6", "X11", "X12"], f"{g} {rec_names(e, s, [22, 23, 3, 4])}")
+    # an effect without P5.. (CHORUS): nothing held back, DOWN is stock's
+    ev = [(20, "usb", host), (50, "press", "FX"), (150, "press", "SRC"), (400, "press", "SRC:300M"), (500, "press", "DOWN")]
+    s = e.run("xpages-chorus", 900, ev, save=True, extra=poke_type(e, 0, 1))
+    g = pg_state(e, s)
+    U.check("xpages: CHORUS (P1..P4): one page, SRC never held back, no paging",
+            g["npg"][0] == 1 and g["pg"][0] == 0 and g["cnt"][4] == 0, str(g))
+
+
 X_TIME = 1124 + DL   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
 ST_TICKS = 1034   # m68k: 2-byte alignment (calls at 1030)
 
@@ -793,7 +918,7 @@ def t_fmname(e):
 
 
 TESTS = {"fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
-         "labels": t_labels, "fullnames": t_fullnames, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
+         "labels": t_labels, "fullnames": t_fullnames, "xpages": t_xpages, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
 
 
 def main():
