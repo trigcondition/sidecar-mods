@@ -554,4 +554,8 @@ A user effect (API 3) can have P1..P16; SEND FX showed P1..P4 only (as P2..P5). 
   - SMPL held + DOWN on SEND FX 2: its page 2 (`SEND FX 2 2/3`), FX 1 on page 1;
   - CHORUS: one page, nothing held back.
   Screens `xpages-2.png`, `xpages-3.png` (E..H drawn empty), `xpages-1.png`.
-- Hardware: OS 1.74 + Pi 4, pending (with #14's).
+- **Hardware** (2026-11-16, Rytm MKII OS 1.74 + Pi 4, the full set `sfp1`, a 16-control ZOIA port as UFX1): pages 2 / 3
+  page with SRC / SMPL held + DOWN / UP, the knobs change the sound, SRC tapped still leaves for DELAY, the values
+  come back after a kit change and a Sidecar reboot, SEND FX 2 the same, 0026's UP combos as before. One step to
+  know: an effect replaced on the card is reloaded only by `um=fx:<n>:<id>` again (until then the old one, here
+  with 4 controls, plays and the Rytm shows one page).
