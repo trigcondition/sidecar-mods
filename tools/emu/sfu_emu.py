@@ -302,6 +302,54 @@ def t_labels(e):
             lbl(e, s, 0) == ["P2", "P3", "P4", "P5"], str(lbl(e, s, 0)))
 
 
+
+def full_msgs(ids):
+    return b"".join(P.sendfx_full_names(i, 1, list(zip(P.SENDFX_LABEL_SETS[i][0], P.SENDFX_FULL_NAME_SETS[i])))
+                    for i in ids)
+
+
+def long_names(e, snap, fx):
+    """FX fx's P2..P5 record long names (field 10 of records ID0 + 4 + 6 fx + j, ID0 = 14), as the upper left shows
+    them while the knob turns."""
+    return [e.cstr(snap, e.u32(snap, REC(14 + 4 + 6 * fx + j) + 40), 17) for j in range(4)]
+
+
+def t_fullnames(e):
+    """Full names (51, issue #14): after 21 + 24 + 51 the P2..P5 records' long names are the TYPE's full names (RINGS
+    Pitch / Model / Brightness / Decay), "Send FX n" for a TYPE without a 51; without any 51 (an older Sidecar) P2..P5
+    keep "Send FX 1"; a 51 before its 24 is dropped. Screens: build/emu/TAG/fullnames-*.png."""
+    names = b"".join(P.sendfx_names([(i, P.SENDFX_TYPES[i]) for i in (0, 1, 2, 6, 8, 15)]))
+    labels = label_msgs((1, 2, 6, 8, 15))
+    full = full_msgs((1, 2, 6, 8, 15))
+    a = sym(e, "sfu_x")
+    # FX 1 RINGS, FX 2 OFF; P2 (knob C) turned so the upper left shows its name in the screen
+    ev = [(20, "usb", names + labels + full), (50, "press", "FX"), (150, "press", "SRC"), (300, "turn", ("2:+8", 3, 10))]
+    s = e.run("fullnames-rings", 450, ev, save=True, extra=poke_type(e, 0, 6))
+    cnt = [e.u32(s, a + X_CNT + 4 * i) for i in range(6)]
+    U.check("fullnames: 0029 took the five 24s", cnt[2] == 5 and cnt[1] == 0, f"counters {cnt}")
+    U.check("fullnames: SEND FX 1 on RINGS names P2..P5 Pitch Model Brightness Decay",
+            long_names(e, s, 0) == ["Pitch", "Model", "Brightness", "Decay"], str(long_names(e, s, 0)))
+    U.check("fullnames: SEND FX 1 keeps its labels PTCH MODL BRIT DCY", lbl(e, s, 0) == ["PTCH", "MODL", "BRIT", "DCY"],
+            str(lbl(e, s, 0)))
+    U.check("fullnames: SEND FX 2 (OFF, no 51) keeps Send FX 2", long_names(e, s, 1) == ["Send FX 2"] * 4,
+            str(long_names(e, s, 1)))
+    # FX 2 STUTTER by the poke: its own names ("Decay / pitch", 13 characters)
+    ev = [(20, "usb", names + labels + full), (50, "press", "FX"), (150, "press", "SMPL"), (250, "press", "SMPL")]
+    s = e.run("fullnames-stutter", 400, ev, save=True, extra=poke_type(e, 1, 15))
+    U.check("fullnames: SEND FX 2 on STUTTER names P2..P5 Engage Length Decay / pitch Gate",
+            long_names(e, s, 1) == ["Engage", "Length", "Decay / pitch", "Gate"], str(long_names(e, s, 1)))
+    # an older Sidecar: 21 + 24 only
+    ev = [(20, "usb", names + labels), (50, "press", "FX"), (150, "press", "SRC")]
+    s = e.run("fullnames-none", 400, ev, save=True, extra=poke_type(e, 0, 6))
+    U.check("fullnames: without a 51 SEND FX 1 keeps Send FX 1 (labels as before)",
+            long_names(e, s, 0) == ["Send FX 1"] * 4 and lbl(e, s, 0) == ["PTCH", "MODL", "BRIT", "DCY"],
+            f"{long_names(e, s, 0)} {lbl(e, s, 0)}")
+    # a 51 before its 24: dropped (the 24 that follows clears the entry's names)
+    ev = [(20, "usb", names + full + labels), (50, "press", "FX"), (150, "press", "SRC")]
+    s = e.run("fullnames-early", 400, ev, save=True, extra=poke_type(e, 0, 6))
+    U.check("fullnames: a 51 before its 24 is not used", long_names(e, s, 0) == ["Send FX 1"] * 4,
+            str(long_names(e, s, 0)))
+
 X_TIME = 1124 + DL   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
 ST_TICKS = 1034   # m68k: 2-byte alignment (calls at 1030)
 
@@ -745,7 +793,7 @@ def t_fmname(e):
 
 
 TESTS = {"fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
-         "labels": t_labels, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
+         "labels": t_labels, "fullnames": t_fullnames, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
 
 
 def main():
