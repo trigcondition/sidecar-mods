@@ -36,13 +36,15 @@
  *                      1041: 2 INSERT (TRK + FX; again while open: go there), 1047: 3 INSERT on its OUT view (UP + AMP;
  *                      an older host takes an unknown page as 0)
  *                 31 1 <code >> 7> <code & 0x7f> <down>   (the firmware's key code, e.g. TRK 0x86 = 1 6)
- *                 32 1 <encoder> <delta + 64> <func>
+ *                 32 1 <encoder> <delta + 64> <func>   (0.5.0: knob H as 32 7 while the host's browser is open, ls_enc)
  *                 35 1 <uptime >> 7> <uptime & 0x7f> <caps>   1023: hello, 0.5 s after the USB port came up (again
  *                      1 s and 2 s later while no valid host message came; 0.4.4: at a boot not before the UI loop's
  *                      3rd second, HELLO_UP, unless a page opens): uptime in ticks since 0026 started
  *                      (saturated at 16383), caps bit 0: 36 understood, bit 1 (1049): 16 send FX label tables kept
  *                      (0029's 24s; before, 8: a host sends the labels of 8 TYPEs at most to an older build), bit 2
- *                      (1052): the project slot reports 4B (below, "1052")
+ *                      (1052): the project slot reports 4B (below, "1052"), bit 3 (7ae): 45, bit 4 (0.5.0): the host
+ *                      command 5A and the reports 2D 01 0E / 0F / 10 (below, "0.5.0"), bit 5 (0.5.0): a list / browser
+ *                      key pressed with FUNC held comes as 31 .. 2 (below, "ls_key")
  *                 3B 1 <kit 0..127>   1026: the active kit, after the snapshot of each 35 and each open, and when it
  *                      changes
  *                 33 1 <t0> <n> {<machine> <vb>} x n   1025: the tracks' machines (a change: n 1; the snapshot: t0 0,
@@ -117,6 +119,8 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 #define K_PUSH7 0x77
 #define K_DOWN 0x43       /* 1052d: DOWN [panel.rs RYTM_KEYS] */
 #define K_UP   0x42       /* 1036b: UP held + T1..T5: the Pi display's page (49 1) - no stock combo [measured] */
+#define K_LEFT  0x40      /* fk (0.5.0): UP + LEFT / RIGHT, the host's GENERATOR / FILL [panel.rs RYTM_KEYS] */
+#define K_RIGHT 0x41
 #define LED_MUTEX ((void *)0x41920560u)   /* led_set 0x40095d2c / led_colour 0x40095f54 lock it around their sends */
 #define LED_NCOL  112     /* 34's colours: palette 0..111 (the OS animates 0x74..0x78 [measured]); 112.. refused */
 #ifndef ENC_IDX_OFF
@@ -164,6 +168,7 @@ static volatile uint32_t t_commit __attribute__((aligned(4)));    /* TIMER at th
 static volatile uint32_t pc_seq __attribute__((aligned(4)));      /* 1030: odd while a 28 1 chord is copied, +2 each */
 static volatile uint8_t pc_req[6];                                /* 1030: the chord request (pc_tick takes it) */
 static volatile uint32_t ls_host_presets;   /* 0.4.0: the host's 4A 7F 1: it draws JUNO's / 6-OP FM's preset list; off with the port */
+static volatile uint32_t fk_claim;          /* fk (0.5.0): the host's 4A 7E <flags>, bit 0: it takes UP + LEFT / RIGHT; off with the port */
 static volatile uint32_t ls_in_v, ls_in_gen __attribute__((aligned(4)));   /* 1040: the host's 4A <track> <browse> (ls_tick) */
 static uint8_t st_seq, st_valid;     /* MIDI task only: the 38s' seq since the last commit */
 static uint32_t mt_sum, mt_max, mt_calls;   /* MIDI task: TIMER counts inside rui_sysex */
@@ -347,6 +352,10 @@ static struct {
   uint8_t pad50;
   uint32_t pmap_on, pmap_off;                   /* 1050: 49 1 5 1 / 0 sent */
 } k44 __attribute__((section(".bss"), aligned(4)));
+/* fk (0.5.0): UP + LEFT / RIGHT as page requests 15 / 16 (the host's GENERATOR / FILL), only while the host claims them
+   (fk_claim): reqs[0] LEFT's, reqs[1] RIGHT's sent; stock: the presses left to stock while UP was held (no claim or a
+   guard) - diagnostics */
+static struct { uint32_t reqs[2], stock; } fk __attribute__((section(".bss"), aligned(4)));
 
 #define BIT(m, k) ((m)[(k) >> 5] & (1u << ((k) & 31)))
 #define SET(m, k) ((m)[(k) >> 5] |= (1u << ((k) & 31)))
@@ -395,10 +404,80 @@ static uint32_t txsx_test_end, txsx_test_on;
 #define FP_SLEEP ((void (*)(uint32_t))0x40098c18u)  /* task sleep (0021's US_SLEEP) */
 static struct { volatile uint32_t blocks, tick_blk, ui_tcb, sent_blk, probes, test; } fp __attribute__((aligned(4)));
 static void fp_check(void);
+/* 0.5.0 (design.md "0.5.0"): the QUICK PERF knob (2D 01 0E, from the audio interrupt), the Rytm's scene (0F, the UI
+   task), the host command (5A, the MIDI task; its 10 answers sent by the UI task). owe_n: the UI task's count of
+   reports owed (each hello), owes the interrupt's copy of it sent; live: a hello has gone out on this port and the
+   UI tick has read the mask since. hello: this connection's hello has gone out (cleared when the port drops, Phase 7
+   review L4: no 0E / 0F / 10 before the new hello). A refusal the full ack ring would drop is kept as ref_op / ref_n
+   and sent apart (L1: the host falls back to CCs on a refusal; a dropped "done" tells it nothing). */
+#define QP_NACK 4
+static struct {
+  volatile uint32_t mask, live, owe_n;   /* UI task: the macros on the knob (12 bits), the host there, reports owed */
+  uint32_t init, pos0, stamp0, moved, last, blk, owes, sent;   /* audio interrupt */
+  uint32_t scn, scn_owe, scns;           /* UI task: the scene last reported (1..12, 0 none), one owed, sent */
+  volatile uint32_t ack_h;               /* MIDI task: ack[h % QP_NACK] then h++; the UI task sends up to h */
+  uint32_t ack_t;
+  uint8_t ack[QP_NACK][2];               /* op, status */
+  uint32_t cmds, refused, ack_drop;      /* diagnostics */
+  uint32_t gmin;                         /* the fewest blocks between two QPERF reports (0: under two sent) */
+  volatile uint32_t ref_op, ref_n;       /* MIDI task: a refusal the ring had no room for (its op), counted */
+  uint32_t ref_t, hello;                 /* UI task: the refusals sent of those; this connection's hello gone out */
+} qp __attribute__((aligned(4)));
+/* pm (0.5.0, below "pm"): the param modulation's state */
+#define PMO_SLOTS   128
+#define PMO_RING    256u
+#define PMO_TIMEOUT 375u           /* audio blocks: 250 ms */
+#define PMO_FADE    32             /* blocks: 21 ms */
+#define PMO_DRAIN   64             /* records a block at most */
+#define PMO_EFF     ((volatile uint16_t *)0x8000f774u)          /* the effective words, g = 26 + 42 t + w (8.8)  */
+#define PMO_STATE   ((const volatile uint32_t *)0x8000ee84u)    /* the smoother's state, value << 16: the base   */
+#define PMO_SCN_G   ((const volatile uint16_t *)0x8000ecacu)    /* the active scene's 48 locks' g (25: none)     */
+#define PMO_SCN_ON  (*(const volatile uint32_t *)0x8000fce8u)   /* a scene engaged: stage D writes its locks     */
+#define PMO_TVEL    ((const volatile uint16_t *)0x800067c4u)    /* the last trig's velocity << 8, per track      */
+#define PMO_AT      ((const volatile int16_t *)0x800067deu)     /* the aftertouch, per track                     */
+#define PMO_ACC     ((const volatile uint32_t *)0x8000e53cu)    /* bit 3: stage E adds eff word 39 (accent)      */
+#define PMO_ROUTES(t) ((const volatile uint32_t *)(0x8000ea3cu + 32u * (t)))   /* VM 0..3, AT 4..7: {amount, g} */
+#define PMO_ROUTE4  ((void (*)(int32_t, const uint32_t *))0x4011ddbeu)  /* stage E's: eff[g] = sat(eff[g] + src x amt) */
+struct pmo_rec { uint8_t t, w, op, ramp; uint16_t v; uint8_t mix, pad; };   /* 8 B; op 6: v the track mask */
+struct pmo_ent {                   /* off, ovr: 8.8 << 8; mix: 1 << 23 = 1.0; n_*: blocks of ramp left */
+  uint8_t tp1, w, n_off, n_ovr;    /* tp1: track + 1, 0 free */
+  int32_t off, off_st, off_tg, ovr, ovr_st, ovr_tg, mix, mix_st, mix_tg;
+  uint32_t g;                      /* 26 + 42 t + w */
+};
+static struct {
+  uint32_t used, ring_drop, kit_drop, timeouts, full, refused, runs, recs, clears, t_max, t_sum, t_n, vel_n, scn_skips;
+  volatile uint32_t rh, last_blk, stat_req, hello_n, lost_n, reload_n;   /* the MIDI / UI tasks write these */
+  uint32_t rt, to_last, hello_s, lost_s, reload_s, kit, top, scn_blk, ran, t0, full_op;   /* the interrupt's */
+  uint32_t stat_t, full_sent, full_tick;                                 /* the UI task's */
+  uint32_t spare0;                 /* (0.5.0 pre-review: an override count; kept so the fields after stay where tests peek) */
+  uint32_t vel_on;                 /* the interrupt's: velw written since the entries were last all gone */
+  volatile uint32_t velw[13];      /* trig_fire's word per track: s16 offset (velocity << 8) | ovr << 16 | mix128 << 24 */
+  int32_t src[13];                 /* this block's route sources (VM, then AT in src2) */
+  int32_t src2[13];
+  uint32_t vmmask;                 /* tracks with a route-amount entry this block */
+  int16_t dam[13][8];              /* their amount changes */
+  uint32_t smask[18];              /* the scene's locked g, a bit each (572) */
+  uint8_t idx[13][64];             /* slot + 1 of (t, w), 0 none */
+  struct pmo_rec ring[PMO_RING];
+  struct pmo_ent ent[PMO_SLOTS];
+  uint32_t nfree;                  /* the interrupt's: free slots below top on the stack */
+  uint8_t fstk[PMO_SLOTS];         /* their indices */
+  uint32_t link_drop;              /* the interrupt's: records discarded at a hello / port drop (the old link's) */
+  uint32_t rtab[13][2][2][4];      /* S-pre's route tables per track: [into 1..8 / 9..41][VM / AT][route] {amount, g} */
+  uint8_t rany[13];                /* bit 0 / 1 VM / AT into 1..8, bit 2 / 3 into 9..41 */
+} pmo __attribute__((section(".bss"), aligned(4)));
+/* the offsets pm_emu.py peeks (PMO_RH, PMO_RT, PMO_HELLO_N, PMO_SMASK, PMO_RING) */
+_Static_assert(__builtin_offsetof(__typeof__(pmo), rh) == 56 && __builtin_offsetof(__typeof__(pmo), rt) == 80 &&
+               __builtin_offsetof(__typeof__(pmo), hello_n) == 68 && __builtin_offsetof(__typeof__(pmo), smask) == 512 &&
+               __builtin_offsetof(__typeof__(pmo), ring) == 1416 && __builtin_offsetof(__typeof__(pmo), idx) == 584 &&
+               __builtin_offsetof(__typeof__(pmo), ent) == 3464 && sizeof(struct pmo_ent) == 44 &&
+               __builtin_offsetof(__typeof__(pmo), link_drop) == 9228, "pm_emu.py's pmo offsets");
+static void qp_isr(void);
 void rui_render_in(void) {
   if (!TX_SYSEX) txsx_gap = 1;
   fp.blocks++;
   if (fp.ui_tcb && fp.blocks - fp.tick_blk > 3000u) fp_check();
+  qp_isr();
 }
 static int32_t txsx_wait(void) {
   int32_t held;
@@ -437,9 +516,15 @@ static void flush(void) {
   uint32_t i, k;
   if (st.pend_hello) {
     uint32_t up = st.ticks < 16383 ? st.ticks : 16383;
-    if (!send3(0x35, (uint8_t)(up >> 7), (uint8_t)(up & 0x7f), 15)) return;   /* caps: 36, 1049's 16 label tables, 1052's 4B, 7ae's 45 */
+    uint8_t h[11] = {0xf0, 0x7d, 0x52, 0x54, 0x35, 0x01, (uint8_t)(up >> 7), (uint8_t)(up & 0x7f), 127, 1, 0xf7};
+    if (!send(h, 11)) return;   /* caps: 36, 1049's 16 label tables, 1052's 4B, 7ae's 45, 0.5.0's host command (16), FUNC in
+                                   the browser (32), pm: param modulation (64: 5A 04..07); fk (0.5.0): caps2, the 4th byte:
+                                   bit 0 UP + LEFT / RIGHT as 49 1 1 15 / 16 once the host claims them (4A 7E 1) */
     st.pend_hello = 0;
     st.hellos++;
+    qp.owe_n++; qp.scn_owe = 1;        /* 0.5.0: the knob's and the scene's reports again (qp_tick: live) */
+    qp.hello = 1;
+    pmo.hello_n++;                     /* pm: a new link: the old one's modulation fades out */
   }
   if (st.pend_open) {
     uint8_t m[10] = {0xf0, 0x7d, 0x52, 0x54, 0x30, 0x01, st.pend_page, st.pend_on, st.pend_reason, 0xf7};
@@ -515,7 +600,7 @@ static void queue_key(uint32_t code, uint32_t down) {
     return;
   }
   st.kq[st.kq_n][0] = (uint8_t)code;
-  st.kq[st.kq_n][1] = (uint8_t)(down ? 1 : 0);
+  st.kq[st.kq_n][1] = (uint8_t)down;   /* 0 release, 1 press, 2 a press with FUNC held (ls_key) */
   st.kq_n++;
 }
 
@@ -542,7 +627,8 @@ static const uint8_t mr_voice[12] = {0, 2, 7, 7, 1, 3, 5, 5, 4, 4, 6, 6};   /* B
 /* 0021's voice flags (ext.c us_flag_tab, machines 35..52; 0x7F: not one of its machines there; 1031: 52 MULTISAMPLE 0x30;
    1034: 46 WAVETABLE 0x28, 47 GRANULAR 0x38; 1051: 48 LIVE IN 0x78, 49 CHOP 0x18) */
 /* 7o: 50 MIDI has no flag (0x00 here, the host goes by the machine byte, 33's first); its reports are 44 / 43 */
-static const uint8_t mr_flag[18] = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0x7f, 0x00, 0x20,
+/* 0.5.0: 43 SAMPLER 0x20 (DSP SAMPLE's; its reports carry the tag 0x29C1, 0021) */
+static const uint8_t mr_flag[18] = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0x20, 0x00, 0x20,
                                     0x28, 0x38, 0x78, 0x18, 0x00, 0x10, 0x30};
 static struct {
   uint8_t m[12];       /* the machine the host was last told (or the boot's) */
@@ -683,6 +769,8 @@ static int32_t mr_tick(void) {   /* 1: nothing left to send */
 #define VT_SAMPLEPAGE 0x401e3170u  /* 1045: SamplePageView, the SMPL page (its typeinfo "14SamplePageView" [code]) */
 #define DSPS_M 45     /* 1045: DSP SAMPLE (0021), its SMP P11 banked; 7h: on knob A of its SRC page, ENG on SMPL D */
 #define DSPS_P 10
+#define SA_M 43       /* 0.5.0 SAMPLER (0021): SMP (P11) on knob A of its SRC page, as DSP SAMPLE's */
+#define SMP_M(m) ((m) == DSPS_M || (m) == SA_M)   /* the machines whose SMP (P11) is knob A's list */
 /* rui1027b: P1..P8 as the page itself shows them, by its own methods (the knob loop's): knob -> record id by the view's
    vtable +0x9c (0x400d3544 on SynthPageView; 0 an unused knob), the value by vtable +0x54 (page_get_value 0x40038462,
    lock -1: the sound's own value, not a p-lock) [code]. The kit word lags a turn by the bank's drain (~0.5..1.3 s while
@@ -825,7 +913,11 @@ static int32_t sv_page(void *ctrl) {
 static uint16_t sv_word(int32_t t, int32_t i, int32_t lock) {
   const volatile uint8_t *w = KWORD(t, i);   /* P1..P16 contiguous: 0021's knob word 9 + i at sound + 18 + 2 i */
   int32_t knob = i;
+  if (MACHINE_OF(t) == SA_M && i < 8) return 0;   /* 0.5.0: SAMPLER has no P1..P8: 0 in the 2A, as in its 03 / 04 */
   if (MACHINE_OF(t) == DSPS_M) knob = i == DSPS_P ? 0 : i == 0 ? 8 : i;   /* 7h: knob A is SMP (P11); ENG (P1) on the SMPL page */
+  else if (MACHINE_OF(t) == SA_M) knob = i == DSPS_P ? 0 : i == 12 ? 1 : i == 13 ? 2 : i == 11 ? 3 : i == 8 ? 4 : i == 9 ? 5 : i > 13 ? i - 8 : 8;
+                                    /* 0.5.0: SAMPLER's SRC page (registry's row): SMP STRT END PLAY / TUNE FINE LOOP LEV =
+                                       P11 P13 P14 P12 / P9 P10 P15 P16; P1..P8 none. The P is the word (17..24), not the knob */
   if (knob < 8 && sv.view) {           /* the page's own value (8.8, as the kit word) */
     const uint32_t *vt = *(const uint32_t *const *)sv.view;
     int32_t id = ((pv_id_fn)vt[0x9c / 4])(sv.view, knob);
@@ -1023,6 +1115,7 @@ static int32_t DIN_FREE(void) {
 }
 static uint32_t din_sent, din_drop;
 
+static void qp_cmd(const uint8_t *b, int32_t n);
 static int32_t sysex_body(const uint8_t *d, int32_t len) {
   int32_t n = len - 7;               /* bytes between <ver> and F7 */
   const uint8_t *b = d + 6;
@@ -1056,8 +1149,13 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
     break;
   case 0x3c:
     break;
+  case 0x5a:     /* 0.5.0: <op> ...: the host command (qp_cmd, below), answered 2D 01 10 <op> <status> */
+    qp_cmd(b, n);
+    break;
   case 0x4a:     /* 1040: <track 0..11> <browse 0/1>: the host's file browser over the bank list (YES / NO its own while 1) */
     if (n == 2 && b[0] == 0x7f && b[1] <= 1) { ls_host_presets = b[1]; break; }
+    if (n >= 2 && b[0] == 0x7e) { fk_claim = b[1] & 1; break; }   /* fk (0.5.0): the host's key claims (bits 1..6 and any later
+                                                                     bytes for later claims: read the first only) */
     if (n != 2 || b[0] > 11 || b[1] > 1) { rx_bad++; return 1; }
     ls_in_v = (uint32_t)b[0] << 8 | b[1];
     ls_in_gen++;
@@ -2193,6 +2291,8 @@ static void ls_queue(uint8_t on, uint8_t why) {
   ls.qn++;
 }
 
+#define LS_PREV_KNOB 7                 /* 0.5.0: knob H, the host's browser's preview level (ls_enc) */
+
 /* in flush(), after the 30, before the keys and turns */
 static int32_t ls_flush(void) {
   uint32_t i, k;
@@ -2212,16 +2312,23 @@ static void ls_close(uint8_t why) {
   ls.closes++;
   ls.why[why < 6 ? why : 5]++;
   st.acc[0] = 0;                       /* turns not yet sent belong to the list that closed */
+  st.acc[LS_PREV_KNOB] = 0;            /* (and knob H's, the browser's preview level) */
   ls_queue(0, why);
 }
 
 /* ev_enc, the page closed: 1 the list's (the turn eaten) */
 static int32_t ls_enc(int32_t idx, int32_t delta) {
+  if (ls.on && ls.browse && ls.mach != 40 && ls.mach != 41 && idx == LS_PREV_KNOB) {   /* 0.5.0: knob H in the host's
+                                       sample browser, its preview level (FM's / JUNO's preset browser: as any knob) */
+    st.acc[LS_PREV_KNOB] += delta;
+    flush();
+    return 1;
+  }
   if (ls.on && idx != ls.knob) { ls_close(3); return 0; }
   if (idx != 0 || st.splash_on) return 0;
   if (!ls.on) {
-    if (sv.on && sv.show && (ls_banked(sv.mach) || sv.mach == DSPS_M)) {   /* 7h: DSP SAMPLE's knob A is SMP (P11) */
-      ls.track = sv.track; ls.mach = sv.mach; ls.p = sv.mach == DSPS_M ? DSPS_P : 0;
+    if (sv.on && sv.show && (ls_banked(sv.mach) || SMP_M(sv.mach))) {   /* 7h: DSP SAMPLE's knob A is SMP (P11); 0.5.0 SAMPLER's */
+      ls.track = sv.track; ls.mach = sv.mach; ls.p = SMP_M(sv.mach) ? DSPS_P : 0;
     } else return 0;
     ls.on = 1; ls.knob = (uint8_t)idx; ls.tick0 = st.ticks;
     ls.opens++;
@@ -2239,19 +2346,20 @@ static int32_t ls_enc(int32_t idx, int32_t delta) {
 static int32_t ls_key(uint32_t code) {
   if (!ls.on) return 0;
   if (code >= K_NAV0 && code <= K_NAV1) {
+    uint32_t fn = BIT(st.stock_down, K_FUNC) || BIT(st.both_down, K_FUNC) || BIT(st.our_down, K_FUNC);
     ls.down |= 1u << (code - K_NAV0);
     /* 1040: FUNC + YES on a row: the host's file browser for that row (4A on 3; stock's sample list has the same
        Fn + YES hint). YES's press and release are eaten; stock had FUNC alone (nothing on its own). Until the host
        answers 4A <track> 1 (within a second, else the list's YES / NO again: an older host) and while its browser is
        open, YES and NO go to the host as 31 like LEFT RIGHT UP DOWN; its 4A <track> 0 gives them back to the list. */
-    if (code == K_YES && !ls.browse &&
-        (BIT(st.stock_down, K_FUNC) || BIT(st.both_down, K_FUNC) || BIT(st.our_down, K_FUNC))) {
+    if (code == K_YES && !ls.browse && fn) {
       ls.browse = 1; ls.br_ack = 0; ls.br_tick = st.ticks; ls.br_gen = ls_in_gen; ls.browses++;
       ls_queue(3, 0);
       flush();
       return 1;
     }
-    if ((code == K_YES || code == K_NO) && !ls.browse) {
+    /* 0.5.0: FUNC + NO in a sample list is the host's (below); in FM's / JUNO's preset list it closes as NO */
+    if ((code == K_YES || (code == K_NO && (!fn || ls.mach == 40 || ls.mach == 41))) && !ls.browse) {
       if (code == K_YES) {             /* the trigs held now: the host's 48 (flags 1) locks them */
         uint32_t o = SQ_GRIDOBJ;
         ls.lk_lo = ls.lk_hi = 0;
@@ -2265,7 +2373,7 @@ static int32_t ls_key(uint32_t code) {
     }
     ls.keys++;
     ls.fwd |= 1u << (code - K_NAV0);
-    queue_key(code, 1);
+    queue_key(code, fn ? 2 : 1);       /* 0.5.0 (browser FUNC): FUNC held -> 31 <code> 2 (an older host reads a press) */
     flush();
     return 1;
   }
@@ -2292,9 +2400,12 @@ static void ls_tick(void) {
   if (ls_in_gen != ls.br_gen) {        /* 1040: the host's 4A <track> <browse> */
     uint32_t v = ls_in_v;
     ls.br_gen = ls_in_gen;
-    if (ls.on && (v >> 8) == ls.track) { ls.browse = v & 1; ls.br_ack = 1; }
+    if (ls.on && (v >> 8) == ls.track) {
+      if (ls.browse && !(v & 1)) st.acc[LS_PREV_KNOB] = 0;   /* knob H's turns not yet sent: the browser's that ended */
+      ls.browse = v & 1; ls.br_ack = 1;
+    }
   }
-  if (ls.browse && !ls.br_ack && st.ticks - ls.br_tick > 20) { ls.browse = 0; ls.br_timeouts++; }   /* no answer in 1 s */
+  if (ls.browse && !ls.br_ack && st.ticks - ls.br_tick > 20) { ls.browse = 0; ls.br_timeouts++; st.acc[LS_PREV_KNOB] = 0; }   /* no answer in 1 s */
 }
 
 /* 1046, the UI tick after ls_tick: UP + SRC's list, opened once the view shows the host's frame for that track (or,
@@ -2504,10 +2615,15 @@ static void tick_body(void *ctrl) {
     }
     if (st.pend_hello && sv.on) { sv.pend29 = 1; sv.p_track = sv.track; sv.p_on = 1; sv.vals_all = 1; }   /* 1027 */
   } else {
+    if (st.port_ticks) pmo.lost_n++;   /* pm: the port dropped: the modulation fades out (once a drop) */
     st.port_ticks = 0;
     st.hello_n = 0;
     st.pend_hello = 0;
+    qp.live = 0;                       /* 0.5.0: no QPERF report until the next hello */
+    qp.hello = 0;                      /* (L4: qp_tick waits for this connection's hello) */
+    qp.ack_t = qp.ack_h; qp.ref_t = qp.ref_n;   /* the old connection's answers: not for the next host */
     ls_host_presets = 0;               /* 0.4.0: another host may come */
+    fk_claim = 0;                      /* fk (0.5.0): UP + LEFT / RIGHT stock's until the next host claims them */
     if (sq.on) sq_forget();            /* 1032 */
   }
   if (splash_req) {
@@ -2923,13 +3039,34 @@ static int32_t key_body(void *brain, void *ev) {
      press and release are eaten (no trig placed, nothing to the host's seq), UP stays whose it was. 1038: T6..T10 too
      (6 INSERT FX, 7 SAMPLE / AUTO, 8 REC, 9 SCOPE, 10 SIDECAR; stock's UP + T6..T10 = T alone [measured, rled_emu.py
      stockup]). 1046: T11..T13 too (11 SONG, 12 PROJECT, 13 POOL; stock's UP + T11..T13 = T alone, a menu open too
-     [measured, stockup]); the page map is the host's (49 1 carries the trig's number only). */
-  if (code <= 12 && UPH()) {
+     [measured, stockup]); the page map is the host's (49 1 carries the trig's number only). t14 (0.5.0): T14 too (14
+     MORPH; stock's UP + T14 = T alone [measured, stockup, stockupkeys]; a host without page 14 counts 49 1 1 14 as a bad
+     message and does nothing). T15 / T16 stay stock's: no host page asks for them. */
+  if (code <= 13 && UPH()) {
     SET(st.eat, code);
     dp.page_req = code + 1;
     dp.pages++;
     if (!k44.up_map) k44.up_trig = 1;   /* 1044: a combo, not the map (a trig while the map shows: both) */
     return 1;
+  }
+  /* fk (0.5.0): UP held + LEFT / RIGHT, the host's GENERATOR / FILL: page requests 49 1 1 15 / 16 (the next codes after
+     T14's), only while the host claims them (4A 7E 1, sent after each hello by a host that has the pages; the hello's caps2
+     bit 0 says this build can). Otherwise and wherever stock or a page may use an arrow with UP held, the arrow stays
+     where it went before: the page open (the page's 31s: a host page reads UP + RIGHT itself), the splash, the bank list
+     (its nav keys), a stock menu / window / browser / list on top (up_cursor: UP and the arrows are its cursor), TRK or
+     FUNC held, a trig held (stock's in GRID REC: its micro timing / popup; seq mode's: the poly track's UP). The arrow's
+     press and release are eaten (SET eat), UP stays stock's (UP alone changes nothing on the main screen [stockup]). */
+  if ((code == K_LEFT || code == K_RIGHT) && HELD(K_UP)) {
+    if (fk_claim && !st.active && !st.splash_on && !ls.on && !u46.seq && !HELD(K_TRK) && !HELD(K_FUNC) &&
+        !(sq.mode && (sq.down[0] & 0xffffu)) && !(st.stock_down[0] & 0xffffu) && !up_cursor(sv.top_vt)) {
+      SET(st.eat, code);
+      dp.page_req = code == K_LEFT ? 15 : 16;
+      dp.pages++;
+      fk.reqs[code - K_LEFT]++;
+      if (!k44.up_map) k44.up_trig = 1;   /* a combo, not the map (as UP + Tn) */
+      return 1;
+    }
+    fk.stock++;
   }
   /* 1046, UP + SRC (the page closed, no host trig held: a held trig + SRC stays the host's lock page): the selected
      track's source list in one press. SRC goes to stock (its SRC page: the 1027 view on a Sidecar machine); on
@@ -2945,7 +3082,7 @@ static int32_t key_body(void *brain, void *ev) {
     k44.up_trig = 1;
     if (ls.on) ls_close(4);
     u46.src_t = 0;
-    if (t <= 11 && (ls_banked(m) || m == DSPS_M) && mr_vb(t, m) != 0x7f) { u46.src_t = st.ticks | 1; u46.src_m = m; }
+    if (t <= 11 && (ls_banked(m) || SMP_M(m)) && mr_vb(t, m) != 0x7f) { u46.src_t = st.ticks | 1; u46.src_m = m; }
     SET(st.stock_down, code);
     return 0;
   }
@@ -2963,9 +3100,9 @@ static int32_t key_body(void *brain, void *ev) {
   if (!st.active && ls_key(code)) return 1;
   /* 1049: FUNC + YES on a banked machine's or DSP SAMPLE's SRC view (the host's): the list with the host's browser */
   if (!st.active && !ls.on && code == K_YES && !st.splash_on && sv.on && sv.show && !sv.covered && ls.qn + 2 <= LS_NQ &&
-      (int32_t)sv.track == SEL_TRACK && (ls_banked(sv.mach) || sv.mach == DSPS_M) && !(sq.mode && (sq.down[0] & 0xffffu)) &&
+      (int32_t)sv.track == SEL_TRACK && (ls_banked(sv.mach) || SMP_M(sv.mach)) && !(sq.mode && (sq.down[0] & 0xffffu)) &&
       (BIT(st.stock_down, K_FUNC) || BIT(st.both_down, K_FUNC) || BIT(st.our_down, K_FUNC))) {
-    ls.track = sv.track; ls.mach = sv.mach; ls.p = sv.mach == DSPS_M ? DSPS_P : 0;
+    ls.track = sv.track; ls.mach = sv.mach; ls.p = SMP_M(sv.mach) ? DSPS_P : 0;
     ls.on = 1; ls.knob = 0; ls.tick0 = st.ticks;
     ls.opens++; ls.srcyes++;
     ls_queue(1, 0);
@@ -3216,8 +3353,10 @@ typedef int32_t (*cu_printf_fn)(void *str, const char *fmt, ...);
 #define CU_CP 49         /* 1051: CHOP (MT TEST; 0021: ext_render, voice flag 0x18; rytm-teensy docs/CHOP.md) */
 #define CU_MI 50         /* 7o: MIDI (HH TEST; 0021: ext_render, reports 44 / 43; rytm-teensy core/midim/midim.h) */
 #define CU_MS 52
-/* steps: 0021's ext_steps answer (0029's stepped knobs: mode << 8 | N; 0 continuous) */
-struct cu_knob { const char *lng, *sht; int16_t look; uint8_t text, def; uint16_t steps; };
+#define CU_SA 43         /* 0.5.0: SAMPLER (FUNC. GEN.; 0021: ext_render, voice flag 0x20, tag 0x29C1): page "2" = its SRC row */
+/* steps: 0021's ext_steps answer (0029's stepped knobs: mode << 8 | N; 0 continuous). lo / hi (0.5.0, in the padding): the
+   record's range lo..hi when hi is not 0 (else 0..127) */
+struct cu_knob { const char *lng, *sht; int16_t look; uint8_t text, def; uint16_t steps; uint8_t lo, hi; };
 static const int16_t cu_p2[8] = {438, 457, 458, 459, 460, 403, 404, 405};   /* 0021's us_p2rec: sample words 17..24 */
 static const int16_t cu_src[8] = {398, 443, 399, 400, 401, 402, 406, 407};  /* MULTISAMPLE / WAVETABLE / GRANULAR P1..P8 */
 static const char cu_chd[16][5] = {"OFF", "MAJ", "MIN", "SUS2", "SUS4", "7", "MAJ7", "MIN7",
@@ -3239,6 +3378,9 @@ const char cu_li_short[] = "LVIN";
 const char cu_cp_name[] = "CHOP";        /* 1051: machine 49's names (registry patches) */
 const char cu_cp_short[] = "CHOP";
 const char cu_mi_name[] = "MIDI";        /* 7o: machine 50's names (registry patches) */
+const char cu_sa_name[] = "SAMPLER";     /* 0.5.0: machine 43's names (registry patches) */
+const char cu_sa_short[] = "SMPR";
+static const char cu_play[9][6] = {"FWD", "REV", "FLP", "RLP", "SLICE", "GRAIN", "STRCH", "PLUCK", "WAVE"};   /* the host's 9 zones */
 /* 1051: LIVE IN's and CHOP's list texts (rytm-teensy docs/LIVE-IN.md 4, docs/CHOP.md "On the Rytm") */
 static const char cu_inpt[4][4] = {"L", "R", "L+R", "STR"};
 static const char cu_mon[2][5] = {"ALW", "TRIG"};
@@ -3334,9 +3476,20 @@ static const struct cu_knob cu_mip2k[8] = {
     {"CC 3 Value", "VAL3", CU_DIAL, 0, 0, 0},       {"CC 4 Value", "VAL4", CU_DIAL, 0, 0, 0},
     {"CC 1 Select", "SEL1", CU_DIAL, 32, 0, 0},     {"CC 2 Select", "SEL2", CU_DIAL, 32, 0, 0},
     {"CC 3 Select", "SEL3", CU_DIAL, 32, 0, 0},     {"CC 4 Select", "SEL4", CU_DIAL, 32, 0, 0}};
+/* 0.5.0 SAMPLER: knobs B..H of its SRC page are the shared records of words 17..24 (cu_p2), so its table is page 2's in
+   word order: TUNE FINE (word 19: SMP, on 441 instead; record 458 labelled "-", its default SMP's 0) PLAY STRT END LOOP LEV. TUNE the stock SMPL TUNE look
+   (39: -60..+60 over 4..124), PLAY 9 zones (text 33: FWD REV FLP RLP SLICE GRAIN STRCH PLUCK WAVE), STRT END LOOP 0..120
+   (LOOP 0 = OFF, text 19) */
+static const struct cu_knob cu_sap2k[8] = {
+    {"Tune", "TUNE", 39, 0, 64, 0, 4, 124},            {"Fine Tune", "FINE", CU_BIPOLAR, 0, 64, 0},
+    {"-", "-", CU_DIAL, 0, 0, 0},                      {"Play Mode", "PLAY", CU_DIAL, 33, 0, 0x109},
+    {"Start", "STRT", CU_DIAL, 0, 0, 0, 0, 120},       {"End", "END", CU_DIAL, 0, 120, 0, 0, 120},
+    {"Loop", "LOOP", CU_DIAL, 19, 0, 0, 0, 120},       {"Level", "LEV", CU_LEVEL, 0, 100, 0}};
 /* dm / dt / dtick (1051): a choice of LIVE IN or CHOP waiting for its page-2 defaults (cu_defs_tick) */
 /* mi_t / mi_tick (7o): the track whose MIDI defaults were just written, its reports held until the words have settled (the live copy glides) */
-static struct { uint8_t init, p2m; uint16_t setups; uint32_t texts; uint8_t p1m, dm, dt, mi_t; uint32_t preps, dtick, defs, mi_tick; } cu
+/* home / dfrom (0.5.0): the selected track's machine while no machine list is up / when a choice was noted (SAMPLER keeps SMP from 45 or 43) */
+static struct { uint8_t init, p2m; uint16_t setups; uint32_t texts; uint8_t p1m, dm, dt, mi_t; uint32_t preps, dtick, defs, mi_tick;
+                uint8_t home, dfrom, home_t; } cu
     __attribute__((aligned(4)));
 
 /* machine m's knobs: SRC (p2 0) or page 2 (p2 1); 0: not ours (6-OP FM: page 2 only, MULTISAMPLE's, E..H shown) */
@@ -3347,11 +3500,12 @@ static const struct cu_knob *cu_tab(int32_t m, int32_t p2) {
   if (m == CU_LI) return p2 ? cu_lip2k : cu_lik;   /* 1051 */
   if (m == CU_CP) return p2 ? cu_cpp2k : cu_cpk;
   if (m == CU_MI) return p2 ? cu_mip2k : cu_mik;   /* 7o */
+  if (m == CU_SA) return p2 ? cu_sap2k : 0;         /* 0.5.0: no SRC records of its own (cu_src stays) */
   return m == CU_FM && p2 ? cu_p2k : 0;
 }
 static const char *cu_grp(int32_t m) {
   return m == CU_MS ? cu_ms_short : m == CU_WT ? cu_wt_short : m == CU_GR ? cu_gr_short : m == CU_LI ? cu_li_short
-       : m == CU_CP ? cu_cp_short : m == CU_MI ? cu_mi_name : cu_fm_short;
+       : m == CU_CP ? cu_cp_short : m == CU_MI ? cu_mi_name : m == CU_SA ? cu_sa_short : cu_fm_short;
 }
 
 /* the value text of our records (functor = the record's descriptor + 20, as 0021's R1 measured) */
@@ -3398,6 +3552,7 @@ int32_t cu_text(void *functor, int32_t value, void *str) {
     case 30: return v ? CU_PRINTF(str, cu_fmt_d, v - 1) : CU_PRINTF(str, cu_fmt_s, cu_off);
     case 31: return v ? CU_PRINTF(str, cu_fmt_d, (v - 1) * 127 / 126) : CU_PRINTF(str, cu_fmt_s, cu_off);
     case 32: return v ? CU_PRINTF(str, cu_fmt_d, v - 1) : CU_PRINTF(str, cu_fmt_s, cu_off);
+    case 33: return CU_PRINTF(str, cu_fmt_s, cu_play[(v * 9) >> 7]);   /* 0.5.0: SAMPLER's PLAY */
     case 26: return v >= 127 ? CU_PRINTF(str, cu_fmt_s, cu_hold) : v ? CU_PRINTF(str, cu_fmt_d, v) : CU_PRINTF(str, cu_fmt_s, cu_slc);
     case 9:
     case 12: {   /* 1036: the host's names (47) for GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST. 1038: the bank
@@ -3425,8 +3580,8 @@ static void cu_knob(int32_t r, const struct cu_knob *k, const char *grp) {
   rec[10] = (uint32_t)k->lng;
   rec[11] = (uint32_t)grp;
   rec[12] = (uint32_t)k->sht;
-  rec[2] = 0;
-  rec[3] = k->steps & CU_KEEP ? 0x7fe0 : 0x7f00;
+  rec[2] = (uint32_t)k->lo << 8;
+  rec[3] = k->hi ? (uint32_t)k->hi << 8 : k->steps & CU_KEEP ? 0x7fe0 : 0x7f00;
   rec[4] = (uint32_t)k->def << 8;
   if (k->steps & CU_KEEP) rec[5] = 1;   /* 1038: the fine flag (+0x14): saved locks keep the bank */
 }
@@ -3479,8 +3634,8 @@ void cu_prep(int32_t m, int32_t t) {
      words would stutter, tape-stop, reverse and loop every hit. Noted here, written by cu_defs_tick once the choice stays
      (the machine list closed: its cursor's previews call set_machine too) */
   /* (only a choice made in the machine list: a kit / sound / project load that calls set_machine keeps its own words) */
-  if ((m == CU_LI || m == CU_CP || m == CU_MI) && (uint32_t)t < 12u && sv.top_vt == 0x401e5bf4u) {
-    cu.dm = (uint8_t)m; cu.dt = (uint8_t)t; cu.dtick = st.ticks;
+  if ((m == CU_LI || m == CU_CP || m == CU_MI || m == CU_SA) && (uint32_t)t < 12u && sv.top_vt == 0x401e5bf4u) {
+    cu.dm = (uint8_t)m; cu.dt = (uint8_t)t; cu.dtick = st.ticks; cu.dfrom = t == cu.home_t ? cu.home : 0;
   }
 }
 
@@ -3491,7 +3646,7 @@ int32_t cu_steps(int32_t r) {
   if (r < -12) {   /* 7o, 0021's us_step, the UI task: track -13 - r chose its machine in the SOUND menu, which has no list view for cu_prep to see */
     t = -13 - r;
     m = MACHINE_OF(t);
-    if ((uint32_t)t < 12u && (m == CU_LI || m == CU_CP || m == CU_MI)) { cu.dm = (uint8_t)m; cu.dt = (uint8_t)t; cu.dtick = st.ticks; }
+    if ((uint32_t)t < 12u && (m == CU_LI || m == CU_CP || m == CU_MI || m == CU_SA)) { cu.dm = (uint8_t)m; cu.dt = (uint8_t)t; cu.dtick = st.ticks; cu.dfrom = t == cu.home_t ? cu.home : 0; }
     return 0;
   }
   if (r < 0) {   /* 7o, ext_render (the audio interrupt, reads only): track -1 - r on MIDI is being set up: chosen, or its defaults not settled */
@@ -3517,6 +3672,10 @@ static void cu_tick(void) {
   /* 1045: SMP's value text ours, once 0021 has given the record its dial (ext_descriptors, at its first value text);
      0029 then wraps it (keeping ours as the record's own text) */
   if (d[8] != (uint32_t)cu_text && d[8] == CU_DESC(CU_DIAL)[8]) d[8] = (uint32_t)cu_text;
+  if (sv.top_vt != 0x401e5bf4u && SEL_TRACK <= 11) {   /* 0.5.0: frozen while the machine list is up; SMP is kept only for that track */
+    cu.home = (uint8_t)MACHINE_OF(SEL_TRACK);
+    cu.home_t = (uint8_t)SEL_TRACK;
+  }
   if (cu.init || CUBOX[0] != 0x43485244u) return;   /* once; not with a 0021 without us_cubox */
   cu.init = 1;
   cu_src_setup(CU_MS);
@@ -3569,8 +3728,10 @@ static void wr_tick(void) {
     if (rec <= 0) status = 2;
     else if (k < 8 && (m == CU_WT || m == CU_GR || m == CU_MS || m == CU_LI || m == CU_CP || m == CU_MI) &&
              CU_REC(cu_src[0])[0] != (uint32_t)m) status = 1;   /* (1051: LIVE IN and CHOP share the SRC records too) */
-    else if (k >= 8 && (m == CU_LI || m == CU_CP || m == CU_MI) && cu.p2m != (uint32_t)m) status = 1;   /* 1051: their page 2 too */
-    else if ((k == 0 || (k == DSPS_P && m == DSPS_M)) && (fl & 1) && (lk = ls_lock(t, v, 9 + k)) >= 0) {   /* 1038: the
+    else if (k >= 8 && (m == CU_LI || m == CU_CP || m == CU_MI) && cu.p2m != (uint32_t)m)
+      status = 1;   /* 1051: their page 2 too. 0.5.0: never SAMPLER: SMP is 441 (DSP SAMPLE's own) and the shared page-2
+                       records' kind is 0x36 (>= 53), so the drain writes the word whatever they are set up for, unclamped */
+    else if ((k == 0 || (k == DSPS_P && SMP_M(m))) && (fl & 1) && (lk = ls_lock(t, v, 9 + k)) >= 0) {   /* 1038: the
                                                                      list's YES with trigs held: locks (1045: P11 too) */
       status = lk ? 3 : 4;
       if (lk) ux.w_full++; else ux.w_locked++;
@@ -3600,6 +3761,7 @@ static void cu_defs_tick(void) {
   for (k = 8; k < 16; ++k) {
     int32_t rec = SPID(9 + k, m), v = (int32_t)kn[k - 8].def << 8;
     if (rec <= 0) continue;
+    if (m == CU_SA && k == 10 && SMP_M(cu.dfrom)) continue;   /* 0.5.0 (owner): from DSP SAMPLE or SAMPLER its sample (word 19) stays */
     SET_PARAM(v, t, 9 + k);
     US_COMMIT(US_BANK(), t, rec, v);
   }
@@ -3664,7 +3826,7 @@ static void dp_tick(void) {
     dp.sent2++;
   }
   for (k = 0; k < 8; ++k) {
-    uint8_t v = (uint8_t)(*KWORD(t, k) & 0x7f);
+    uint8_t v = mc == SA_M ? 0 : (uint8_t)(*KWORD(t, k) & 0x7f);   /* 0.5.0: SAMPLER's P1..P8 0, as its 03 / 04 */
     int32_t rec = SPID(9 + k, mc);
     const char *l = rec > 0 ? (const char *)CU_REC(rec)[12] : 0;
     char lb[4] = {0, 0, 0, 0};
@@ -3686,6 +3848,483 @@ static void dp_tick(void) {
   if (!send(m, n)) return;
   dp.owed3 = 0;
   dp.sent3++;
+}
+
+/* ---- 0.5.0: the QUICK PERF knob, the Rytm's scene, the host command (design.md "0.5.0"; rytm-teensy sim/protocol.py
+ * SEQ_QPERF, SEQ_SCENE, HOST_CMD; core/mod/scene.h, core/mod/rytm_out.h)
+ * Rytm -> host  2D 01 0E <pos >> 7> <pos & 7F> <mask lo7> <mask hi5> <flags>   the knob 0..255 (the OS's word, the panel
+ *               MCU's last message), the PERF macros on it (the kit's 12 bits), flags bit 0 FUNC held, bit 1 the knob has
+ *               sent since the Rytm booted (its word or time stamp changed, or not 0 at the first block: until then pos
+ *               means nothing), bit 2 the macros muted (not located: 0). On a change, at most one per QP_GAP audio blocks
+ *               (8 ms), the newest when its time comes (a value in between may be skipped, the last never), from the audio
+ *               interrupt by isr_send (polled every block: 1500 a second); again after each hello.
+ *               2D 01 0F <n>   the active scene 1..12, 0 none (the kit's byte), on a change by any path (pads, CC 92,
+ *               the host command, a kit load) at the next UI tick, and after each hello.
+ *               2D 01 10 <op> <status>   the host command's answer: 0 done, 1 refused (a bad op or value).
+ * host -> Rytm  5A 01 01 <set lo7> <set hi5> <clr lo7> <clr hi5>   MUTE: the tracks in set muted, those in clr (and not
+ *               in set) unmuted, by the OS's own setter (mute_set, as CC 94: no toggle, no CC out)
+ *               5A 01 02 <n 0..12>   SCENE: n engaged, 0 none (scene_set, as CC 92)
+ *               5A 01 03 <macro 1..12> <value 0..127>   PERF: the macro's amount value << 8 (as a PERF CC)
+ *               Run in the MIDI task (0022's router -> rui_sysex), the task the OS runs those CCs in [measured]. */
+#define QP_POS    (*(const volatile uint32_t *)0x42f9210cu)   /* the pot, 0..255, never cleared [measured, 1.73 + 1.74] */
+#define QP_STAMP  (*(const volatile uint32_t *)0x42f92110u)   /* its message's time stamp (cleared once posted) [code] */
+#define QP_FUNC   (*(const volatile uint8_t *)0x418d1346u & 0x20u)   /* panel key state group 6 bit 5 [measured] */
+#define QP_GAP    12u                                         /* audio blocks: 8 ms */
+#define QP_APP    ((uint8_t *(*)(void))0x4017f83eu)           /* the app singleton (CC 92 / 94's) */
+#define QP_MASK   ((int32_t (*)(void *))0x400a6da2u)          /* (app + 352): the kit's macros on the pot (the type-5 handler's) */
+#define QP_SCENE  ((void (*)(void *, int32_t, int32_t))0x400a7d04u)            /* scene_set(app + 352, 0..11 / -1, send) */
+#define QP_MUTE   ((void (*)(void *, int32_t, int32_t, int32_t))0x400b786cu)   /* mute_set(app + 48, track, on, send) */
+#define QP_PERFO  ((void *(*)(void))0x40194888u)                               /* the macros' owner (a PERF CC's) */
+#define QP_PERF   ((void (*)(void *, int32_t, int32_t))0x400b90a4u)            /* (owner, macro 0..11, value << 8) */
+#define QP_KSCENE 0x97eu                                      /* kit + 0x97e: the scene 0..11, 0xff none [measured] */
+typedef uint8_t *(*qp_kit_fn)(void *);
+
+/* the audio interrupt (rui_render_in): the knob's report */
+static void qp_isr(void) {
+  uint32_t pos = QP_POS, mk = qp.mask & 0xfffu, v, o = qp.owe_n;
+  uint8_t m[13];
+  if (!qp.init) { qp.init = 1; qp.pos0 = pos; qp.stamp0 = QP_STAMP; qp.moved = pos != 0; qp.last = 0xffffffffu; }
+  if (!qp.moved && (pos != qp.pos0 || QP_STAMP != qp.stamp0)) qp.moved = 1;
+  if (!qp.live) return;
+  pos &= 0xffu;
+  v = pos << 16 | mk << 4 | (qp.moved ? 2u : 0u) | (QP_FUNC ? 1u : 0u);
+  if ((v == qp.last && o == qp.owes) || fp.blocks - qp.blk < QP_GAP) return;
+  m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x2d; m[5] = 0x01; m[6] = 0x0e;
+  m[7] = (uint8_t)(pos >> 7); m[8] = (uint8_t)(pos & 0x7f); m[9] = (uint8_t)(mk & 0x7f); m[10] = (uint8_t)(mk >> 7);
+  m[11] = (uint8_t)(v & 3u); m[12] = 0xf7;
+  if (!isr_send(m, 13)) return;          /* the next block */
+  if (qp.sent && (!qp.gmin || fp.blocks - qp.blk < qp.gmin)) qp.gmin = fp.blocks - qp.blk;
+  qp.last = v; qp.owes = o; qp.blk = fp.blocks; qp.sent++;
+}
+
+/* ---- pm (0.5.0): the Sidecar modulates the Rytm's own sound parameters (design.md "pm", and
+ * the param-mod contract in the maintainer's design notes). Per (track t 0..12, word w) an entry: an OFFSET (the host's summed
+ * sources) and an OVERRIDE with a mix (it replaces the base: the smoother's state, a Rytm p-lock included). They act in
+ * the stage S around the audio interrupt's LFO call (pmo_lfo_det, registry: 0x40120fae `jsr lfo_block`): pmo_pre on
+ * words 1..8 (LFO 1's own settings, read by it), the stock LFO, pmo_post on 9..41, then the VELOCITY MOD /
+ * AFTERTOUCH route amounts (w 48..55: the stock route4 again with the amount's change, as stage E applies the stored
+ * amount) and the trig velocity (w 56: pmo_vel_det in trig_fire, registry 0x4009afa0). S writes only the effective
+ * array, which stage A rebuilds from the state every block: never the kit, the sound, the screen.
+ * host -> Rytm  5A 01 04 <kit> <ramp> <n> {<t> <w> <hi> <lo>} x n      OFFSET, v 14-bit two's complement, 1/64 step
+ *               5A 01 05 <kit> <ramp> <n> {<t> <w | jump << 6> <hi> <lo> <mix>} x n   OVERRIDE, v 1/128 step, mix /127
+ *               5A 01 06 <kit> <ramp> <mask lo7> <mask hi6>           CLEAR the tracks in the mask (offset, mix -> 0)
+ *               5A 01 07                                              STATUS
+ * Rytm -> host  2D 01 10 <op> 1 (refused), 2D 01 10 <op> 2 (slots full, at most once a second), a done op nothing;
+ *               2D 01 11 <slots, 127 max> <ring drops hi lo> <kit drops hi lo> <timeouts> <flags: 1 an override skipped
+ *               for a scene lock in the last second, 2 the hook ran in the last block>
+ * The MIDI task checks a message and queues its records (ring: one writer, one reader); the audio interrupt drains the
+ * ring, owns the entries and the ramps. 250 ms without a 04..06, a USB port drop or a hello: everything fades out over
+ * 32 blocks; a kit change or reload: everything freed at once. */
+/* (the pm state, its defines and records: above, after qp) */
+
+static int32_t pmo_word_ok(uint32_t t, uint32_t w, uint32_t op) {
+  if (t > 12) return 0;
+  if (w >= 1 && w <= 41) return w != 4 && !(t == 12 && (w == 29 || w >= 38));   /* 0 / 4 / the FX's 29, 38..41 never */
+  if (w >= 48 && w <= 55) return t < 12 && op == 4;                             /* VM1..4, AT1..4: offsets only */
+  return w == 56 && t < 12;                                                      /* VEL */
+}
+
+/* the MIDI task: 0 done (or dropped for another kit), 1 refused */
+static int32_t pmo_cmd(const uint8_t *b, int32_t n) {
+  int32_t i, k, cnt, sz;
+  uint32_t h, op = b[0];
+  struct pmo_rec r;
+  for (i = 0; i < n; ++i)
+    if (b[i] > 0x7f) return 1;     /* (USB-MIDI does not enforce 7-bit SysEx data) */
+  if (op == 7) {
+    if (n != 1) return 1;
+    pmo.stat_req++;
+    return 0;
+  }
+  if (op == 6) {
+    if (n != 5 || b[4] > 0x3f) return 1;
+  } else {
+    sz = op == 4 ? 4 : 5;
+    if (n < 4) return 1;
+    cnt = b[3];
+    if (cnt < 1 || cnt > (op == 4 ? 28 : 22) || n != 4 + sz * cnt) return 1;
+    for (i = 0; i < cnt; ++i) {
+      const uint8_t *q = b + 4 + sz * i;
+      if (!pmo_word_ok(q[0], q[1] & 0x3fu, op) || (op == 4 && (q[1] & 0x40))) return 1;
+    }
+  }
+  if (b[1] != (ACTIVE_KIT & 127u)) { pmo.kit_drop++; return 0; }   /* a message for the kit before: not a refusal */
+  pmo.last_blk = fp.blocks;
+  r.op = (uint8_t)op; r.ramp = b[2]; r.pad = b[1];   /* pad: the kit (the drain drops it after a kit change) */
+  cnt = op == 6 ? 1 : b[3];
+  for (k = 0; k < cnt; ++k) {
+    if (op == 6) { r.t = 0; r.w = 0; r.v = (uint16_t)(b[3] | b[4] << 7); r.mix = 0; }
+    else {
+      const uint8_t *q = b + 4 + (op == 4 ? 4 : 5) * k;
+      r.t = q[0]; r.w = q[1]; r.v = (uint16_t)(q[2] << 7 | q[3]); r.mix = op == 5 ? q[4] : 0;
+    }
+    h = pmo.rh;
+    if (h - pmo.rt >= PMO_RING) { pmo.ring_drop++; continue; }
+    pmo.ring[h % PMO_RING] = r;
+    __asm__ volatile("" ::: "memory");   /* the record before the index that publishes it */
+    pmo.rh = h + 1;
+  }
+  return 0;
+}
+
+/* the audio interrupt from here on */
+/* a ramp's step without a divide (divs.l is some 35 cycles on the V4e; a fade of 128 entries did 384): (d >> 9) x
+   32768 / ramp >> 6, |d| < 2^25, so the product stays under 2^31; the last step snaps to the target anyway */
+static const uint16_t pmo_rcp[128] = {
+#define R4(i) 32768u / ((i) ? (i) : 1), 32768u / ((i) + 1), 32768u / ((i) + 2), 32768u / ((i) + 3)
+  R4(0), R4(4), R4(8), R4(12), R4(16), R4(20), R4(24), R4(28), R4(32), R4(36), R4(40), R4(44), R4(48), R4(52), R4(56),
+  R4(60), R4(64), R4(68), R4(72), R4(76), R4(80), R4(84), R4(88), R4(92), R4(96), R4(100), R4(104), R4(108), R4(112),
+  R4(116), R4(120), R4(124)
+#undef R4
+};
+static inline int32_t pmo_step(int32_t d, uint32_t ramp) { return ((d >> 9) * (int32_t)pmo_rcp[ramp & 127u]) >> 6; }
+static void pmo_set(int32_t *cur, int32_t *st, int32_t tg, uint8_t *n, uint32_t ramp) {
+  if (!ramp) { *cur = tg; *n = 0; return; }
+  *st = pmo_step(tg - *cur, ramp);
+  *n = (uint8_t)ramp;
+}
+static void pmo_off(struct pmo_ent *e, int32_t tg, uint32_t ramp) {
+  e->off_tg = tg;
+  pmo_set(&e->off, &e->off_st, tg, &e->n_off, ramp);
+}
+static void pmo_mix(struct pmo_ent *e, int32_t tg, uint32_t ramp) {   /* the mix (the override's value ramps too) */
+  e->mix_tg = tg;
+  if (!ramp) { e->ovr = e->ovr_tg; e->mix = tg; e->n_ovr = 0; return; }
+  e->ovr_st = pmo_step(e->ovr_tg - e->ovr, ramp);
+  e->mix_st = pmo_step(tg - e->mix, ramp);
+  e->n_ovr = (uint8_t)ramp;
+}
+static void pmo_free_all(void) {
+  uint32_t i;
+  uint32_t *p = (uint32_t *)pmo.idx;
+  for (i = 0; i < sizeof pmo.idx / 4; ++i) p[i] = 0;
+  for (i = 0; i < PMO_SLOTS; ++i) pmo.ent[i].tp1 = 0;
+  for (i = 0; i < 13; ++i) pmo.velw[i] = 0;
+  pmo.used = 0; pmo.top = 0; pmo.nfree = 0; pmo.vmmask = 0;
+  pmo.clears++;
+}
+static void pmo_fade(uint32_t mask, uint32_t ramp) {   /* the tracks in mask: offset and mix to 0 */
+  uint32_t i;
+  for (i = 0; i < pmo.top; ++i) {
+    struct pmo_ent *e = &pmo.ent[i];
+    if (e->tp1 && (mask >> (e->tp1 - 1) & 1)) { pmo_off(e, 0, ramp); pmo_mix(e, 0, ramp); }
+  }
+}
+static struct pmo_ent *pmo_get(uint32_t t, uint32_t w) {
+  uint32_t i, s = pmo.idx[t][w];
+  struct pmo_ent *e;
+  if (s) return &pmo.ent[s - 1];
+  while (pmo.nfree && pmo.fstk[pmo.nfree - 1] >= pmo.top) pmo.nfree--;   /* (the top shrank past them) */
+  if (pmo.nfree) i = pmo.fstk[--pmo.nfree];   /* a hole below the top (O(1)), else the next slot */
+  else if (pmo.top < PMO_SLOTS) i = pmo.top;
+  else return 0;
+  e = &pmo.ent[i];
+  e->tp1 = (uint8_t)(t + 1); e->w = (uint8_t)w; e->n_off = e->n_ovr = 0; e->g = 26u + 42u * t + w;
+  e->off = e->off_tg = e->ovr = e->ovr_tg = e->mix = e->mix_tg = 0;
+  pmo.idx[t][w] = (uint8_t)(i + 1);
+  pmo.used++;
+  if (i + 1 > pmo.top) pmo.top = i + 1;
+  return e;
+}
+static void pmo_take(const struct pmo_rec *r) {
+  uint32_t t = r->t, w = r->w & 0x3fu;
+  struct pmo_ent *e;
+  pmo.recs++;
+  if (r->op == 4) {
+    int32_t v = (int32_t)((uint32_t)r->v << 18) >> 18;   /* 14-bit two's complement, 1/64 step */
+    if (!v && !pmo.idx[t][w]) return;
+    if (!(e = pmo_get(t, w))) { pmo.full++; pmo.full_op = 4; return; }
+    pmo_off(e, v << 10, r->ramp);                           /* 8.8 x 4, << 8 */
+  } else {
+    int32_t mix = r->mix >= 127 ? 1 << 23 : r->mix * 66052;
+    if (!mix && !pmo.idx[t][w]) return;
+    if (!(e = pmo_get(t, w))) { pmo.full++; pmo.full_op = 5; return; }
+    e->ovr_tg = (int32_t)r->v << 9;                         /* 1/128 step: 8.8 x 2, << 8 */
+    if (!e->mix && !e->n_ovr) e->ovr = e->ovr_tg;           /* a new override: its value at once, the mix ramps */
+    pmo_mix(e, mix, (r->w & 0x40) ? 0 : r->ramp);
+  }
+}
+static inline __attribute__((always_inline)) void pmo_word(struct pmo_ent *e) {   /* one sound word's entry */
+  uint32_t g = e->g;
+  int32_t v = PMO_EFF[g];
+  if (e->mix) {
+    if (PMO_SCN_ON && (pmo.smask[g >> 5] >> (g & 31) & 1)) { pmo.scn_skips++; pmo.scn_blk = fp.blocks; }
+    else v += ((e->mix >> 8) * ((e->ovr >> 8) - (int32_t)(PMO_STATE[g] >> 16))) >> 15;
+  }
+  v += e->off >> 8;
+  PMO_EFF[g] = (uint16_t)(v < 0 ? 0 : v > 0x7fff ? 0x7fff : v);
+}
+/* the route amounts' changes (VM / AT entries): S-pre reads each track's 8 routes once and builds both halves, the
+   routes into words 1..8 (route4 now, before the LFO reads them) and into 9..41 (route4 in S-post) */
+static void pmo_routes_pre(void) {
+  uint32_t t, k, j, m = pmo.vmmask, base = 26u;
+  for (t = 0; m; ++t, m >>= 1, base += 42u) {
+    const volatile uint32_t *rt = PMO_ROUTES(t);
+    uint32_t any = 0;
+    if (!(m & 1)) continue;
+    for (k = 0; k < 2; ++k) {
+      uint32_t *pre = pmo.rtab[t][0][k], *post = pmo.rtab[t][1][k];
+      for (j = 0; j < 4; ++j) {
+        uint32_t g = rt[4 * k + j] & 0xffffu, wd = g - base;
+        uint32_t d = (uint32_t)(uint16_t)pmo.dam[t][4 * k + j];
+        if (!d || wd < 1 || wd > 41) { pre[j] = post[j] = g; continue; }
+        if (wd <= 8) { pre[j] = d << 16 | g; post[j] = g; any |= 1u << k; }
+        else { post[j] = d << 16 | g; pre[j] = g; any |= 4u << k; }
+      }
+    }
+    pmo.rany[t] = (uint8_t)any;
+    if (any & 1) PMO_ROUTE4(pmo.src[t], pmo.rtab[t][0][0]);
+    if (any & 2) PMO_ROUTE4(pmo.src2[t], pmo.rtab[t][0][1]);
+  }
+}
+static void pmo_routes_post(void) {
+  uint32_t t, m = pmo.vmmask;
+  for (t = 0; m; ++t, m >>= 1) {
+    if (!(m & 1)) continue;
+    if (pmo.rany[t] & 4) PMO_ROUTE4(pmo.src[t], pmo.rtab[t][1][0]);
+    if (pmo.rany[t] & 8) PMO_ROUTE4(pmo.src2[t], pmo.rtab[t][1][1]);
+  }
+}
+static void pmo_time(uint32_t t0) {
+  uint32_t dt = TIMER - t0;
+  pmo.t0 += dt;
+}
+void pmo_pre(void) {
+  uint32_t t0 = TIMER, i, n, kit = ACTIVE_KIT & 127u, h, fmask, framp, faded;
+  pmo.t0 = 0;
+  pmo.runs++;
+  pmo.ran = fp.blocks;
+  if (kit != pmo.kit || pmo.reload_n != pmo.reload_s) {   /* another kit, or the kit reloaded: all at once */
+    pmo.kit = kit; pmo.reload_s = pmo.reload_n;
+    if (pmo.used) pmo_free_all();
+  }
+  h = pmo.rh;
+  __asm__ volatile("" ::: "memory");
+  fmask = 0; framp = 0; faded = 0;
+  if (pmo.hello_n != pmo.hello_s || pmo.lost_n != pmo.lost_s) {   /* a new link or none: fade out, and the old link's */
+    pmo.hello_s = pmo.hello_n; pmo.lost_s = pmo.lost_n;              /* records still in the ring go (no drain: one */
+    pmo.link_drop += h - pmo.rt;                                     /* fade a block at most) */
+    pmo.rt = h;
+    pmo_fade(0x1fffu, PMO_FADE);
+    faded = 1;
+  }
+  for (n = 0; pmo.rt != h && n < PMO_DRAIN; ++n, pmo.rt++) {
+    const struct pmo_rec *r = &pmo.ring[pmo.rt % PMO_RING];
+    if (r->pad != pmo.kit) { pmo.kit_drop++; continue; }   /* pushed for the kit before a change */
+    if (r->op == 6) { fmask |= r->v; framp = r->ramp; pmo.recs++; continue; }   /* CLEARs in a row: one fade */
+    if (fmask) break;              /* a record after CLEARs: the next block (one CLEAR pass a block at most) */
+    pmo_take(r);
+  }
+  if (fmask) { pmo_fade(fmask, framp); faded = 1; }
+  if (!pmo.used) { pmo_time(t0); return; }
+  if (!faded && pmo.last_blk != pmo.to_last && fp.blocks - pmo.last_blk > PMO_TIMEOUT) {   /* the host silent 250 ms
+                                    (else of the other fades: a later block takes it) */
+    pmo.to_last = pmo.last_blk;
+    pmo.timeouts++;
+    pmo_fade(0x1fffu, PMO_FADE);
+  }
+  if (PMO_SCN_ON) {                 /* O3: a Rytm scene lock beats an override on its word (an override may be new) */
+    for (i = 0; i < 18; ++i) pmo.smask[i] = 0;
+    for (i = 0; i < 48; ++i) { uint32_t g = PMO_SCN_G[i]; if (g < 572) pmo.smask[g >> 5] |= 1u << (g & 31); }
+  }
+  pmo.vmmask = 0;
+  for (i = 0; i < pmo.top; ++i) {   /* the ramps (a finished entry at 0 is freed), the route amounts, words 1..8 */
+    struct pmo_ent *e = &pmo.ent[i];
+    if (!e->tp1) continue;
+    if (e->n_off) { if (--e->n_off) e->off += e->off_st; else e->off = e->off_tg; }
+    if (e->n_ovr) {
+      if (--e->n_ovr) { e->ovr += e->ovr_st; e->mix += e->mix_st; } else { e->ovr = e->ovr_tg; e->mix = e->mix_tg; }
+    }
+    if (!e->off && !e->n_off && !e->mix && !e->n_ovr) {
+      pmo.idx[e->tp1 - 1][e->w] = 0;
+      e->tp1 = 0;
+      pmo.used--;
+      pmo.fstk[pmo.nfree++] = (uint8_t)i;
+      continue;
+    }
+    if (e->w <= 8) pmo_word(e);     /* (S-pre writes only 1..8: stage E's sources below are unchanged) */
+    else if (e->w >= 48 && e->w <= 55) {
+      int32_t d = e->off >> 8;
+      uint32_t t = e->tp1 - 1u;
+      if (!(pmo.vmmask >> t & 1)) { pmo.vmmask |= 1u << t; for (h = 0; h < 8; ++h) pmo.dam[t][h] = 0; }
+      pmo.dam[t][e->w - 48] = (int16_t)(d < -32768 ? -32768 : d > 32767 ? 32767 : d);
+    }
+  }
+  while (pmo.top && !pmo.ent[pmo.top - 1].tp1) pmo.top--;
+  for (i = 0; pmo.vmmask >> i; ++i) {   /* the sources as stage E took them (the accent word 39 read here, after
+                                          stages F / G: CONTROL IN or PERF on ACC shifts it a little from stage E's) */
+    int32_t s;
+    if (!(pmo.vmmask >> i & 1)) continue;
+    s = (int32_t)PMO_TVEL[i] + ((PMO_ACC[i] & 8) ? (int16_t)PMO_EFF[26 + 42 * i + 39] : 0);
+    pmo.src[i] = s < -32768 ? -32768 : s > 32767 ? 32767 : s;
+    pmo.src2[i] = PMO_AT[i];
+  }
+  if (pmo.vmmask) pmo_routes_pre();
+  pmo_time(t0);
+}
+void pmo_post(void) {
+  uint32_t t0 = TIMER, i, vw[12];
+  if (pmo.used) {
+    for (i = 0; i < 12; ++i) vw[i] = 0;
+    for (i = 0; i < pmo.top; ++i) {
+      struct pmo_ent *e = &pmo.ent[i];
+      if (!e->tp1) continue;
+      if (e->w <= 41) { if (e->w >= 9) pmo_word(e); }
+      else if (e->w == 56) {
+        int32_t o = e->off >> 8;
+        o = o < -32768 ? -32768 : o > 32767 ? 32767 : o;
+        vw[e->tp1 - 1] = ((uint32_t)o & 0xffffu) | (uint32_t)((e->ovr >> 16) & 0x7f) << 16 | (uint32_t)(e->mix >> 16) << 24;
+      }
+    }
+    if (pmo.vmmask) pmo_routes_post();
+    for (i = 0; i < 12; ++i) pmo.velw[i] = vw[i];
+    pmo.vel_on = 1;
+  } else if (pmo.vel_on) {          /* the last entry gone: no track keeps a VEL word */
+    for (i = 0; i < 12; ++i) pmo.velw[i] = 0;
+    pmo.vel_on = 0;
+  }
+  pmo_time(t0);
+  if (pmo.t0 > pmo.t_max) pmo.t_max = pmo.t0;
+  pmo.t_sum += pmo.t0; pmo.t_n++;
+}
+/* trig_fire (the sequencer clock's interrupt): the trig's velocity 0..127 with the track's VEL entry, 1..127 (a
+   VEL word set turns a velocity 0 trig into 1 at least: the contract's range) */
+int32_t pmo_vel(uint32_t t, int32_t vel) {
+  uint32_t w;
+  int32_t v, m;
+  if (t > 11 || !(w = pmo.velw[t])) return vel;
+  m = (int32_t)(w >> 24);
+  v = vel + ((m * ((int32_t)(w >> 16 & 0x7f) - vel) + 64) >> 7) + (((int32_t)(int16_t)w + 128) >> 8);
+  pmo.vel_n++;
+  return v < 1 ? 1 : v > 127 ? 127 : v;
+}
+/* the UI task, after the hello: 07's answer, the "full" notice (at most once a second) */
+static void pmo_tick(void) {
+  uint8_t m[15];
+  uint32_t q = pmo.stat_req, x;
+  if (!qp.hello) return;
+  m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x2d; m[5] = 0x01;
+  if (q != pmo.stat_t) {
+    m[6] = 0x11;
+    m[7] = (uint8_t)(pmo.used > 127 ? 127 : pmo.used);
+    x = pmo.ring_drop > 16383 ? 16383 : pmo.ring_drop;
+    m[8] = (uint8_t)(x >> 7); m[9] = (uint8_t)(x & 0x7f);
+    x = pmo.kit_drop > 16383 ? 16383 : pmo.kit_drop;
+    m[10] = (uint8_t)(x >> 7); m[11] = (uint8_t)(x & 0x7f);
+    m[12] = (uint8_t)(pmo.timeouts > 127 ? 127 : pmo.timeouts);
+    m[13] = (uint8_t)((pmo.scn_skips && fp.blocks - pmo.scn_blk < 1500u ? 1 : 0) | (fp.blocks - pmo.ran < 2u ? 2 : 0));
+    m[14] = 0xf7;
+    if (!send(m, 15)) return;
+    pmo.stat_t = q;
+  }
+  x = pmo.full;
+  if (x != pmo.full_sent && st.ticks - pmo.full_tick >= 20) {
+    m[6] = 0x10; m[7] = (uint8_t)pmo.full_op; m[8] = 2; m[9] = 0xf7;
+    if (!send(m, 10)) return;
+    pmo.full_sent = x; pmo.full_tick = st.ticks;
+  }
+}
+__asm__(
+    "  .text\n"
+    "  .globl pmo_lfo_det, pmo_vel_det\n"
+    "  .align 2\n"
+    /* the audio interrupt's `jsr lfo_block` (0x40120fae, 6 B; its argument on the stack): S-pre, the LFO with its
+       argument, S-post, back to its `addq.l #4,%sp` (0x40120fb4). d0 / d1 / a0 / a1 are a call's scratch there. */
+    "pmo_lfo_det:\n"
+    "  jsr pmo_pre\n"
+    "  move.l (%sp),-(%sp)\n"
+    "  jsr 0x4009e790\n"
+    "  addq.l #4,%sp\n"
+    "  jsr pmo_post\n"
+    "  jmp 0x40120fb4\n"
+    "  .align 2\n"
+    /* trig_fire where the velocity is final (0x4009afa0, 6 B: `movel %sp@(60),%d0; addal %a2,%a3`): d0 =
+       pmo_vel(track 92(sp), velocity 60(sp)) after the two displaced instructions; the step's own velocity 72(sp)
+       (-1: none) rewritten as 0003 did; back at 0x4009afa6. d1 / a0 / a1 are written there before they are read. */
+    "pmo_vel_det:\n"
+    "  move.l 60(%sp),%d0\n"
+    "  adda.l %a2,%a3\n"
+    "  move.l %d0,-(%sp)\n"
+    "  move.l 96(%sp),-(%sp)\n"
+    "  jsr pmo_vel\n"
+    "  addq.l #8,%sp\n"
+    "  moveq #-1,%d1\n"
+    "  cmp.l 72(%sp),%d1\n"
+    "  beq.s 1f\n"
+    "  move.l %d0,%d1\n"
+    "  lsl.l #8,%d1\n"
+    "  move.l %d1,72(%sp)\n"
+    "1:\n"
+    "  jmp 0x4009afa6\n");
+
+/* the MIDI task: one host command, answered by the UI task */
+static void qp_cmd(const uint8_t *b, int32_t n) {
+  uint32_t h = qp.ack_h, set, clr;
+  int32_t i, s = 1;
+  if (n >= 1 && b[0] >= 4 && b[0] <= 7) {   /* pm: param modulation (04..07): a done op is not answered */
+    s = pmo_cmd(b, n);
+    if (!s) { qp.cmds++; return; }
+    pmo.refused++;
+  } else if (n >= 1 && b[0] == 1 && n == 5) {
+    set = (uint32_t)b[1] | (uint32_t)(b[2] & 0x1f) << 7;
+    clr = ((uint32_t)b[3] | (uint32_t)(b[4] & 0x1f) << 7) & ~set;
+    for (i = 0; i < 12; ++i)
+      if ((set | clr) >> i & 1) QP_MUTE(QP_APP() + 48, i, (int32_t)(set >> i & 1), 0);
+    s = 0;
+  } else if (n == 2 && b[0] == 2 && b[1] <= 12) {
+    QP_SCENE(QP_APP() + 352, (int32_t)b[1] - 1, 0);
+    s = 0;
+  } else if (n == 3 && b[0] == 3 && b[1] >= 1 && b[1] <= 12 && b[2] <= 0x7f) {   /* L2: a 7-bit value only */
+    QP_PERF(QP_PERFO(), (int32_t)b[1] - 1, (int32_t)b[2] << 8);
+    s = 0;
+  }
+  qp.cmds++;
+  if (s) qp.refused++;
+  if (h - qp.ack_t >= QP_NACK) {         /* the ring full: a "done" is dropped, a refusal kept apart (L1) */
+    qp.ack_drop++;
+    if (s) {
+      qp.ref_op = n >= 1 ? b[0] & 0x7fu : 0;
+      __asm__ volatile("" ::: "memory");
+      qp.ref_n++;
+    }
+    return;
+  }
+  qp.ack[h % QP_NACK][0] = n >= 1 ? b[0] & 0x7f : 0;   /* (a data byte in the answer whatever came) */
+  qp.ack[h % QP_NACK][1] = (uint8_t)s;
+  __asm__ volatile("" ::: "memory");     /* L3: the entry's stores before the index that publishes it (as case 0x39) */
+  qp.ack_h = h + 1;
+}
+
+/* the UI task, after the hello: the macros on the knob (for the interrupt's report), the scene's report, the answers */
+static void qp_tick(void) {
+  uint8_t m[10], *app = QP_APP(), *kit;
+  void *o = app + 352;
+  int32_t mk = QP_MASK(o);
+  uint32_t s;
+  if (!qp.hello) return;                 /* L4: the port came back, its hello not out yet */
+  qp.mask = mk < 0 ? 0u : mk > 0xfff ? 0xfffu : (uint32_t)mk;
+  qp.live = 1;                           /* the interrupt's reports from now on, with the kit's mask */
+  kit = (*(qp_kit_fn *)(*(uint32_t *)o + 52u))(o);
+  s = kit ? kit[QP_KSCENE] : 0xffu;
+  s = s < 12 ? s + 1 : 0;
+  m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x2d; m[5] = 0x01;
+  if (s != qp.scn || qp.scn_owe) {
+    m[6] = 0x0f; m[7] = (uint8_t)s; m[8] = 0xf7;
+    if (!send(m, 9)) return;
+    qp.scn = s; qp.scn_owe = 0; qp.scns++;
+  }
+  while (qp.ack_t != qp.ack_h) {
+    m[6] = 0x10; m[7] = qp.ack[qp.ack_t % QP_NACK][0]; m[8] = qp.ack[qp.ack_t % QP_NACK][1]; m[9] = 0xf7;
+    if (!send(m, 10)) return;
+    qp.ack_t++;
+  }
+  if (qp.ref_t != qp.ref_n) {            /* L1: a refusal the ring dropped (the op of the latest one) */
+    s = qp.ref_n;
+    __asm__ volatile("" ::: "memory");
+    m[6] = 0x10; m[7] = (uint8_t)qp.ref_op; m[8] = 1; m[9] = 0xf7;
+    if (!send(m, 10)) return;
+    qp.ref_t = s;
+  }
 }
 
 static void pj_tick(void);
@@ -3720,6 +4359,8 @@ void rui_tick(void *ctrl) {
   if (st.init && PORT_STATE == 1 && st.hellos) pj_tick();   /* 1052: the project slot reports, after the first hello */
   else pj_drain();                                          /* 1052b: no host: nothing stale kept for one later */
   if (st.init && PORT_STATE == 1 && st.hellos) kd_tick();   /* round 6: keys dropped / dump waits run out */
+  if (st.init && PORT_STATE == 1 && st.hellos) qp_tick();   /* 0.5.0: the scene, the knob's macros, the answers */
+  if (st.init && PORT_STATE == 1 && st.hellos) pmo_tick();  /* pm: 07's answer, the "full" notice */
   dt = TIMER - t0;
   st.ui_sum += dt; st.ui_calls++;
   if (dt > st.ui_max) st.ui_max = dt;
@@ -4387,7 +5028,7 @@ void pj_activate(int32_t slot, uint32_t ret, uint32_t caller) {
 void kt_saved(int32_t index, uint32_t pre) {
   pj_push(KT_SAVE, index < 0 ? 0 : index > 127 ? 127 : index, (int32_t)(pre & 127u));
 }
-void kt_reloaded(uint32_t op) { pj_push((uint8_t)op, (int32_t)(ACTIVE_KIT & 127u), -1); }
+void kt_reloaded(uint32_t op) { pmo.reload_n++; pj_push((uint8_t)op, (int32_t)(ACTIVE_KIT & 127u), -1); }   /* pm: freed */
 /* 1052b: no host - the ring drained into LOST (one LOST at the next hello instead of stale events) */
 static void pj_drain(void) {   /* (a LOAD needs no host: the ACTIVE after the hello says where the Rytm is) */
   uint32_t w = pj.wr;

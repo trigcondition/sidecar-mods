@@ -55,6 +55,12 @@
 #define DSP_MACHINE 51
 #define DSPS_MACHINE 45   /* DSP SAMPLE: SD TEST, below */
 #define DD_MACHINE 42     /* DIGIDRUM: RS FM 2, below */
+/* 0.5.0 SAMPLER: FUNC. GEN.'s slot (0014 funcgen=0), the host's Digitakt-style player. Voice flag 0x20 (DSP SAMPLE's),
+   told apart by its fixed sound tag in every 03 / 04 (as MD's on 0x40; DSP SAMPLE's is always 0): 0x29C1, the bytes
+   53 41 ('S' 'A'). P1..P8 0; its knobs SMP STRT END PLAY / TUNE FINE LOOP LEV are words 19 21 22 20 / 17 18 23 24 on
+   its SRC page (registry), labelled by 0026 (us_cubox, as MULTISAMPLE's page 2); its SMPL page empty. */
+#define SAMPLER_MACHINE 43
+#define SAMPLER_TAG 0x29c1u
 #define JUNO_MACHINE 41   /* JUNO: BD FM 2, below */
 #define FM_MACHINE 40     /* 6-OP FM: RS CLASSIC 2, below */
 #define MS_MACHINE 52     /* MULTISAMPLE: CB TEST (rui1031; its labels and texts are 0026's, through us_cubox) */
@@ -409,6 +415,7 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
   int trig = STATE0(voice) == 0;
 #if EXT_SLOTS
   uint8_t vb = (uint8_t)((voice & 7) | ext_vflag(MACHINE_OF(OWNER(voice))));
+  int sa = MACHINE_OF(OWNER(voice)) == SAMPLER_MACHINE;   /* 0.5.0 SAMPLER: DSP SAMPLE's flag, P1..P8 0, its own tag */
   /* DAISYSP with INP NAT/NOISE: that machine's engine plays the voice (its
      state block is its own, word 0 still zeroed on a trig); else DISABLE's. */
   /* DAISYSP exactly: the user slots' flags 0x50 0x58 0x70 have bit 4 too. */
@@ -446,6 +453,9 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
   }
   for (i = 0; i < NP; ++i) {
     p[i] = ((uint16_t)params[i] >> 1) & 0x3fff;   /* value << 7 | fraction >> 1 */
+#if EXT_SLOTS
+    if (sa && i < 8) p[i] = 0;   /* SAMPLER has no P1..P8: 0 (an older host then plays it as a dry DSP SAMPLE) */
+#endif
     if (p[i] != x->sent[i]) changed = 1;
   }
   if (trig) {
@@ -502,7 +512,7 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
 #if EXT_SLOTS
   {   /* the sound tag: the owner track's, as the trig copied its sound (us_tag; a sound lock's own) */
     extern volatile uint16_t us_tag[13];
-    uint16_t tag = us_tag[OWNER(voice)];
+    uint16_t tag = sa ? SAMPLER_TAG : us_tag[OWNER(voice)];   /* 0.5.0: SAMPLER's fixed tag tells it from DSP SAMPLE (0x20) */
     m[n++] = (uint8_t)(tag >> 7) & 0x7f;
     m[n++] = (uint8_t)tag & 0x7f;
   }
@@ -1385,7 +1395,8 @@ static const char us_none[] USD = "---";
    47 GRANULAR 0x38 (kWaveMachine, kGranMachine); rui1051: 48 LIVE IN 0x78 and 49 CHOP 0x18 (kLiveMachine, kChopMachine;
    0x18 was the host's GRAIN placeholder, never sent). */
 /* 7o: 50 MIDI, 0x80: not a flag on the wire (all 16 values of 0x78 are taken): ext_render reports it as 44 / 43, not 04 / 03 */
-static const uint8_t us_flag_tab[18] USD = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0, 0x00, 0x20,
+/* 0.5.0: 43 SAMPLER 0x20, DSP SAMPLE's (its tag tells them apart) */
+static const uint8_t us_flag_tab[18] USD = {0x50, 0x58, 0x60, 0x68, 0x70, 0x48, 0x08, 0x40, 0x20, 0x00, 0x20,
                                             0x28, 0x38, 0x78, 0x18, 0x80, 0x10, 0x30};
 
 __attribute__((section(".extw"), noinline)) int32_t ext_vflag(int32_t m) {   /* .extw since rui1031 */
@@ -1615,6 +1626,10 @@ US1 int32_t us_page_record(int32_t m, uint32_t k) {
     h(m);
     return m == FM_MACHINE && k < 4 ? 0 : us_p2rec[k];
   }
+  if (m == SAMPLER_MACHINE) {   /* 0.5.0: its knobs are all on SRC (0026 labels the shared records); SMPL empty */
+    if ((h = US_CUBOX.setup) != 0) { us.p2_slot = 0; h(m); }
+    return -1;
+  }
   if (m == EXT_MACHINE) return ext_p2_order[k];
   if (m == DSP_MACHINE) return dsp_p2_order[k];
   if (m == DSPS_MACHINE) return dsps_p2_order[k];
@@ -1642,6 +1657,7 @@ US1 int32_t us_param_record(uint32_t index, uint32_t machine) {   /* a sample wo
   if (machine == EXT_MACHINE) return REC_P2 + j;
   if (machine == DSP_MACHINE) return REC_DSP2 + j;
   if (machine == DSPS_MACHINE) return j == 0 ? 39 : j == 2 ? REC_DSPS_SMP : REC_DSPS2 + j;   /* 1045: TUN stock's, SMP 441 */
+  if (machine == SAMPLER_MACHINE) return j == 2 ? REC_DSPS_SMP : us_p2rec[j];   /* 0.5.0: its SRC row (registry) */
   if (((uint32_t)s < US_SLOTS && us_params(s)) || (machine == DD_MACHINE && !md_old())) return us_p2rec[j];
   if (US_CUBOX.setup && (machine == MS_MACHINE || machine - WT_MACHINE < WT_MACHINES || (machine == FM_MACHINE && j >= 4)))
     return us_p2rec[j];   /* rui1034: WAVETABLE 46, GRANULAR 47 as MULTISAMPLE; rui1051: LIVE IN 48, CHOP 49 */

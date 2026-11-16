@@ -373,3 +373,70 @@ sfu_s_lset store the index with the bank the word (or the step's lock) holds (`x
 moves or clears the bank; the record's range is (N - 1) << 8 | 0xe0. Without bit 11 nothing changes. [measured, rytm-emu,
 `tools/emu/bk_emu.py rui1038 knob range lock`: one index a detent, the bank kept, bank H's 127 within range, a lock by a
 turn with a trig held keeps the bank]
+
+## 11. sfx-basewidth (2026-11-12, 0.5.0): BASE / WIDTH on SEND FX 1 / 2 knobs G / H
+
+The owner asked for the stock DELAY / REVERB's BASE / WIDTH filter on the send FX. The Sidecar already has it as DSP:
+bus 1 / 2's post EQ is the send FX's return filter (rytm-teensy docs/INSERT-FX.md "POST EQ", "BASE / WIDTH"). So the
+Rytm side is a view and a pair of knobs, nothing stored in the kit.
+
+- **Knobs**: SEND FX 1 (page 13) and SEND FX 2 (page 14) had ids[6] / ids[7] = 0, so G and H were free [code, the
+  descriptors]. 0026's enc_body passes these pages' encoders to stock (its remote page is not active, no host seq trig
+  is held, no bank list), so nothing intercepts G / H there [code].
+- **Records 1..4** (`BW0` = 1; FX 1 BASE, FX 1 WID, FX 2 BASE, FX 2 WID). They are the ids 0004-lfo-rnd repurposed on
+  hardware, and 0029 already excludes 0004 (records 6..13 carry live CC / NRPN fields: LEV, CC120 / 121 and so on, so
+  they were not taken). `set_bw_rec` writes each record at tick init: kind 0x39 / 0x38, container 29 / 0, 0..0x7f00,
+  CC / NRPN 0xffffffff, modflags 0, short names `BASE` / `WID`, long name the FX's; `copy_desc` gives it REC_DIAL.
+  Run-time only, no new patch site, so the 1.74 port has nothing to derive (the C constants go through ostarget).
+- **Values never touch the kit**: the FxParameterSet wrappers take `BW(id)` first: read returns the cache
+  (`X.bw[fx][knob] << 8`), write clamps to 0..127, stores and marks the FX to send (`bw_tx`), lock-get answers -1 and
+  lock-set is refused (0). So a trig held over G / H locks nothing: there are no p-locks (the Sidecar's step-lock space
+  is full at 32 params). `sfu_isext` is true for BW ids, so sfu_getv reads them through the wrapper.
+- **Protocol: 0x22 ver 2**, both ways, `F0 7D 52 54 22 02 <fx> <base> <width> F7`. The tick sends a pending FX with
+  the try_send pattern (never waits on USB; a busy port leaves the bit for the next tick). From the host, sysex_body
+  takes it before the ver-1 check (len >= 10, fx < 2), sets the cache unless that FX has a turn still to send, and
+  asks a redraw (`bw_rx` -> ctrl+0x20). An older 0029 drops ver 2 (it checks d[5] == 1); 0022's router already passes
+  0x21..0x24 (but 0x23) to 0029's mailbox. Defaults before the host answers: BASE 0, WID 127 (the filter off).
+- **Fields** appended at the end of sfu_x: `bw[2][2]`, `bw_tx`, `bw_rx`, `bw_sent`, `bw_got` (counters for tests).
+- **Test** `tools/emu/sfu_emu.py TAG bw`: the host sends (40, 90) and (10, 127); SEND FX 1, G +20 x3 sends fx 0 with
+  WID 90 and a BASE above 40; records 1..4 are named BASE WID BASE WID; FX words 0, 29, 38..41 unchanged; SEND FX 2,
+  H -20 sends fx 1 BASE 10, WID < 127; with a trig held nothing is sent and the step has no lock on word 29.
+  Fails on the baseline `sbw0` (nothing sent, the names LEV / ERR), passes on `sbw1` [measured].
+- **Cost**: RAM area 29648 -> 29000 bytes spare (648 bytes), blob 74348 -> 74980 [measured, build log].
+
+**Review round (2026-11-12, sbw4).** From notes/reports/sfx-basewidth-review.md:
+- **Crossing** (review 2): a host value that crosses a turn on the wire no longer undoes it. Each FX's send is stamped
+  (`bw_hold[k]` = DTCN0 | 1, appended after `bw_got`), and a host value for that FX within `BW_HOLD` (500 ms at the
+  hardware's 132 MHz) is not taken. A turn not yet sent also wins, as before. The host (rytm-teensy core/host_link.cpp)
+  now sends both FX again every 2 s, so a held-off or dropped value is right within 2 s.
+- **Redraw only on a change** (`bw_rx`), because the host's 2 s refresh repeats the same values.
+- **The WID records' default** `r[4]` is 0x7f00 (127, the filter off); BASE stays 0 (review 4).
+- **Init keeps a host value that arrived first**: the WIDTH 127 defaults are set only while `bw_got == 0` (review 5).
+- **Test** `sfu_emu.py TAG bw2` checks:
+  - the fields hold a host value (offset `X_BW` = 5644 + DL, 2-byte alignment);
+  - a host value that arrives while SEND FX 1 is open redraws knob G exactly as a fresh draw of that value, and
+    differently from no value;
+  - a 22 ver 2 for FX 3 and a ver-1 22 leave BASE / WIDTH alone;
+  - a host value just after the turn's send is not taken, while one 600 ms later is;
+  - the record defaults are 0 / 0x7f00 / 0 / 0x7f00.
+- **Results:** on sbw1, the crossing check and the defaults check fail; on sbw4 all pass [measured].
+- **Emulator timing:** rytm-emu's DTCN0 runs at 660 MHz against its event clock (5x the hardware's 132 MHz)
+  [measured, hold stamps of the same turn 300 ms and 1000 ms apart], so the hold is 100 ms there. Its UI tick is
+  10 ms.
+- **Builds:**
+
+  | Tag | .syx SHA256 | Note |
+  |---|---|---|
+  | sbw2 | 14e73e9d… | tick-based hold, too short; superseded |
+  | sbw3 | 4a8510c9… | 200 ms hold, 40 ms in the emulator; superseded |
+  | sbw4 | 7e77959f775df05f8a0d1defd76d92e827a0dff8a46ecaaa6f797ece520b39c0 | the fix |
+
+**Re-review round (2026-11-12, sbw5).** Finding 4 of notes/reports/sfx-basewidth-rereview.md: DTCN0 wraps every
+2^32 counts, which is 32.5 s at 132 MHz. A send stamp left in `bw_hold` therefore came back for `BW_HOLD` one wrap
+after the turn and dropped a host value then.
+- **Fix:** the tick now clears an expired hold (`TIMER - bw_hold >= BW_HOLD` -> 0). Only the UI task writes
+  `bw_hold`; the MIDI task only reads it.
+- **Test** `sfu_emu.py TAG bwwrap`: in the emulator a wrap is 6.51 s at 660 MHz. A host value 6.91 s after the turn
+  (inside the stale window for any send between 330 and 380 ms) is taken, and the hold reads 0.
+- **Results:** it fails on sbw4 (the value is dropped; the hold is still 0x30f4ac77) and passes on sbw5 [measured].
+- **Build:** sbw5, .syx 6dc37d77d6eaf4e1b14c39cbd91b05ef347037659154d0b13a9b49d23ae2b244.

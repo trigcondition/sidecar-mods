@@ -10,6 +10,9 @@ area    = "elek"
 # its UART8 panel-writer detour (0x400019e4, the trig LEDs) is the site 0022's keys=1 patches (looper_uart);
 # never both in one build (it needs 0027 anyway, which refuses keys=1 too). Lets layout.py see them as exclusive.
 excludes_params = ["0022-looper:keys"]
+# pm (0.5.0): the LFO call 0x40120fae and trig_fire's 0x4009afa0 are the sites of the unreleased 0004-lfo-rnd and
+# 0003-velocity-humanise (decision O5: those stay unreleased and never in one image with this)
+excludes = ["0003-velocity-humanise", "0004-lfo-rnd"]
 
 # re-only | built | hardware-verified | retracted
 status  = "built"
@@ -90,6 +93,14 @@ RELOAD / RELOAD ALL: detours at kit_save 0x400b119c, kit_reload 0x400af0d2, 0x40
 under a page is stock's reload (NO kept back to its release or the next key); YES the host's while FUNC or a page trig
 is down, UP / DOWN while FUNC is (until the host's next mask); send() waits while a stock dump's SysEx is under way (bounded: 2 s with the flag never seen clear, the audio interrupt
 watching its gaps); 4D reports dropped key presses. Emulator only.
+0.5.0: the QUICK PERF knob's position, its macros and FUNC (2D 01 0E, polled every audio block, at most one per 8 ms,
+from the audio interrupt), the Rytm's scene (2D 01 0F), and a host command (5A: MUTE / SCENE / PERF by the OS's own
+setters in the MIDI task, as CC 94 / 92 / 35.. reach them; answered 2D 01 10), hello caps bit 4; 0022's router passes
+5A. design.md "0.5.0". Emulator only.
+pm (0.5.0): the Rytm's own sound parameters modulated from the host (5A ops 04 OFFSET / 05 OVERRIDE / 06 CLEAR /
+07 STATUS, answered 2D 01 11; hello caps bit 6): 128 entries applied each audio block around the LFO call (detour
+0x40120fae) on the effective words, VELOCITY MOD / AFTERTOUCH amounts through stage E's route4, trig velocity at
+trig_fire (detour 0x4009afa0); a Rytm scene lock beats an override. Excludes 0003 / 0004. design.md "pm". Emulator only.
 """
 
 [sources]

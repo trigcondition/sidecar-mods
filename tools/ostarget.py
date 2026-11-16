@@ -9,6 +9,8 @@ made at build time from a committed address map (re/os/<os>.toml).
                                                 images, into re/os/OS.toml (needs both; nothing of either is written)
     tools/ostarget.py check OS FROM.syx TO.syx   maintainers: every address the tree uses, classified and compared in
                                                 both images (build/os/OS-check.csv); exit 1 on a refusal or mismatch
+    tools/ostarget.py data OS [OS.syx]          maintainers: re/os/OS.toml's [[data]] (RAM the mods read, outside the
+                                                map) still named by the stock code it lists; exit 1 if not
     tools/ostarget.py crosscheck OS FROM.syx TO.syx A.bin B.bin
                                                 maintainers: one build for both OSes (each build/mainos_TAG.bin): the
                                                 target's differs from the sources' OS's only by translated addresses
@@ -821,6 +823,25 @@ def check(os_ver: str, from_syx: Path, to_syx: Path) -> int:
     return 1 if bad else 0
 
 
+def data_check(os_ver: str, syx: Path) -> int:
+    """re/os/OS.toml [[data]]: each RAM address (or struct offset) the mods read, still named by the stock code that
+    uses it in OS's image: `site` the instruction, `at` bytes into it the operand, `size` 4 (an absolute address) or 2
+    (a displacement), equal to `value`. RAM is outside the map (the port leaves it as it is): this is its guard."""
+    img = extract_mainos(syx)
+    rows = load(os_ver).get("data", [])
+    bad = 0
+    for d in rows:
+        o = d["site"] + d.get("at", 2) - BASE
+        n = d.get("size", 4)
+        got = int.from_bytes(img[o:o + n], "big") if 0 <= o <= len(img) - n else None
+        ok = got == d["value"]
+        bad += not ok
+        print(f"  {'ok ' if ok else 'BAD'} {d['name']:16s} 0x{d['value']:x} at 0x{d['site']:08x}+{d.get('at', 2)}"
+              + ("" if ok else f": the image has {got if got is None else hex(got)}"))
+    print(f"data {os_ver}: {len(rows)} entries, {bad} not named where the toml says")
+    return 1 if bad else 0
+
+
 def crosscheck(os_ver: str, from_syx: Path, to_syx: Path, built_from: Path, built_to: Path) -> int:
     """One release built for both OSes (build/mainos_<tag>.bin of each): every byte the mods changed in the 1.73 image
     must be changed in the target's at the translated address, to the same bytes once addresses are translated, and
@@ -922,6 +943,9 @@ def main():
     p = sub.add_parser("port")
     p.add_argument("os")
     p.add_argument("--out", type=Path)
+    p = sub.add_parser("data")
+    p.add_argument("os")
+    p.add_argument("syx", type=Path, nargs="?", help="default: the OS's stock file in stock/")
     for name in ("derive", "check", "crosscheck"):
         p = sub.add_parser(name)
         p.add_argument("os")
@@ -942,6 +966,8 @@ def main():
         return 0
     if args.cmd == "port":
         return port(args.os, args.out or ROOT / "build" / "os" / args.os)
+    if args.cmd == "data":
+        return data_check(args.os, args.syx or info(args.os)["stock_path"])
     if args.cmd == "derive":
         return derive(args.os, args.from_syx, args.to_syx)
     if args.cmd == "crosscheck":

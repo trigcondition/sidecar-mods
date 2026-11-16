@@ -41,7 +41,11 @@ __asm__(
 "	.error	\"fxin_ob reads the reverb at fx_delay_out - 256\"\n"
 "	.endif\n"
 "fxin_ob:\n"
-"	move.l	0x401b9e64,%d0\n"
+"	tst.l	0x413db244\n"                      /* the sender's SysEx state clear: note it (try_send's bound) */
+"	bne.s	3f\n"
+"	moveq	#1,%d0\n"
+"	move.l	%d0,fxin_txsx_gap\n"
+"3:	move.l	0x401b9e64,%d0\n"
 "	cmp.l	#0x46584931,%d0\n"
 "	bne.w	2f\n"
 "	lea	-12(%sp),%sp\n"
@@ -78,8 +82,12 @@ __asm__(
 "2:	jmp	ob_in_write\n");                   /* its three arguments are still on the stack */
 
 /* The report: F0 7D 52 54 27 <on> F7 to the USB host. Never waits (the UI task): 0029's try_send -
- * the port configured, a try-lock of the MIDI mutex (0x4000119c never pends), the ring's room and four
- * free USB requests, else not now (the next tick tries again). */
+ * the port configured, no stock SysEx under way, a try-lock of the MIDI mutex (0x4000119c never pends),
+ * the ring's room and four free USB requests, else not now (the next tick tries again).
+ * 0.5.0 (design.md "No report inside a stock dump"): a stock dump (pattern / kit / sound / song) gives the
+ * mutex back between its parts while the sender's SysEx state 0x413db244 stays set; a 27 or 50 sent then
+ * lands inside the dump and cuts it. So, as 0026's send() (1052d): not while it is set, tested before the
+ * try-lock and again holding it, with 0026's 2 s bound (txsx_wait, below). */
 typedef void (*send_fn)(int32_t n, const uint8_t *m);
 typedef int32_t (*trylock_fn)(void *m);
 typedef void (*unlock_fn)(void *m);
@@ -90,6 +98,7 @@ typedef void (*unlock_fn)(void *m);
 #define PORT_STATE  (*(volatile uint32_t *)0x413db254u)
 #define TX_LEVEL    (*(volatile int32_t *)0x413db258u)
 #define USB_POOL    (*(const volatile uint32_t *const volatile *)0x413db390u)
+#define TX_SYSEX    (*(const volatile uint32_t *)0x413db244u)   /* the sender's SysEx state (0026's TX_SYSEX) */
 
 static struct {
   uint16_t seen;    /* the last FXIN_REQ answered */
@@ -98,16 +107,31 @@ static struct {
   uint8_t tell;     /* a report owed without an ask: the port came up */
   uint8_t quiet;    /* ticks since the last 50 */
   uint8_t mix[10];  /* the last 50's bytes */
+  uint32_t ticks, tx_t0, tx_on, tx_over;   /* fxin_tick's count; try_send's SysEx wait (fix round 1) */
 } st __attribute__((section(".bss")));
+/* The SysEx wait's bound, as 0026's txsx_wait (1052d rounds 5 / 6): the flag seen set at every look for TXSX_TICKS
+ * (a dump cut by a port reset could leave it set) and the report goes anyway (tx_over counts those). fxin_ob, in the
+ * audio interrupt (1500 a second), notes any moment the flag is clear (fxin_txsx_gap), which restarts the count: a
+ * long transfer of back-to-back stock messages (a SONG / C6) is waited out whole, only a flag that stays set runs it out. */
+#define TXSX_TICKS 40                 /* 2 s of the 20 Hz tick */
+volatile uint32_t fxin_txsx_gap __attribute__((section(".bss")));
+
+static int32_t txsx_wait(void) {
+  if (!TX_SYSEX) { st.tx_on = 0; fxin_txsx_gap = 0; return 0; }
+  if (!st.tx_on || fxin_txsx_gap) { st.tx_on = 1; st.tx_t0 = st.ticks; fxin_txsx_gap = 0; }
+  if ((int32_t)(st.ticks - st.tx_t0) < TXSX_TICKS) return 1;
+  st.tx_over++;
+  return 0;
+}
 
 static int32_t try_send(const uint8_t *m, int32_t n) {
   const volatile uint32_t *h;
   int32_t k;
-  if (PORT_STATE != 1) return 0;
+  if (PORT_STATE != 1 || txsx_wait()) return 0;
   if (!MUTEX_TRY(MIDI_MUTEX)) return 0;
   h = USB_POOL;
   for (k = 0; k < 4 && h; ++k) h = (const volatile uint32_t *)h[13];
-  if (TX_LEVEL + 64 > 4091 || k < 4) {
+  if (txsx_wait() || TX_LEVEL + 64 > 4091 || k < 4) {
     MUTEX_GIVE(MIDI_MUTEX);
     return 0;
   }
@@ -159,6 +183,7 @@ void fxin_tick(void *ctrl) {
   uint16_t r = FXIN_REQ;
   int32_t up = PORT_STATE == 1;
   (void)ctrl;
+  st.ticks++;
   if (!st.init) {           /* the word at boot: stock's bytes, i.e. off; nothing asked yet */
     st.seen = r;
     st.init = 1;

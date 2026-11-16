@@ -20,3 +20,127 @@ refuse_cores     = [["92a99c958f9e17bfb93882385037b84185fc0420", "0.2"]]
 # the release's file names: the bundle, and the suffix of the core (as elekloader names it: "" for a core's own OS)
 bundle_suffix    = ""
 core_suffix      = ""
+
+# Data the 0.5.0 reports and the host command read (0026; plan-050 Task 46): RAM, outside the map (a port leaves it as
+# it is), so each entry names the stock code that uses it in this OS's image: `site` the instruction, `at` bytes into it
+# the operand, `size` 4 an absolute address / 2 a displacement, `value` what must be there. tools/ostarget.py data OS
+# checks them [measured in rytm-emu on both OSes: notes in mods/0026-remote-ui/design.md "0.5.0"].
+[[data]]
+name  = "qperf_pos"
+value = 0x42f9210c
+size  = 4
+site  = 0x40082184
+at    = 2
+note  = "the QUICK PERF pot's position, u32 0..255 (never cleared; 0 until the panel MCU first sends): the panel parser's kind-4 store"
+[[data]]
+name  = "qperf_stamp"
+value = 0x42f92110
+size  = 4
+site  = 0x4008217e
+at    = 2
+note  = "the pot message's time stamp (cleared when the panel tick posts it): the same case's store"
+[[data]]
+name  = "panel_key_state"
+value = 0x418d1340
+size  = 4
+site  = 0x40081d4e
+at    = 2
+note  = "the panel keys, one byte a group (FUNC: byte 6 bit 5): the button driver's lea"
+[[data]]
+name  = "perf_amounts"
+value = 0x8000e57c
+size  = 4
+site  = 0x4011f69c
+at    = 2
+note  = "SRAM, the 12 PERF macros' live amounts (i16, value << 8): the amount store a PERF CC and the pot reach"
+[[data]]
+name  = "kit_scene"
+value = 0x97e
+size  = 2
+site  = 0x400a7d68
+at    = 2
+note  = "kit + 0x97e: the active scene (0..11, 0xff off): scene_set's move.b (the SCNE pads and CC 92)"
+[[data]]
+name  = "kit_qperf_mask"
+value = 0x9bb
+size  = 2
+site  = 0x400a6dc6
+at    = 2
+note  = "kit + 0x9bb (long, clamped to 12 bits): the macros on the pot: the type-5 handler's accessor"
+[[data]]
+name  = "kit_mutes"
+value = 0x20
+size  = 2
+site  = 0x400b7902
+at    = 2
+note  = "the mute object's + 0x20: the 12 tracks' mutes (bit t): mute_set's store (the MUTE pads and CC 94)"
+[[data]]
+name  = "pmo_eff"
+value = 0x8000f774
+size  = 4
+site  = 0x40120c8e
+at    = 2
+note  = "SRAM, the effective sound words (u16 8.8, g = 26 + 42 t + w) the voices read: the block ISR's lea before stage A (0.5.0 pm)"
+[[data]]
+name  = "pmo_state"
+value = 0x8000ee84
+size  = 4
+site  = 0x40120c94
+at    = 2
+note  = "SRAM, the smoother's state (value << 16, the p-locked base the override replaces): the same function's next lea (0.5.0 pm)"
+[[data]]
+name  = "pmo_scene_on"
+value = 0x8000fce8
+size  = 4
+site  = 0x40120e32
+at    = 2
+note  = "SRAM, a scene engaged (stage D writes its locks): stage D's tstl (0.5.0 pm, O3)"
+[[data]]
+name  = "pmo_scene_g"
+value = 0x8000ecac
+size  = 4
+site  = 0x40120e3c
+at    = 2
+note  = "SRAM, the active scene's 48 locks' g (u16, 25 none): stage D's lea (0.5.0 pm, O3)"
+[[data]]
+name  = "pmo_accent"
+value = 0x8000e53c
+size  = 4
+site  = 0x40120e76
+at    = 2
+note  = "SRAM, per track u32, bit 3: stage E adds effective word 39 (ACC) to the velocity source: stage E's movel # (0.5.0 pm)"
+[[data]]
+name  = "pmo_trig_vel"
+value = 0x800067c4
+size  = 4
+site  = 0x40120e7c
+at    = 2
+note  = "SRAM, the last trig's velocity << 8 per track (u16), stage E's velocity source: its movel # (0.5.0 pm)"
+[[data]]
+name  = "pmo_aftertouch"
+value = 0x800067de
+size  = 4
+site  = 0x40120e9e
+at    = 2
+note  = "SRAM, the aftertouch per track (s16), stage E's AT source: its lea (0.5.0 pm)"
+[[data]]
+name  = "pmo_vm_routes"
+value = 0x4c0
+size  = 2
+site  = 0x4011f63c
+at    = 4
+note  = "0x8000e57c + 0x4c0 = 0x8000ea3c + 32 t: the VELOCITY MOD routes {u16 amount, u16 g}: the route loader's movew destination displacement (0.5.0 pm)"
+[[data]]
+name  = "pmo_at_routes"
+value = 0x8000ea4c
+size  = 4
+site  = 0x4011f65a
+at    = 2
+note  = "SRAM, 0x8000ea4c + 32 t: the AFTERTOUCH routes {u16 amount, u16 g}: the route loader's addal # (0.5.0 pm)"
+[[data]]
+name  = "tx_sysex"
+value = 0x413db244
+size  = 4
+site  = 0x40002c14
+at    = 2
+note  = "DDR, the USB MIDI sender's SysEx state (set / cleared per stock message): its movel %d0 store; 0026 send() and 0030 try_send wait on it (0.5.0 rc5b)"

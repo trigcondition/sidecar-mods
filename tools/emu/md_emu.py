@@ -584,12 +584,13 @@ def t_dspold(e):
 
 def t_dspmix(e):
     """DSP SAMPLE chosen fresh: MIX 0 (no resonator). A saved sound keeps its MIX: a sound with MIX 64 stored by the 0.3.0 image reads 64 here."""
-    ev, t = U.walk_list(100, 24)
+    ev, t = U.walk_list(100, 25)   # (0.5.0: SAMPLER, 43, before it)
     s = e.run("dspmix", t + 100, ev, save=True)
     k = kit16(e, s)
     check("dspmix: BD on 45, P5 (MIX) 0, the rest the records' defaults", e.peek(s, 0x8000ea00, 1)[0] == 45 and k[4] == 0 and k[7] == 100, str(k))
     rel = U.Emu("rel0-3-0")
     U.OBJ = e.out
+    ev, t = U.walk_list(100, 24)   # (0.3.0: no SAMPLER)
     s = rel.run("dspmix-rel", t + 100, ev, save=True)
     check("dspmix: 0.3.0's default was 64", kit16(rel, s)[4] == 64, str(kit16(rel, s)))
     s2, c = S.poke_boot(rel, "dspmix", {}, snap=s, start=rel.clock + t + 100)

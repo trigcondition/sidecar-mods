@@ -7076,6 +7076,34 @@ entry     = "kt_all_det"
 rejoin    = 0x400b1322
 elek_size = 8
 
+# pm (0.5.0): param modulation, stage S. The audio interrupt's LFO call `jsr lfo_block` (6 B, absolute; its argument
+# pushed just before), after stages A..G (smoother, LFO DST snap, blend, scene locks, velocity / aftertouch routes,
+# CONTROL IN, PERF) and before the consumers (machine dispatch, filter, amp, sample, FX) read the effective array
+# [code; research rytm-param-mod-research.md]. pmo_lfo_det: pmo_pre (words 1..8), the LFO with its argument, pmo_post
+# (words 9..41, route amounts, the velocity words), then jmp to the `addq.l #4,%sp` after the call. The same bytes as
+# unreleased 0004-lfo-rnd's audio_gate (exclusive: 0026 mod.toml excludes, decision O5).
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x40120fae
+size      = 6
+expect_len = 6
+expect_sha256 = "d873d650b04387286cced72cc37d746a941154014abc97e9e2584b1d73558b07"
+entry     = "pmo_lfo_det"
+rejoin    = 0x40120fb4
+
+# pm (0.5.0): the trig velocity. trig_fire where the velocity is final, `movel %sp@(60),%d0; addal %a2,%a3` (6 B,
+# nothing pc-relative); the track at 92(sp), the step's own velocity << 8 at 72(sp) (-1: none) [code]. pmo_vel_det:
+# d0 = pmo_vel(track, velocity), 72(sp) rewritten when not -1, the addal, back at 0x4009afa6. The site unreleased
+# 0003-velocity-humanise used (exclusive: 0026 mod.toml excludes, decision O5).
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x4009afa0
+size      = 6
+expect_len = 6
+expect_sha256 = "b64dbe9d8c379576ddddf76e532de231f115f4bc084860e54e9eb90ed1c315c3"
+entry     = "pmo_vel_det"
+rejoin    = 0x4009afa6
+
 # The view factory 0x400ca9b2: AMPLITUDE (key 0x36), DELAY and REVERB views get two pages, as 0004
 # grows the LFO view's (0x400cb02a): count 1 -> 2 and a two-entry source vector.
 [[patch]]
@@ -7461,3 +7489,52 @@ expect_len  = 4
 expect_sha256 = "2e3db4aced2880b7963ad6c175d3686587d6773cf43c16cf65bd8d7aea3b864e"
 from_symbol = "cu_mi_name"
 note        = "machine 50 short name: MIDI"
+
+# ---- 0.5.0: SAMPLER = machine 43 (FUNC. GEN., 0014 funcgen=0): ext_render (voice flag 0x20, DSP SAMPLE's, its tag 0x29C1 in
+# the reports), its SRC row SMP + the shared sample-word records, names and mask 0026's (0021 ext.c SAMPLER_MACHINE).
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x40290428
+size        = 4
+expect_len  = 4
+expect_sha256 = "3a47818fda4f874b3d37c650c6e2a4067841b73a2a413c6606606773c763c82d"
+from_symbol = "ext_render"
+note        = "engine entry of machine 43 (SAMPLER): ext_render, as machine 44"
+
+[[patch]]
+owner       = "0021-ext"
+gate        = "slots"
+addr        = 0x402882d8
+size        = 32
+expect_len  = 32
+expect_sha256 = "213a9683aa4a84b1bb121af62849a0b82c101f9e5bd97a0b6bd3e042340fc661"
+replace     = "000001b9000001cc00000193000001cb000001b6000001c90000019400000195"
+note        = "machine 43's SRC page: SMP 441 (word 19) and the shared records 460 403 459 438 457 404 405 (words 21 22 20 17 18 23 24): SMP STRT END PLAY / TUNE FINE LOOP LEV (0026's set-up; owner 2026-11-12: STRT END by the waveform, TUNE FINE where the display shows values)"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf1d2
+size        = 2
+expect_len  = 2
+expect_sha256 = "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7"
+replace     = "ffff"
+note        = "machine 43 (SAMPLER): home -1 and every voice, as machine 44 (0x401bf17c + 2 m)"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf0fc
+size        = 4
+expect_len  = 4
+expect_sha256 = "8a3340e6978315fbd8c9db37b42bcee89281a07ab87d9ef6d18bd2e5eb3aff39"
+from_symbol = "cu_sa_name"
+note        = "machine 43 long name: SAMPLER"
+
+[[patch]]
+owner       = "0026-remote-ui"
+addr        = 0x401bf100
+size        = 4
+expect_len  = 4
+expect_sha256 = "e7ad781371ea7a327ff1463e377903a8687982eddca6bcc012ff691db0a6ad33"
+from_symbol = "cu_sa_short"
+note        = "machine 43 short name: SMPR"

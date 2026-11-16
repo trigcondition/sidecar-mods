@@ -1,31 +1,30 @@
 # Sidecar | Expander: Rytm mods
 
 The source of the Analog Rytm MKII OS mods that Sidecar | Expander uses: the patch sources, the symbol map, the
-allocation registry and the build that turns your own stock OS 1.74 or OS 1.73 `.syx` into a modded one. The Analog Four
+allocation registry and the build that turns your own stock OS 1.74 `.syx` into a modded one (the tree still builds for OS 1.73). The Analog Four
 MKII's mod is here too, in `a4/`, with its own README and releases.
 
-This repository holds the source of the **Rytm firmware 0.4.0**, released with **Sidecar 0.4.0** (Raspberry Pi 4B and
-Pi 5). It brings the report master FX needs (each track's pan and route, so the Sidecar's through mode is stereo), MD's
-own page, the JUNO and 6-OP FM preset browser and DSP SAMPLE's sample picker on knob A of SRC, list knobs of up to 36
-names, the MIDI machine (machine 50), the arpeggiator's settings in the sound (UP + FLTR), and two fixes to the remote
-pages: the Sidecar's view on the SRC page comes back after a BANK tap, and a drawing race that could make the animated
-SRC pages flicker is fixed. It comes in two builds of the same source, for **OS 1.74** (what Elektron offers now) and
-for **OS 1.73**: one elekloader module per OS, `rytm-sidecar-0.4.0-os1.74.elemod` with elekloader's `core-0.1-os1.74.elemod`, and
-`rytm-sidecar-0.4.0.elemod` with `core-0.1.elemod`. Build the `.syx` from your own stock file on elekloader's page or
-command line, or in the browser patcher (build `rel0-4-0` for 1.73, `rel0-4-0-os1.74` for 1.74); both give the same
-file. You can move between 1.73 and 1.74 in both directions with Elektron's stock files (checked on a unit): read `docs/ELEKLOADER.md` and `docs/FLASHING.md` first.
+This repository holds the source of the **Rytm firmware 0.5.0**, released with **Sidecar 0.5.0** (Raspberry Pi 4B and
+Pi 5). It is built for **OS 1.74 only**: from 0.5.0 on there is no build for OS 1.73 (a Rytm on 1.73 takes Elektron's
+stock 1.74 first; the 0.4.4 release keeps both). It brings the Rytm side of the SAMPLER machine (Rytm machine 43), the
+Rytm's own parameters moved by the Sidecar (the XY pad, MIDI learn and poly-track p-locks send an offset on top of the
+Rytm's own value: a saved kit keeps the knob's value), UP + RIGHT for FILL, the sample browser's
+preview (FUNC + YES), quick load and file menu, send FX BASE and WIDTH, and the mix report waiting for a pattern dump
+to finish. One elekloader module, `rytm-sidecar-0.5.0-os1.74.elemod`, with elekloader's `core-0.1-os1.74.elemod`.
+Build the `.syx` from your own stock file on elekloader's page or command line, or in the browser patcher (build
+`rel0-5-0-os1.74`); both give the same file. Read `docs/ELEKLOADER.md` and `docs/FLASHING.md` first.
 
 > **Sidecar Mini (Teensy 4.1) is phased out.** It is frozen at 0.1.0, with its Rytm build `rui1027d` (below): no new
 > features. The 0.1.0 release stays downloadable.
 
-- Release (each OS's two `.elemod` files, `SHA256SUMS`, `LICENSE`, `NOTICE`, the source of elekloader's parts):
-  <https://github.com/trigcondition/sidecar-mods/releases/tag/v0.4.0>; install: `docs/ELEKLOADER.md`
+- Release (the two `.elemod` files, `SHA256SUMS`, `LICENSE`, `NOTICE`, the source of elekloader's parts):
+  <https://github.com/trigcondition/sidecar-mods/releases/tag/v0.5.0>; install: `docs/ELEKLOADER.md`
 - The A4 mod's release: <https://github.com/trigcondition/sidecar-mods/releases/tag/a4-v0.12>; install: `a4/README.md`
 - The older builds (`rui1027d`, `sfx1021`, for Sidecar 0.1.0, Sidecar Mini 0.1.0 and Sidecar 0.2.0) and install guides:
   <https://github.com/trigcondition/sidecar-expander/releases>
 - Documentation and the browser patcher: <https://trigcondition.github.io/sidecar-expander/>
-- The Sidecar engine: [sidecar-firmware](https://github.com/trigcondition/sidecar-firmware), its 0.4.0 release:
-  <https://github.com/trigcondition/sidecar-firmware/releases/tag/v0.4.0>
+- The Sidecar engine: [sidecar-firmware](https://github.com/trigcondition/sidecar-firmware), its 0.5.0 release:
+  <https://github.com/trigcondition/sidecar-firmware/releases/tag/v0.5.0>
 
 > **Unofficial, experimental software.** Not affiliated with, endorsed by or supported by Elektron. No Elektron
 > firmware, and nothing extracted from it, is in this repository: you supply the stock `.syx` yourself. Flashing a
@@ -75,23 +74,22 @@ Build a subset for hardware bisection:
 
     .venv/bin/python tools/build.py --mods 0000-shared 0004-lfo-rnd
 
-## The release (0.4.0)
+## The release (0.5.0)
 
-The Sidecar mods as one elekloader module per OS, `rytm-sidecar-<VERSION>.elemod` (1.74:
-`rytm-sidecar-<VERSION>-os1.74.elemod`), with elekloader's core 0.1 for that OS beside it (`VERSION`,
-`docs/ELEKLOADER.md`). From a clean checkout at tag `v0.4.0`, after `make setup` and with the stock files in `stock/`:
+The Sidecar mods as one elekloader module, `rytm-sidecar-<VERSION>-os1.74.elemod`, with elekloader's core 0.1 for OS
+1.74 beside it (`VERSION`, `docs/ELEKLOADER.md`). From a clean checkout at tag `v0.5.0`, after `make setup` and with
+the stock file in `stock/`:
 
-    make release          # build/release/0.4.0/: the two 1.73 .elemod files, LICENSE, NOTICE, TOOLCHAIN.txt, the
-                          # source of elekloader's parts, SHA256SUMS
-    make release-check    # the published files through elekloader's command line and web page code path
-    make release OS=1.74  # the same for OS 1.74: build/release/0.4.0-os1.74/
-    make release-check OS=1.74
-    make release-all      # all four, both OSes
-    make release-assets   # build/release/0.4.0-assets/: the GitHub release's 12 files, one SHA256SUMS
+    make release OS=1.74        # build/release/0.5.0-os1.74/: the two .elemod files, LICENSE, NOTICE, TOOLCHAIN.txt,
+                                # the source of elekloader's parts, SHA256SUMS (the GitHub release's files)
+    make release-check OS=1.74  # the published files through elekloader's command line and web page code path
+
+0.5.0 has no OS 1.73 build. `make release` / `make release-all` / `make release-assets` still build and combine both
+OSes for a release that ships both (0.4.x).
 
 `make release-check` takes only the published files and the stock `.syx` through elekloader's command line and its web
 page's code path: MAIN OS must come out as the release build's, the other sections stock. It also checks that
-`docs/ELEKLOADER.md` gives this build's hashes: each OS's `.elemod` files and the `.syx` elekloader builds from them,
+`docs/ELEKLOADER.md` gives this build's hashes: the `.elemod` files and the `.syx` elekloader builds from them,
 with the toolchain `TOOLCHAIN.txt` names.
 
 ## The Sidecar build `rui1027d` (Sidecar 0.1.0, Sidecar Mini 0.1.0, Sidecar 0.2.0)

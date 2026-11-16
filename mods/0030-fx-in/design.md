@@ -119,3 +119,32 @@ an LFO on every pan.
 
 Older hosts ignore 50 (`voice_report` returns for anything but 03 / 04). A Sidecar on older mods gets no 50 and sums the
 stems centred.
+
+## No report inside a stock dump (0.5.0, 2026-11-13)
+
+Found by the FILL host work (sq_emu `fillwrite`, branch feature/fill-emu): a 50 landed inside a stock 0x54 pattern dump
+(the answer to a pattern request), cutting it; the host drops a cut answer and asks again (safe, slow: a FILL could end
+NO ANSWER, a SONG dump fail). A stock dump gives the MIDI mutex back between its parts while the sender's SysEx state
+**0x413db244** stays set [0026 design.md 1052d, measured there with --watch: set and cleared per message by pc
+0x40002c14 / 0x40002ab6]. `try_send` took the mutex in such a gap.
+
+- `try_send` now returns "not now" while 0x413db244 is non-zero, tested before the try-lock and again holding the mutex,
+  as 0026's `send()` does. The 27 and the 50 wait for the next tick (the 50 keeps its "changed" / once-a-second state,
+  so nothing is lost: the next one carries the current pans).
+- Bounded as 0026's (fix round 1, review M1): `txsx_wait` counts ticks with the flag set and the report goes anyway
+  after TXSX_TICKS (40, 2 s) with the flag never seen clear (`st.tx_over` counts those; `st` fields added at the end:
+  ticks, tx_t0, tx_on, tx_over). `fxin_ob` (the audio interrupt, 1500 / s) sets `fxin_txsx_gap` whenever it sees the
+  flag clear (4 instructions a block, before the FXI1 test), which restarts the count, as 0026's `rui_render_in` does.
+  A flag left set after a port reset: stock's port setup clears it (pc 0x4000275a writes 0 when the host enumerates,
+  [measured] `fxin_emu flagreset`), and a dump cut by a cable pull leaves it clear [measured, 0026 `fetchcut`]; the bound
+  is a guard only. The emulator cannot hold the flag set for longer, so the bound is the same code as 0026's, whose
+  test (sq_emu fetchrace, txsx_test) drives it.
+- **A long stock transfer delays the reports:** during a SONG dump or a C6-style run of back-to-back stock messages the
+  27 and the 50 wait for the transfer to end (the gaps between messages restart the bound; a gap at a tick lets one
+  out). A 50 can lag by the length of the transfer (seconds), a 27 answering a 26 too: the host must not read a
+  missing 50 / 27 during a transfer as a lost link.
+- New address: 0x413db244 (data, already 0026's `TX_SYSEX`): now `tx_sysex` in re/os/1.73.toml and 1.74.toml
+  [[data]] (the sender's store at 0x40002c14), checked by `tools/ostarget.py data`.
+- Test: `fxin_emu.py <tag> dumpcut`: eight pattern dumps asked at once while BD's pan changes every 4 M (a 50 due at
+  every tick): every answer whole, the 50s due during the transfer sent after it, and a 26 7F
+  asked during the transfer answered (27). Fails on the baseline (2 of 8 cut by `F0 7D 52 54 50`), OS 1.73 and 1.74.

@@ -16,7 +16,7 @@ import cu_emu as CU   # noqa: E402
 
 FAILS = PC.FAILS
 check = PC.check
-DOWNS = 29            # the machine list from BD PLASTIC: DISABLE 14 .. LIVE IN 27, CHOP 28, MIDI 29, DAISYSP 30, MULTISAMP 31
+DOWNS = 30            # the machine list from BD PLASTIC: DISABLE 14 .. SAMPLER 23 (0.5.0), .. LIVE IN 28, CHOP 29, MIDI 30, DAISYSP 31, MULTISAMP 32
 SRC = ["DST", "CHAN", "BANK", "SBNK", "PROG", "PB", "AT", "MW"]
 P2 = ["VAL1", "VAL2", "VAL3", "VAL4", "SEL1", "SEL2", "SEL3", "SEL4"]
 DEFAULTS = [32, 0, 0, 0, 0, 0, 0, 0]
