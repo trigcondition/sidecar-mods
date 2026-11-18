@@ -19,7 +19,10 @@ tools/emu/suites.py TAG rled sq                   # named suites
   `mods/0000-shared`, `registry/`, `re/symbols.toml`, the build tools and the bases every suite. Docs and the RE notes
   pick none. The stock-site mods no suite is about (0002..0013, 0020) pick a quick smoke set (frz td fxin rui sv);
   `--full` covers them before a flash. A path not in the map picks every suite (and says so: map it in `suites.py`).
-  A change in the Sidecar host's checkout (`RYTM_TEENSY`, the protocol module) is outside this repo: name the suites.
+  A new `tools/emu/<x>_emu.py` not yet in `SUITES` runs alone (with a note to register it), not every suite.
+  `re/os/` (the OS ports' address maps) picks every suite, on purpose.
+  A change in the Sidecar host's checkout (`RYTM_TEENSY`) is outside this repo: `--host-changed REV` (alone, or with
+  `--changed`) picks rui, pm, sv and bk when its `sim/protocol.py` or `sim/remote_ui.py` differs from REV.
 - Output: one line a suite (verdict, PASS / FAIL counts, seconds, log path), a failing suite's FAIL lines, the wall
   clock. **Read a log only when its suite failed**, and then grep it (`grep -n FAIL build/suites/rled.log`): the logs
   are 1..63 KB of PASS lines.
@@ -33,6 +36,15 @@ tools/emu/suites.py TAG rled sq                   # named suites
   process: every check still runs. It falls back to one process when `sections/rled_stock.snap` is missing or a test
   / key was added to `rled_emu.py` and not to `RLED_SHARDS` / `RLED_UPKEYS` in `suites.py` (the plan says so).
   `--no-shard` turns sharding off.
+- `us`, `sfu`, `sfx`, `md`, `sq`, `bk` and `pj` also run as 2..4 shards of about 500 s each (`SPLITS` in `suites.py`, the
+  tests balanced by their seconds in a full OS 1.74 run; sfu's `pages` + `names` and sq's `pin` + `pinvel` stay together,
+  as the second reads what the first made). The same rule: a table that no longer matches the script's `TESTS` means one
+  process, and the plan says so.
+- Measured 2026-11-19 (OS 1.74, `--full -j 4`, same tag both runs): 5050 s before these shards, 3588 s after, the
+  same checks and verdicts (rled's two known stockupkeys CLASH fails in both). The longest jobs now are sfx's and
+  sfu's shards (~500..970 s); rled's 7 shards take ~640 s together.
+- `build/suites/est.json` keeps each passing job's seconds, so `--plan` and the longest-first order use the last run's
+  times, not the table's.
 - Files: `build/suites/SUITE.log` (full output), `SUITE.times` (each line with its seconds since the start: where the
   time goes), `summary.txt` (as `build/suites/run.sh` writes it), `summary.json`. Each job's scratch dir
   `build/emu_jobs/JOB/` (its `.snap` files deleted at the end unless `--keep-snaps`).
