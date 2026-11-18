@@ -503,6 +503,7 @@ def smpl_twice(e, name, s0, label_):
     check(f"{name}: the SMPL page was on the screen", st["seen"] > 0 and st["ptr"] != 0, st)
     check(f"{name}: SMPL twice on {label_}: the sub-page index 0 (not the waveform)", st["idx"] == 0 and st["vidx"] == 0, st)
     check(f"{name}: the page id is SAMPLE (4), not SMPL WAVEFORM (5)", st["pid"] == 4, st)
+    check(f"{name}: the cycle gate held it: the normaliser never saw index 1 on this machine", st["fix"] == 0, st)
     print(f"  look at build/emu/{e.tag}/pc_{name}.png: header SAMPLE, the machine's knobs")
 
 
@@ -529,6 +530,27 @@ def t_smplpage_wt(e):
 def t_smplpage_gr(e):
     """F9: GRANULAR (47), SMPL twice: sub-page index 0."""
     smpl_twice(e, "cu_smplpage_gr", nm(e, 47, 27), "GRANULAR")
+
+
+def t_smplpage_flash(e):
+    """F9: no flash. The SMPL key's second press on a Sidecar machine (SMPL page already open) changes nothing on the glass:
+    the screen at 130 / 165 / 210 / 260 ms after the press is the one before it (the stock cycle showed the header SMPL
+    WAVEFORM from ~165 to ~255 ms on a Sidecar machine's SAMPLE page, the knobs right, when only the per-tick normaliser
+    put the index back). The press reaches the view ~150 ms after the event (key scan)."""
+    import hashlib
+    f = PC.fm(e)
+    r1 = e.run("cu_smplflash_pre", 800, [(300, "press", "SMPL")], snap=f, usb=False)
+    png = lambda n: hashlib.md5(open(os.path.join(e.out, f"pc_{n}.png"), "rb").read()).hexdigest()   # noqa: E731
+    ref = png("cu_smplflash_pre")
+    got = {}
+    for d in (130, 165, 210, 260):
+        r = e.run(f"cu_smplflash_{d}", d, [(5, "press", "SMPL")], snap=r1["snap"], usb=False)
+        got[d] = png(f"cu_smplflash_{d}")
+        st = smpl_state(e, r["snap"][0])
+        check(f"smplflash: {d} ms after the press: index 0, page SAMPLE, the normaliser not needed", st["idx"] == 0 and
+              st["pid"] == 4 and st["fix"] == 0, st)
+    check("smplflash: the screen at 130 / 165 / 210 / 260 ms is the screen before the press", all(v == ref for v in got.values()),
+          {d: v[:8] for d, v in got.items()} | {"before": ref[:8]})
 
 
 def t_smplpage_mem(e):
@@ -579,7 +601,7 @@ def t_smplprobe(e):
     check("smplprobe: the index survives a page change (SRC, SMPL: still 1)", st1["idx"] == 1, st1)
 
 
-TESTS = dict(smplpage_fm=t_smplpage_fm, smplpage_sampler=t_smplpage_sampler, smplpage_ms=t_smplpage_ms, smplpage_wt=t_smplpage_wt, smplpage_gr=t_smplpage_gr, smplpage_mem=t_smplpage_mem, smplprobe=t_smplprobe, sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, gr=t_gr, swap=t_swap, li=t_li,
+TESTS = dict(smplpage_flash=t_smplpage_flash, smplpage_fm=t_smplpage_fm, smplpage_sampler=t_smplpage_sampler, smplpage_ms=t_smplpage_ms, smplpage_wt=t_smplpage_wt, smplpage_gr=t_smplpage_gr, smplpage_mem=t_smplpage_mem, smplprobe=t_smplprobe, sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, gr=t_gr, swap=t_swap, li=t_li,
              cp=t_cp)
 
 

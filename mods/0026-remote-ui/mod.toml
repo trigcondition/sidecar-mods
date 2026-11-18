@@ -12,7 +12,8 @@ area    = "elek"
 excludes_params = ["0022-looper:keys"]
 # pm (0.5.0): the LFO call 0x40120fae and trig_fire's 0x4009afa0 are the sites of the unreleased 0004-lfo-rnd and
 # 0003-velocity-humanise (decision O5: those stay unreleased and never in one image with this)
-excludes = ["0003-velocity-humanise", "0004-lfo-rnd"]
+# 0.5.2: smpl_cycle_det's site 0x4003ab86 is 0013-voice-dac's hpf_cycle (the page key's cycle), 0013 not in RELEASE_MODS
+excludes = ["0003-velocity-humanise", "0004-lfo-rnd", "0013-voice-dac"]
 
 # re-only | built | hardware-verified | retracted
 status  = "built"

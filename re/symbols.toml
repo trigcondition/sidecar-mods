@@ -898,6 +898,11 @@ sig = "void(std::string *s)"
 status = "inferred"
 note = "COW std::string destructor, pairing std_string_from_cstr."
 
+[data.page_cycle_remsl]
+addr = 0x4003ab8c
+status = "verified"
+note = "In the page view key handler, the instruction after `movel %a2@(140),%d1; addql #1,%d1` (0x4003ab86, 6 B): the remsl that makes d1 % count (d0) the new index. 0013's hpf_cycle and 0026's smpl_cycle_det (0.5.2) re-emit the two instructions and rejoin here."
+
 [data.page_cycle_after_invalidate]
 addr = 0x4003ab9c
 status = "verified"

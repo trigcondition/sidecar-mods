@@ -800,7 +800,7 @@ static struct {
   uint32_t s2al;                       /* 1027e: 2As of a held step's values */
   /* 0.5.2: the SMPL page's sub-page index (SamplePageView +0x8c), for the tests (new fields at the end) */
   void *smpl;                          /* the SamplePageView this tick (0: not in the view list) */
-  uint32_t smpl_idx, smpl_seen, smpl_fix;   /* its index after this tick; ticks it was seen; ticks the index was on a Sidecar machine's waveform sub-page */
+  uint32_t smpl_idx, smpl_seen, smpl_fix;   /* its index after this tick; ticks it was seen; ticks the normaliser put a Sidecar machine's track back to index 0 */
 } sv __attribute__((section(".bss"), aligned(4)));
 
 /* 0 not the SRC page, 1 the SRC page is the screen, 2 the SRC page is there but covered */
@@ -956,10 +956,15 @@ static int32_t sv_held_step(void);
 static void sv_tick(void *ctrl, uint32_t r) {
   int32_t t = SEL_TRACK, pg = sv_page(ctrl), on;
   uint8_t m = 0;
-  if (sv.smpl) {                       /* 0.5.2: the SMPL page's index (test counters only here) */
+  if (sv.smpl) {                       /* 0.5.2 (F9): never the stock waveform sub-page on a Sidecar machine's track */
+    uint32_t *v = (uint32_t *)sv.smpl;
     sv.smpl_seen++;
-    sv.smpl_idx = ((const uint32_t *)sv.smpl)[0x8c / 4];
-    if (sv.smpl_idx && t <= 11 && mr_vb(t, MACHINE_OF(t)) != 0x7f) sv.smpl_fix++;
+    if (v[0x8c / 4] && t <= 11 && mr_vb(t, MACHINE_OF(t)) != 0x7f) {   /* index 1: SMPL WAVEFORM, the muted sound's own sample */
+      ((int32_t (*)(void *, int32_t))((const uint32_t *)v[0])[0x60 / 4])(v, 0);   /* the view's set_page_index(0): store + refresh */
+      *((volatile uint8_t *)ctrl + 0x20) = 1;
+      sv.smpl_fix++;
+    }
+    sv.smpl_idx = v[0x8c / 4];
   }
   if (t > 11) pg = 0;
   if (pg) m = MACHINE_OF(t);
@@ -991,6 +996,37 @@ static void sv_tick(void *ctrl, uint32_t r) {
     *((volatile uint8_t *)ctrl + 0x20) = 1;
   }
 }
+
+/* 0.5.2 (F9): the page key's cycle (registry: 0x4003ab86, `movel %a2@(140),%d1; addql #1,%d1`, 6 B, before the remsl that
+   makes d1 % count the new index; a2 the page view, d0 the page count). On the SamplePageView of a Sidecar machine's track
+   d1 becomes 0, so the index stays 0 and the header is pushed as SAMPLE (0029's title detour, after the remsl): the
+   second SMPL press does nothing there, no frame of SMPL WAVEFORM. Everywhere else the stock cycle. d2 is the remsl's
+   (overwritten), d0 / d1 / a0 / a1 are saved. page_cycle_remsl: re/symbols.toml. */
+uint32_t smpl_hold(const uint32_t *view) {
+  int32_t t = SEL_TRACK;
+  return view[0] == VT_SAMPLEPAGE && t <= 11 && mr_vb(t, MACHINE_OF(t)) != 0x7f;
+}
+__asm__(
+    "  .include \"symbols.inc\"\n"
+    "  .text\n"
+    "  .globl smpl_cycle_det\n"
+    "  .align 2\n"
+    "smpl_cycle_det:\n"
+    "  move.l 140(%a2),%d1\n"
+    "  addq.l #1,%d1\n"
+    "  lea -16(%sp),%sp\n"
+    "  movem.l %d0-%d1/%a0-%a1,(%sp)\n"
+    "  move.l %a2,-(%sp)\n"
+    "  jsr smpl_hold\n"
+    "  addq.l #4,%sp\n"
+    "  move.l %d0,%d2\n"
+    "  movem.l (%sp),%d0-%d1/%a0-%a1\n"
+    "  lea 16(%sp),%sp\n"
+    "  tst.l %d2\n"
+    "  beq.s 1f\n"
+    "  moveq #0,%d1\n"
+    "1:\n"
+    "  jmp page_cycle_remsl\n");
 
 int32_t cu_steps(int32_t r);
 int32_t cu_mi_settling(int32_t t);
