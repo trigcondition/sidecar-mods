@@ -477,7 +477,109 @@ def t_sasound(e):
     check(f"sasound: words 17..24 SAMPLER's defaults {SA_WORDS}", k[8:16] == SA_WORDS, k[8:16])
 
 
-TESTS = dict(sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, gr=t_gr, swap=t_swap, li=t_li,
+# 0.5.2 (F9): the SMPL key's second sub-page (SMPL WAVEFORM, the stock waveform layout of the sound's own muted sample) is never
+# shown on a Sidecar machine. 0026's state struct sv ends with {smpl, smpl_idx, smpl_seen, smpl_fix} (sv + 128): the
+# SamplePageView this tick (0: not on the screen), its sub-page index (+0x8c) after the tick's normaliser, the ticks it was
+# seen, the ticks (before the normaliser) its index was not 0 on a Sidecar machine's track. The page id is ids[index]
+# (the view's id list at +124): 4 SAMPLE, 5 SMPL WAVEFORM.
+SV_SMPL = 128
+
+
+def smpl_state(e, snap):
+    sv = json.load(open(os.path.join(e.out, "manifest.json")))["elek"]["symbols"]["rytm-0026-remote-ui:sv"]
+    ptr, idx, seen, fix = [int.from_bytes(e.peek(snap, sv + SV_SMPL + 4 * i, 4), "big") for i in range(4)]
+    vidx = pid = None
+    if ptr:
+        vidx = u32(e, snap, ptr + 140)
+        pid = u32(e, snap, u32(e, snap, ptr + 124) + 4 * vidx)
+    return dict(ptr=ptr, idx=idx, seen=seen, fix=fix, vidx=vidx, pid=pid)
+
+
+def smpl_twice(e, name, s0, label_):
+    """SMPL twice (stock: SAMPLE, then SMPL WAVEFORM) on a Sidecar machine's track: index 0, page SAMPLE, left that way."""
+    r = e.run(name, 1800, [(300, "press", "SMPL"), (800, "press", "SMPL")], snap=s0, usb=False)
+    st = smpl_state(e, r["snap"][0])
+    print(f"  {label_}: {st}")
+    check(f"{name}: the SMPL page was on the screen", st["seen"] > 0 and st["ptr"] != 0, st)
+    check(f"{name}: SMPL twice on {label_}: the sub-page index 0 (not the waveform)", st["idx"] == 0 and st["vidx"] == 0, st)
+    check(f"{name}: the page id is SAMPLE (4), not SMPL WAVEFORM (5)", st["pid"] == 4, st)
+    print(f"  look at build/emu/{e.tag}/pc_{name}.png: header SAMPLE, the machine's knobs")
+
+
+def t_smplpage_fm(e):
+    """F9: 6-OP FM, SMPL twice: sub-page index 0, page SAMPLE (fails while the stock cycle shows SMPL WAVEFORM)."""
+    smpl_twice(e, "cu_smplpage_fm", PC.fm(e), "6-OP FM")
+
+
+def t_smplpage_sampler(e):
+    """F9: SAMPLER (43), SMPL twice: sub-page index 0 (the 'empty sample' users saw is the waveform sub-page)."""
+    smpl_twice(e, "cu_smplpage_sampler", nm(e, 43, 23), "SAMPLER")
+
+
+def t_smplpage_ms(e):
+    """F9: MULTISAMPLE (52), SMPL twice: sub-page index 0."""
+    smpl_twice(e, "cu_smplpage_ms", ms(e), "MULTISAMPLE")
+
+
+def t_smplpage_wt(e):
+    """F9: WAVETABLE (46), SMPL twice: sub-page index 0."""
+    smpl_twice(e, "cu_smplpage_wt", nm(e, 46, 26), "WAVETABLE")
+
+
+def t_smplpage_gr(e):
+    """F9: GRANULAR (47), SMPL twice: sub-page index 0."""
+    smpl_twice(e, "cu_smplpage_gr", nm(e, 47, 27), "GRANULAR")
+
+
+def t_smplpage_mem(e):
+    """F9: the index is remembered across machines (one SamplePageView for all tracks): SMPL twice on analog BD (index 1,
+    SMPL WAVEFORM, stock), switch BD to 6-OP FM, SMPL once: index 0; back to the analog machine, SMPL twice: index 1 again
+    (analog tracks still reach the waveform sub-page)."""
+    keys = ["SRC", "SRC"] + ["DOWN"] * 20 + ["YES"]
+    ev = [(300, "press", "SMPL"), (800, "press", "SMPL")]
+    r = e.run("cu_smplmem_a", 1800, ev, usb=False)
+    st = smpl_state(e, r["snap"][0])
+    print(f"  analog BD, SMPL twice: {st}")
+    check("smplmem: analog BD, SMPL twice: index 1, SMPL WAVEFORM (stock unchanged)", st["idx"] == 1 and st["pid"] == 5, st)
+    ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)]
+    t = 500 + 500 * len(keys) + 1000
+    ev += [(t, "press", "SMPL")]
+    r = e.run("cu_smplmem_fm", t + 1500, ev, snap=r["snap"], usb=False)
+    s = r["snap"][0]
+    st = smpl_state(e, s)
+    print(f"  BD on 6-OP FM, SMPL once: {st}")
+    check("smplmem: BD is 6-OP FM (40)", e.peek(s, 0x8000EA00, 1)[0] == 40, e.peek(s, 0x8000EA00, 1)[0])
+    check("smplmem: SMPL once on the Sidecar machine: index 0 (the remembered 1 is not shown)", st["seen"] > 0 and
+          st["idx"] == 0 and st["vidx"] == 0 and st["pid"] == 4, st)
+    keys = ["SRC", "SRC"] + ["UP"] * 20 + ["YES"]
+    ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)]
+    t = 500 + 500 * len(keys) + 1000
+    ev += [(t, "press", "SMPL"), (t + 500, "press", "SMPL")]
+    r = e.run("cu_smplmem_back", t + 1800, ev, snap=r["snap"], usb=False)
+    s = r["snap"][0]
+    st = smpl_state(e, s)
+    m = e.peek(s, 0x8000EA00, 1)[0]
+    print(f"  BD on machine {m}, SMPL twice: {st}")
+    check("smplmem: BD is an analog machine again", m < 35, m)
+    check("smplmem: analog BD, SMPL twice: index 1 again (A does not touch analog tracks)", st["idx"] == 1 and st["pid"] == 5, st)
+
+
+def t_smplprobe(e):
+    """Probe (research f9-smpl-page section 6): is the index remembered across pages and tracks? Analog BD: SMPL twice (1),
+    SRC, SMPL (once); then SD selected by its pad, SMPL. Prints the indexes; checks only the first (stock cycles to 1)."""
+    r = e.run("cu_smplprobe0", 1800, [(300, "press", "SMPL"), (800, "press", "SMPL")], usb=False)
+    st0 = smpl_state(e, r["snap"][0])
+    r = e.run("cu_smplprobe1", 1800, [(300, "press", "SRC"), (800, "press", "SMPL")], snap=r["snap"], usb=False)
+    st1 = smpl_state(e, r["snap"][0])
+    r = e.run("cu_smplprobe2", 2800, [(300, "press", "SRC"), (800, "press", "SD"), (1300, "press", "SMPL")], snap=r["snap"], usb=False)
+    st2 = smpl_state(e, r["snap"][0])
+    print(f"  SMPL SMPL: index {st0['idx']}; then SRC, SMPL (a page change on the same track): index {st1['idx']} (seen {st1['seen']}); then SRC, SD selected, SMPL (another track): index "
+          f"{st2['idx']} (seen {st2['seen']}, track {e.peek(r['snap'][0], 0x41318982, 1)[0]})")
+    check("smplprobe: analog BD, SMPL twice: index 1", st0["idx"] == 1 and st0["pid"] == 5, st0)
+    check("smplprobe: the index survives a page change (SRC, SMPL: still 1)", st1["idx"] == 1, st1)
+
+
+TESTS = dict(smplpage_fm=t_smplpage_fm, smplpage_sampler=t_smplpage_sampler, smplpage_ms=t_smplpage_ms, smplpage_wt=t_smplpage_wt, smplpage_gr=t_smplpage_gr, smplpage_mem=t_smplpage_mem, smplprobe=t_smplprobe, sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, gr=t_gr, swap=t_swap, li=t_li,
              cp=t_cp)
 
 

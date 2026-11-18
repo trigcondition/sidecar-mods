@@ -798,6 +798,9 @@ static struct {
   uint32_t diag_tick, d2b;             /* tick of the last 2B; 2Bs sent */
   int32_t lock, lock_sent;             /* 1027e: the step held in GRID REC (0..63, -1 none): the values are its; as last sent */
   uint32_t s2al;                       /* 1027e: 2As of a held step's values */
+  /* 0.5.2: the SMPL page's sub-page index (SamplePageView +0x8c), for the tests (new fields at the end) */
+  void *smpl;                          /* the SamplePageView this tick (0: not in the view list) */
+  uint32_t smpl_idx, smpl_seen, smpl_fix;   /* its index after this tick; ticks it was seen; ticks the index was on a Sidecar machine's waveform sub-page */
 } sv __attribute__((section(".bss"), aligned(4)));
 
 /* 0 not the SRC page, 1 the SRC page is the screen, 2 the SRC page is there but covered */
@@ -881,6 +884,7 @@ static int32_t sv_page(void *ctrl) {
   uint32_t last = 0;
   int32_t k, j, found = 0, cov = 0, after = 0, unknown = 0;
   sv.view = 0;
+  sv.smpl = 0;
   for (k = 0; k < 16 && n && (const uint8_t *)n != c + 20; ++k) {
     const uint32_t *v = (const uint32_t *)n[2];
     if (!v) return 0;
@@ -891,7 +895,7 @@ static int32_t sv_page(void *ctrl) {
     last = v[0];
     top = v;
     if (last == VT_SYNTHPAGE) { found = 1; sv.view = (void *)v; }
-    if (last == VT_SAMPLEPAGE) found |= 2;   /* 1045: the SMPL page */
+    if (last == VT_SAMPLEPAGE) { found |= 2; sv.smpl = (void *)v; }   /* 1045: the SMPL page */
     if (last == VT_PATSEL && ((const uint8_t *)v)[0x7f]) cov = 1;   /* a BANK key held (not +0x84: above) */
     if (after) {
       for (j = 0; j < (int32_t)(sizeof sv_covers / 4) && sv_covers[j] != last; ++j) ;
@@ -952,6 +956,11 @@ static int32_t sv_held_step(void);
 static void sv_tick(void *ctrl, uint32_t r) {
   int32_t t = SEL_TRACK, pg = sv_page(ctrl), on;
   uint8_t m = 0;
+  if (sv.smpl) {                       /* 0.5.2: the SMPL page's index (test counters only here) */
+    sv.smpl_seen++;
+    sv.smpl_idx = ((const uint32_t *)sv.smpl)[0x8c / 4];
+    if (sv.smpl_idx && t <= 11 && mr_vb(t, MACHINE_OF(t)) != 0x7f) sv.smpl_fix++;
+  }
   if (t > 11) pg = 0;
   if (pg) m = MACHINE_OF(t);
   on = pg && mr_vb(t, m) != 0x7f;

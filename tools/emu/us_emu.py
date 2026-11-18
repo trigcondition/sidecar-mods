@@ -1462,7 +1462,25 @@ def t_kitguard(e):
           and word0(e, s2) == (FP_A, FP_A), f"{got} {word0(e, s2)}")
 
 
-TESTS = {"base": t_base,"exciter": t_exciter, "variants": t_variants, "takeover": t_takeover, "enum": t_enum, "enum36": t_enum36, "old16": t_old16,
+def t_smplpage_u1(e):
+    """(F9, 0.5.2) U1 (no Sidecar: stock's SAMPLE records) on BD, SMPL twice: the SMPL page's sub-page index 0 (page SAMPLE),
+    not the stock waveform sub-page; 0026's sv ends with {smpl, smpl_idx, smpl_seen, smpl_fix} (sv + 128)."""
+    ev, t = walk_list(100, UI["downs"]["u1"])
+    ev += [(t, "press", "SMPL"), (t + 300, "press", "SMPL")]
+    s = e.run("smplpage-u1", t + 600, ev, save=True)
+    sv = elek_sym(e, "rytm-0026-remote-ui:sv")
+    ptr, idx, seen, fix = [e.u32(s, sv + 128 + 4 * i) for i in range(4)]
+    vidx = e.u32(s, ptr + 140) if ptr else None
+    pid = e.u32(s, e.u32(s, ptr + 124) + 4 * vidx) if ptr else None
+    print(f"  smpl view {ptr:#x}, index {idx} (view {vidx}), seen {seen}, fix {fix}, page id {pid}")
+    check("smplpage: BD plays U1 (35)", e.peek(s, 0x8000ea00, 1)[0] == 35, e.peek(s, 0x8000ea00, 1).hex())
+    check("smplpage: the SMPL page was on the screen", ptr != 0 and seen > 0, f"{ptr:#x} {seen}")
+    check("smplpage: SMPL twice on U1: sub-page index 0, page SAMPLE (4)", idx == 0 and vidx == 0 and pid == 4,
+          f"index {idx} view {vidx} page {pid}")
+    print(f"  look at build/emu/{e.tag}/smplpage-u1.png: header SAMPLE, stock's STA END LOP LEV")
+
+
+TESTS = {"smplpage_u1": t_smplpage_u1, "base": t_base,"exciter": t_exciter, "variants": t_variants, "takeover": t_takeover, "enum": t_enum, "enum36": t_enum36, "old16": t_old16,
          "names": t_names, "labels": t_labels, "unused": t_unused, "dspmod": t_dspmod, "junopat": t_junopat, "writeback": t_writeback, "texts": t_texts,
          "page2": t_page2, "poweroff": t_poweroff, "stock": t_stock, "strict": t_strict, "menu": t_menu,
          "choose": t_choose, "assign": t_assign, "stale": t_stale, "sound": t_sound, "load": t_load, "window": t_window,
