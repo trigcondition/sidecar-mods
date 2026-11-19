@@ -38,7 +38,9 @@ tools/emu/suites.py TAG rled sq                   # named suites
   `--no-shard` turns sharding off.
 - `us`, `sfu`, `sfx`, `md`, `sq`, `bk` and `pj` also run as 2..4 shards of about 500 s each (`SPLITS` in `suites.py`, the
   tests balanced by their seconds in a full OS 1.74 run; sfu's `pages` + `names` and sq's `pin` + `pinvel` stay together,
-  as the second reads what the first made). The same rule: a table that no longer matches the script's `TESTS` means one
+  as the second reads what the first made; sfu's and sfx's `stock` sit with the test whose result they read). A
+  sharded suite's PASS count is higher than one process's: each shard repeats its setup checks. Its `.times` are
+  per shard (`us.1.times`, ...); the merged log is `us.log`. The same rule: a table that no longer matches the script's `TESTS` means one
   process, and the plan says so.
 - Measured 2026-11-19 (OS 1.74, `--full -j 4`, same tag both runs): 5050 s before these shards, 3588 s after, the
   same checks and verdicts (rled's two known stockupkeys CLASH fails in both). The longest jobs now are sfx's and

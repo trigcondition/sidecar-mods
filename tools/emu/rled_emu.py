@@ -244,6 +244,7 @@ def stock_state(e, r):
     d.update({f"sel{i}": v for i, v in enumerate(sel.split(", "))})   # 1038: each selector byte its own item
     for a, n in STATE:   # one dtpeek a range, cut into the same 256-byte items (was one dtpeek an item: 47 a state, now 5)
         m = e.peek(r, a, n)
+        assert len(m) == n, f"stock_state: dtpeek {a:#x}+{n} gave {len(m)} bytes"   # a failed read must not compare equal
         d.update({f"mem{a:x}+{i:x}": m[i:i + 256] for i in range(0, n, 256)})
     return d
 

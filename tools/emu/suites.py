@@ -111,13 +111,13 @@ SPLITS = {
           "tagkit1", "freshtrig"], 486),
     ],
     "sfu": [
-        (["labels", "locks", "save"], 473),
-        (["enumlock", "enumkit", "ext", "bw", "bw2"], 474),
-        (["fmname", "enum", "typelist", "cost", "bwwrap", "pages", "names", "stock", "kits"], 485),
+        (["labels", "locks", "save", "stock"], 530),   # stock reads save's (and locks') result: same shard
+        (["enumlock", "enumkit", "ext", "bw", "bw2"], 441),
+        (["fmname", "enum", "typelist", "cost", "bwwrap", "pages", "names", "kits"], 407),
     ],
     "sfx": [
-        (["fx38", "nokit"], 501),
-        (["report", "migrate", "sendlock", "stock", "reload", "kitswitch"], 492),
+        (["fx38", "stock"], 619),   # stock reads fx38's result: same shard (fx38 alone is ~470 s)
+        (["nokit", "report", "migrate", "sendlock", "reload", "kitswitch"], 394),
     ],
     "md": [
         (["fresh", "nohost", "kitload", "convert", "hold", "dspold"], 503),
@@ -499,7 +499,10 @@ def main():
     wall = round(time.monotonic() - t_start)
     seen = load_est(sdir)   # passing jobs' seconds (the parallel run's: the alone rerun is not typical)
     seen.update({est_key(j): res[(j["name"], "")]["secs"] for j in jobs if res[(j["name"], "")]["rc"] == 0})
-    json.dump(seen, open(os.path.join(sdir, "est.json"), "w"), indent=1, sort_keys=True)
+    tmp = os.path.join(sdir, f"est.json.{os.getpid()}")   # whole file or none: a reader never sees half of it
+    with open(tmp, "w") as f:
+        json.dump(seen, f, indent=1, sort_keys=True)
+    os.replace(tmp, os.path.join(sdir, "est.json"))
     with open(os.path.join(sdir, "summary.txt"), "w") as out:
         for s in sorted(summary):
             pr = next((rc for rc in summary[s]["parallel_rc"].values() if rc != 0), 0)
