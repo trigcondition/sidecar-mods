@@ -863,7 +863,7 @@ sv_word:
 	subq.l #8,%d1
 	cmp.l %d1,%d6
 	jcs .L32
-	lea CSWTCH.477,%a0
+	lea CSWTCH.478,%a0
 	mvs.b (%a0,%d1.l),%d0
 .L28:
 	move.l sv+80,%a0
@@ -1903,7 +1903,7 @@ cu_text:
 	mvz.b %d5,%d5
 	cmp.l %d5,%d1
 	jcs .L215
-	lea CSWTCH.535,%a0
+	lea CSWTCH.536,%a0
 	mvs.b (%a0,%d5.l),%d1
 .L204:
 	tst.l %d3
@@ -2050,7 +2050,7 @@ cu_src_setup:
 	clr.l %d3
 	add.l #-43,%d5
 	lea cu_src,%a6
-	lea CSWTCH.533,%a5
+	lea CSWTCH.534,%a5
 	lea cu_knob,%a4
 	move.l #1075575064,%a3
 .L262:
@@ -3275,7 +3275,7 @@ pj_push:
 	move.l 20(%sp),%d1
 	move.l 24(%sp),%a1
 #APP
-| 5028 "rui.c" 1
+| 5031 "rui.c" 1
 	tas pj+136
 	smi %d2
 | 0 "" 2
@@ -5025,6 +5025,7 @@ sv_tick:
 	sub.l %a5,%a5
 	lea (20,%a4),%a0
 	sub.l %a6,%a6
+	mov3q.l #1,sv+144
 	clr.l %d6
 	clr.l %d1
 	clr.l %d2
@@ -5042,17 +5043,20 @@ sv_tick:
 .L813:
 	clr.l %d2
 .L793:
-	move.l sv+128,%a2
-	tst.l %a2
+	move.l sv+128,%a3
+	lea sv,%a2
+	tst.l %a3
 	jeq .L817
 	addq.l #1,sv+136
-	tst.l 140(%a2)
+	tst.l sv+144
+	jne .L818
+	tst.l 140(%a3)
 	jeq .L818
 	moveq #11,%d0
 	cmp.l %d5,%d0
 	jlt .L818
-	moveq #127,%d0
 	move.b %d4,%d1
+	moveq #127,%d0
 	and.l -2147457096,%d0
 	ext.w %d1
 	mulu.w #2531,%d0
@@ -5070,21 +5074,20 @@ sv_tick:
 	cmp.l %d0,%d1
 	jeq .L818
 	moveq #1,%d3
-	move.l (%a2),%a0
+	move.l (%a3),%a0
 	clr.l -(%sp)
-	move.l %a2,-(%sp)
+	move.l %a3,-(%sp)
 	move.l 96(%a0),%a0
 	jsr (%a0)
 	addq.l #1,sv+140
 	addq.l #8,%sp
 	move.b %d3,32(%a4)
 .L818:
-	lea (140,%a2),%a2
-	move.l (%a2),sv+132
+	lea (140,%a3),%a3
+	move.l (%a3),sv+132
 .L817:
-	lea sv,%a2
-	moveq #11,%d0
 	move.b (%a2),%d3
+	moveq #11,%d0
 	cmp.l %d5,%d0
 	jlt .L843
 	tst.l %d2
@@ -5345,6 +5348,7 @@ sv_tick:
 	neg.l %d0
 	or.l %d0,%d2
 .L815:
+	move.l %d2,sv+144
 	btst #0,%d1
 	jeq .L811
 	addq.l #1,%d2
@@ -5769,7 +5773,7 @@ cu_setup:
 	moveq #9,%d0
 	cmp.l %d4,%d0
 	jcs .L959
-	lea CSWTCH.533,%a0
+	lea CSWTCH.534,%a0
 	move.l (%a0,%d4.l*4),%d0
 .L956:
 	cmp.l %d0,%d1
@@ -5777,7 +5781,7 @@ cu_setup:
 .L955:
 	lea cu_p2,%a3
 	clr.l %d3
-	lea CSWTCH.533,%a5
+	lea CSWTCH.534,%a5
 	lea cu_knob,%a4
 .L958:
 	moveq #9,%d0
@@ -5829,7 +5833,7 @@ isr_send:
 	rts
 .L966:
 #APP
-| 1769 "rui.c" 1
+| 1772 "rui.c" 1
 	move.w %sr,%d0
 | 0 "" 2
 #NO_APP
@@ -5842,7 +5846,7 @@ isr_send:
 	and.l #63743,%d0
 	or.l #1280,%d0
 #APP
-| 1773 "rui.c" 1
+| 1776 "rui.c" 1
 	move.w %d0,%sr
 | 0 "" 2
 #NO_APP
@@ -5851,7 +5855,7 @@ isr_send:
 	jeq .L969
 .L971:
 #APP
-| 1778 "rui.c" 1
+| 1781 "rui.c" 1
 	move.w %d2,%sr
 | 0 "" 2
 #NO_APP
@@ -5875,7 +5879,7 @@ isr_send:
 	move.l %d1,-(%sp)
 	jsr 1073752544
 #APP
-| 1778 "rui.c" 1
+| 1781 "rui.c" 1
 	move.w %d2,%sr
 | 0 "" 2
 #NO_APP
@@ -6378,7 +6382,7 @@ sq_fire:
 	moveq #127,%d0
 .L1072:
 #APP
-| 1769 "rui.c" 1
+| 1772 "rui.c" 1
 	move.w %sr,%d1
 | 0 "" 2
 #NO_APP
@@ -6391,7 +6395,7 @@ sq_fire:
 	and.l #63743,%d1
 	or.l #1792,%d1
 #APP
-| 1773 "rui.c" 1
+| 1776 "rui.c" 1
 	move.w %d1,%sr
 | 0 "" 2
 #NO_APP
@@ -6403,7 +6407,7 @@ sq_fire:
 	addq.l #1,sq+380
 .L1076:
 #APP
-| 1778 "rui.c" 1
+| 1781 "rui.c" 1
 	move.w %d4,%sr
 | 0 "" 2
 #NO_APP
@@ -13653,9 +13657,9 @@ kt_reloaded:
 	rts
 	.size	kt_reloaded, .-kt_reloaded
 	.text
-	.type	CSWTCH.535, @object
-	.size	CSWTCH.535, 7
-CSWTCH.535:
+	.type	CSWTCH.536, @object
+	.size	CSWTCH.536, 7
+CSWTCH.536:
 	.byte	1
 	.byte	0
 	.byte	-1
@@ -13666,9 +13670,9 @@ CSWTCH.535:
 	.zero	1
 	.text
 	.align	2
-	.type	CSWTCH.533, @object
-	.size	CSWTCH.533, 40
-CSWTCH.533:
+	.type	CSWTCH.534, @object
+	.size	CSWTCH.534, 40
+CSWTCH.534:
 	.long	cu_sa_short
 	.long	cu_fm_short
 	.long	cu_fm_short
@@ -13680,9 +13684,9 @@ CSWTCH.533:
 	.long	cu_fm_short
 	.long	cu_ms_short
 	.text
-	.type	CSWTCH.477, @object
-	.size	CSWTCH.477, 6
-CSWTCH.477:
+	.type	CSWTCH.478, @object
+	.size	CSWTCH.478, 6
+CSWTCH.478:
 	.byte	4
 	.byte	5
 	.byte	0
@@ -15330,9 +15334,9 @@ sv_covers:
 	.section	.bss
 	.align	4
 	.type	sv, @object
-	.size	sv, 144
+	.size	sv, 148
 sv:
-	.zero	144
+	.zero	148
 	.local	ar
 	.comm	ar,70,2
 	.align	4

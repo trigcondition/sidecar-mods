@@ -801,6 +801,7 @@ static struct {
   /* 0.5.2: the SMPL page's sub-page index (SamplePageView +0x8c), for the tests (new fields at the end) */
   void *smpl;                          /* the SamplePageView this tick (0: not in the view list) */
   uint32_t smpl_idx, smpl_seen, smpl_fix;   /* its index after this tick; ticks it was seen; ticks the normaliser put a Sidecar machine's track back to index 0 */
+  uint32_t smpl_cov;                   /* 0.5.2 (F9 review A): the SMPL page is covered (a menu, PATSEL held ...): left alone (the normaliser waits) */
 } sv __attribute__((section(".bss"), aligned(4)));
 
 /* 0 not the SRC page, 1 the SRC page is the screen, 2 the SRC page is there but covered */
@@ -885,6 +886,7 @@ static int32_t sv_page(void *ctrl) {
   int32_t k, j, found = 0, cov = 0, after = 0, unknown = 0;
   sv.view = 0;
   sv.smpl = 0;
+  sv.smpl_cov = 1;                     /* until the walk below says the page is the plain screen */
   for (k = 0; k < 16 && n && (const uint8_t *)n != c + 20; ++k) {
     const uint32_t *v = (const uint32_t *)n[2];
     if (!v) return 0;
@@ -910,6 +912,7 @@ static int32_t sv_page(void *ctrl) {
   if (!found || k == 16 || !n) { sv.view = 0; return 0; }
   if (!after) cov = 1;                 /* SamplerLedView gone: not the plain SRC screen */
   if (unknown && last != VT_SAMPLELED && sv.top_age < UNKNOWN_TICKS) cov = 1;
+  sv.smpl_cov = (uint32_t)cov;
   if (!(found & 1)) { sv.view = 0; return 0; }   /* the SMPL page, not the view */
   return cov ? 2 : 1;
 }
@@ -959,7 +962,7 @@ static void sv_tick(void *ctrl, uint32_t r) {
   if (sv.smpl) {                       /* 0.5.2 (F9): never the stock waveform sub-page on a Sidecar machine's track */
     uint32_t *v = (uint32_t *)sv.smpl;
     sv.smpl_seen++;
-    if (v[0x8c / 4] && t <= 11 && mr_vb(t, MACHINE_OF(t)) != 0x7f) {   /* index 1: SMPL WAVEFORM, the muted sound's own sample */
+    if (!sv.smpl_cov && v[0x8c / 4] && t <= 11 && mr_vb(t, MACHINE_OF(t)) != 0x7f) {   /* index 1: SMPL WAVEFORM, the muted sound's own sample */
       ((int32_t (*)(void *, int32_t))((const uint32_t *)v[0])[0x60 / 4])(v, 0);   /* the view's set_page_index(0): store + refresh */
       *((volatile uint8_t *)ctrl + 0x20) = 1;
       sv.smpl_fix++;

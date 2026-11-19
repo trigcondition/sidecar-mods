@@ -2878,7 +2878,15 @@ put a Sidecar track's index back (0 when the gate held). The tests also read the
 **Tests** (cu_emu.py `smplpage_fm sampler ms wt gr`, `smplpage_mem`, `smplpage_flash`, `smplprobe`; us_emu.py `smplpage_u1`):
 SMPL twice on each Sidecar machine = index 0, page SAMPLE, `smpl_fix` 0; the remembered index (analog BD SMPL twice = 1, then
 6-OP FM, SMPL once = 0; back to analog BD, SMPL twice = 1: stock unchanged); U1 without a Sidecar; no frame of SMPL WAVEFORM at
-130 / 165 / 210 / 260 ms after the press. The baseline (smp0 = origin/dev + the counters only) fails all of them except the
+165 / 210 / 260 ms after the press (a sample at 130 ms is before the press reaches the view). The baseline (smp0 = origin/dev + the counters only) fails all of them except the
 analog guards; smp1 (normaliser only) passes all but `smplpage_flash`.
+
+**Review fix round 1** (build smp3). A: the normaliser runs only when the SMPL page is the plain screen: `sv_page` leaves its `cov`
+(a menu, PATSEL with a BANK key held, an unknown view on top) in `sv.smpl_cov` (a new field at the end, sv + 144; 1 until the walk
+says otherwise), and the tick skips the set_page_index + redraw while it is set. A covered page keeps index 1 and its glass; when
+the cover goes the next tick puts it to 0. Test `smplpage_cover` (SD SMPL twice, TEMPO menu, track poked to BD, NO). B: the first
+SMPL press on a Sidecar track with index 1 remembered (page left, track switched): `smplpage_first` samples the glass from the press
+to +300 ms (20..300 ms) against the SMPL WAVEFORM header and layout of an analog SD: never shown, on smp2 already (the normaliser
+runs in the tick after the activation, before the first frame), so no change for B; the test stays (it fails on smp0).
 
 **Not done (later feature):** a Sidecar-drawn waveform page for the SAMPLER on the SMPL key (design B of the research).
