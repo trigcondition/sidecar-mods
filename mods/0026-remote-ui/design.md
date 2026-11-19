@@ -2836,3 +2836,57 @@ existing symbols, so there is nothing new to port for 1.74.
   `upstock` cannot take the arrows: they move a word at 0x800067bc whose start value differs between the stock base
   and the mod's, so its absolute compare fails on the baseline (fka) as well. fka and fk1 give identical values there.
 - `stockupkeys` UPKEYS adds LEFT and RIGHT (shard 3 is 19:30).
+
+## 0.5.2 (F9): the SMPL key never lands on the stock waveform sub-page of a Sidecar machine
+
+**The bug.** The SMPL key owns a two-page view, SamplePageView (vtable 0x401e3170, built once, one instance for all tracks): page
+4 SAMPLE and page 5 SMPL WAVEFORM (the page table's entries 4 and 5 carry the same eight record ids). A second press on the
+active view cycles the sub-page index (view +140) 0 -> 1 -> 0. On a Sidecar machine the second sub-page is the stock waveform
+layout of the sound's own, muted, usually empty sample: the "empty sample" users saw on page 2 [measured, rytm-emu: header SMPL
+WAVEFORM over a flat line, `cu_emu.py smplpage_sampler` on the baseline]. The index is **remembered**: the same view serves every
+track and the index survives a page change and a track change [measured, `cu_emu.py smplprobe`: SMPL SMPL on BD = 1; SRC, SMPL =
+1; SRC, SD, SMPL = 1], so an analog track left on index 1 brings the waveform to the next Sidecar track on one SMPL press.
+
+**The fix** (rui.c, two parts, both for "a Sidecar machine's track": selected track t <= 11 and `mr_vb(t, MACHINE_OF(t)) != 0x7f`,
+the predicate the SRC view uses; analog tracks and the FX track are untouched):
+
+1. **The per-tick normaliser** (`sv_tick`): `sv_page` keeps the SamplePageView it walks past (`sv.smpl`, `VT_SAMPLEPAGE`, no new
+   address). When its index (+0x8c) is not 0 on such a track, `sv_tick` calls the view's own set_page_index, vtable +0x60, with 0
+   (stock's setter: bound check, store, refresh through vtable +0x50) and sets the redraw flag as the SRC view does. It covers the
+   remembered index (the first SMPL press after the machine change) and any other way the index gets to 1.
+2. **The cycle gate** (`smpl_cycle_det`, the registry's second claim of 0x4003ab86, 6 B, `movel %a2@(140),%d1; addql #1,%d1`
+   before the `remsl %d0,%d2,%d1` that makes d1 % count the new index; the site of 0013's `hpf_cycle`, which is not in
+   RELEASE_MODS; 0026 now `excludes` 0013): re-emits the two instructions, calls `smpl_hold(view)` (SamplePageView and a Sidecar
+   machine's track) and, when it holds, makes d1 0, so the index stays 0 and 0029's title detour (0x4003ab94, after the remsl)
+   pushes SAMPLE. d0 (the count) and a0 / a1 are saved around the call, d2 is the remsl's; rejoin `page_cycle_remsl`
+   (0x4003ab8c, a new `[data.*]` entry in re/symbols.toml; the asm includes symbols.inc, so no raw 0x4xxxxxxx literal is new
+   in rui.c). Why it is needed: the normaliser alone leaves the stock frame in place for one UI tick **and the pushed header
+   SMPL WAVEFORM for ~90 ms** (the title push is a timed header: SAMPLE comes back when it expires) [measured on smp1:
+   `cu_emu.py smplpage_flash`, the frames from 165 to ~255 ms after the press differ from the screen before it, the knobs
+   right]. With the gate the screen is identical to the one before the press at every sampled time (smp2).
+
+**No new stock address that is not in the map.** Offsets are struct offsets (+0x8c the index, +0x60 the setter, +124 the id
+list), unchanged between 1.73 and 1.74. 0x4003ab86 is 1.74's too (below the first shift, 0x400c02dc), its 6 stock bytes hash
+the same on both OSes (re/os/1.74.toml already carries `0x4003ab86:6:d11e9d52863c6cee` for 0013's claim), and 0x4003ab8c
+likewise: the port translated 1366 addresses (1365 before), 0 refused.
+
+**Test counters** (the state struct `sv`, new fields at its end, sv + 128, 16 B): `smpl` the SamplePageView this tick (0: not on
+the screen), `smpl_idx` its index after the tick, `smpl_seen` ticks it was on the screen, `smpl_fix` ticks the normaliser had to
+put a Sidecar track's index back (0 when the gate held). The tests also read the view's +140 and the id it selects
+(`ids[index]` at +124: 4 SAMPLE, 5 SMPL WAVEFORM).
+
+**Tests** (cu_emu.py `smplpage_fm sampler ms wt gr`, `smplpage_mem`, `smplpage_flash`, `smplprobe`; us_emu.py `smplpage_u1`):
+SMPL twice on each Sidecar machine = index 0, page SAMPLE, `smpl_fix` 0; the remembered index (analog BD SMPL twice = 1, then
+6-OP FM, SMPL once = 0; back to analog BD, SMPL twice = 1: stock unchanged); U1 without a Sidecar; no frame of SMPL WAVEFORM at
+165 / 210 / 260 ms after the press (a sample at 130 ms is before the press reaches the view). The baseline (smp0 = origin/dev + the counters only) fails all of them except the
+analog guards; smp1 (normaliser only) passes all but `smplpage_flash`.
+
+**Review fix round 1** (build smp3). A: the normaliser runs only when the SMPL page is the plain screen: `sv_page` leaves its `cov`
+(a menu, PATSEL with a BANK key held, an unknown view on top) in `sv.smpl_cov` (a new field at the end, sv + 144; 1 until the walk
+says otherwise), and the tick skips the set_page_index + redraw while it is set. A covered page keeps index 1 and its glass; when
+the cover goes the next tick puts it to 0. Test `smplpage_cover` (SD SMPL twice, TEMPO menu, track poked to BD, NO). B: the first
+SMPL press on a Sidecar track with index 1 remembered (page left, track switched): `smplpage_first` samples the glass from the press
+to +300 ms (20..300 ms) against the SMPL WAVEFORM header and layout of an analog SD: never shown, on smp2 already (the normaliser
+runs in the tick after the activation, before the first frame), so no change for B; the test stays (it fails on smp0).
+
+**Not done (later feature):** a Sidecar-drawn waveform page for the SAMPLER on the SMPL key (design B of the research).
