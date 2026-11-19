@@ -534,22 +534,23 @@ def t_smplpage_gr(e):
 
 def t_smplpage_flash(e):
     """F9: no flash. The SMPL key's second press on a Sidecar machine (SMPL page already open) changes nothing on the glass:
-    the screen at 130 / 165 / 210 / 260 ms after the press is the one before it (the stock cycle showed the header SMPL
+    the screen at 165 / 210 / 260 ms after the press is the one before it (the stock cycle showed the header SMPL
     WAVEFORM from ~165 to ~255 ms on a Sidecar machine's SAMPLE page, the knobs right, when only the per-tick normaliser
-    put the index back). The press reaches the view ~150 ms after the event (key scan)."""
+    put the index back). The press reaches the view ~150 ms after the event (key scan), so a sample before ~150 ms
+    would only be the screen before the press."""
     import hashlib
     f = PC.fm(e)
     r1 = e.run("cu_smplflash_pre", 800, [(300, "press", "SMPL")], snap=f, usb=False)
     png = lambda n: hashlib.md5(open(os.path.join(e.out, f"pc_{n}.png"), "rb").read()).hexdigest()   # noqa: E731
     ref = png("cu_smplflash_pre")
     got = {}
-    for d in (130, 165, 210, 260):
+    for d in (165, 210, 260):
         r = e.run(f"cu_smplflash_{d}", d, [(5, "press", "SMPL")], snap=r1["snap"], usb=False)
         got[d] = png(f"cu_smplflash_{d}")
         st = smpl_state(e, r["snap"][0])
         check(f"smplflash: {d} ms after the press: index 0, page SAMPLE, the normaliser not needed", st["idx"] == 0 and
               st["pid"] == 4 and st["fix"] == 0, st)
-    check("smplflash: the screen at 130 / 165 / 210 / 260 ms is the screen before the press", all(v == ref for v in got.values()),
+    check("smplflash: the screen at 165 / 210 / 260 ms is the screen before the press", all(v == ref for v in got.values()),
           {d: v[:8] for d, v in got.items()} | {"before": ref[:8]})
 
 
@@ -586,6 +587,73 @@ def t_smplpage_mem(e):
     check("smplmem: analog BD, SMPL twice: index 1 again (A does not touch analog tracks)", st["idx"] == 1 and st["pid"] == 5, st)
 
 
+SEL_TRACK_ADDR = 0x41318982
+
+
+def t_smplpage_cover(e):
+    """F9 review MED A: a covered SMPL page is left alone. Analog SD, SMPL twice (index 1), the TEMPO menu on top, the selected
+    track switched to BD (6-OP FM) while it is covered: no set_page_index / redraw (smpl_fix and the covering view's glass
+    unchanged, the index still 1); when the menu is closed and the SMPL page is the screen again: index 0, page SAMPLE."""
+    import sfu_emu as SFU
+    # the glass the SMPL page does not own: the header (y 0..31, a redraw would turn SMPL WAVEFORM into SAMPLE) and the menu
+    # box (y 44..119). The knob labels around it are the stock views' own, re-labelled by the track switch itself.
+    png = lambda n: [r_[:384] for r_ in SFU.png_lit(os.path.join(e.out, f"pc_{n}.png"))[:32] + SFU.png_lit(os.path.join(e.out, f"pc_{n}.png"))[44:120]]   # noqa: E731
+    r = e.run("cu_smplcov_a", 1800, [(300, "press", "SD"), (800, "press", "SMPL"), (1300, "press", "SMPL")], snap=PC.fm(e), usb=False)
+    st = smpl_state(e, r["snap"][0])
+    ga = png("cu_smplcov_a")
+    check("smplcover: analog SD, SMPL twice: index 1, SMPL WAVEFORM", st["idx"] == 1 and st["pid"] == 5, st)
+    r = e.run("cu_smplcov_menu", 800, [(300, "press", "TEMPO")], snap=r["snap"], usb=False)
+    st1 = smpl_state(e, r["snap"][0])
+    g1 = png("cu_smplcov_menu")
+    r = e.run("cu_smplcov_cov", 800, [], snap=r["snap"], extra=e.pokes(r["snap"][0], {SEL_TRACK_ADDR: b"\0"}), usb=False)
+    st2 = smpl_state(e, r["snap"][0])
+    g2 = png("cu_smplcov_cov")
+    check("smplcover: the selected track is BD, the machine 6-OP FM", e.peek(r["snap"][0], SEL_TRACK_ADDR, 1)[0] == 0 and
+          e.peek(r["snap"][0], 0x8000EA00, 1)[0] == 40)
+    print(f"  menu open: {st1}; track switched, still covered: {st2}")
+    check("smplcover: the menu covers the SMPL page (the glass is not the SMPL page)", g1 != ga)
+    check("smplcover: covered: no set_page_index (smpl_fix unchanged, the index still 1)", st2["fix"] == st1["fix"] and
+          st2["vidx"] == 1 and st2["idx"] == 1, (st1, st2))
+    check("smplcover: covered: the covering view's glass (header, menu) unchanged", g1 == g2, "header or menu differs")
+    r = e.run("cu_smplcov_out", 800, [(300, "press", "NO")], snap=r["snap"], usb=False)
+    st3 = smpl_state(e, r["snap"][0])
+    print(f"  menu closed: {st3}")
+    check("smplcover: the SMPL page is the screen again: index 0, page SAMPLE", st3["ptr"] != 0 and st3["idx"] == 0 and
+          st3["vidx"] == 0 and st3["pid"] == 4, st3)
+
+
+def t_smplpage_first(e):
+    """F9 review MED B: analog SD, SMPL twice (index 1, SMPL WAVEFORM: the reference glass), SRC (the page left), the track
+    switched to BD (6-OP FM), SMPL ONCE: at each sample from the press to +300 ms the glass shows neither the SMPL WAVEFORM
+    header (x 0..205, y 0..31 of the 3x screen) nor its waveform layout (y 34..133), and once the view is up its index is 0 and
+    its page SAMPLE. The frames in between keep the header of the page before (a timed title push), which is not a fault."""
+    import sfu_emu as SFU
+    lit = lambda n: SFU.png_lit(os.path.join(e.out, f"pc_{n}.png"))   # noqa: E731
+    hdr = lambda rows: [r[:206] for r in rows[:32]]   # noqa: E731
+    body = lambda rows: [r[:384] for r in rows[34:134]]   # noqa: E731
+    r = e.run("cu_smplfirst_a", 1800, [(300, "press", "SD"), (800, "press", "SMPL"), (1300, "press", "SMPL")], snap=PC.fm(e), usb=False)
+    st = smpl_state(e, r["snap"][0])
+    check("smplfirst: analog SD, SMPL twice: index 1, SMPL WAVEFORM", st["idx"] == 1 and st["pid"] == 5, st)
+    wf = lit("cu_smplfirst_a")
+    r = e.run("cu_smplfirst_b", 1300, [(300, "press", "SRC"), (800, "press", "BD")], snap=r["snap"], usb=False)
+    s0 = r["snap"]
+    check("smplfirst: BD selected, 6-OP FM", e.peek(s0[0], SEL_TRACK_ADDR, 1)[0] == 0 and e.peek(s0[0], 0x8000EA00, 1)[0] == 40)
+    e.run("cu_smplfirst_set", 1200, [(5, "press", "SMPL")], snap=s0, usb=False)
+    check("smplfirst: the reference differs from the settled SAMPLE page (header and body)",
+          hdr(lit("cu_smplfirst_set")) != hdr(wf) and body(lit("cu_smplfirst_set")) != body(wf))
+    bad = {}
+    for d in (20, 30, 40, 50, 60, 80, 100, 130, 150, 165, 180, 210, 240, 260, 300):
+        r = e.run(f"cu_smplfirst_{d}", d, [(5, "press", "SMPL")], snap=s0, usb=False)
+        g = lit(f"cu_smplfirst_{d}")
+        if hdr(g) == hdr(wf) or body(g) == body(wf):
+            bad[d] = ("header" if hdr(g) == hdr(wf) else "") + ("body" if body(g) == body(wf) else "")
+        st = smpl_state(e, r["snap"][0])
+        if st["ptr"] and d >= 100:
+            check(f"smplfirst: {d} ms after the press: the sub-page index is 0, page SAMPLE", st["vidx"] == 0 and st["pid"] == 4, st)
+    check("smplfirst: from the press to +300 ms the glass never shows the SMPL WAVEFORM header or layout", not bad, bad)
+    check("smplfirst: settled: the header is SAMPLE's (the settled page)", hdr(lit("cu_smplfirst_300")) == hdr(lit("cu_smplfirst_set")))
+
+
 def t_smplprobe(e):
     """Probe (research f9-smpl-page section 6): is the index remembered across pages and tracks? Analog BD: SMPL twice (1),
     SRC, SMPL (once); then SD selected by its pad, SMPL. Prints the indexes; checks only the first (stock cycles to 1)."""
@@ -601,7 +669,7 @@ def t_smplprobe(e):
     check("smplprobe: the index survives a page change (SRC, SMPL: still 1)", st1["idx"] == 1, st1)
 
 
-TESTS = dict(smplpage_flash=t_smplpage_flash, smplpage_fm=t_smplpage_fm, smplpage_sampler=t_smplpage_sampler, smplpage_ms=t_smplpage_ms, smplpage_wt=t_smplpage_wt, smplpage_gr=t_smplpage_gr, smplpage_mem=t_smplpage_mem, smplprobe=t_smplprobe, sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, gr=t_gr, swap=t_swap, li=t_li,
+TESTS = dict(smplpage_flash=t_smplpage_flash, smplpage_fm=t_smplpage_fm, smplpage_sampler=t_smplpage_sampler, smplpage_ms=t_smplpage_ms, smplpage_wt=t_smplpage_wt, smplpage_gr=t_smplpage_gr, smplpage_mem=t_smplpage_mem, smplpage_cover=t_smplpage_cover, smplpage_first=t_smplpage_first, smplprobe=t_smplprobe, sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, gr=t_gr, swap=t_swap, li=t_li,
              cp=t_cp)
 
 
