@@ -27,29 +27,34 @@ Labels are generic (P1..P5) because the effect lives on the Sidecar. TYPE shows 
 
 ## 2. Where the values live (the M2 mapping, confirmed)
 
-| knob | word | half | stored | p-lock |
+| knob (page 1) | word | half | stored | p-lock |
 |---|---|---|---|---|
-| SFX1 / SFX2 (each track) | sound index 0 | hi / lo | kit sound, stored slot 41 (stock) | yes: type 41 + fine slot |
-| SEND FX 1 TYPE / P1 | FX 29 | hi / lo | kit FX slot 20 (stock) | **no** (kit only) |
-| SEND FX 1 P2 / P3 | FX 38 | hi / lo | kit 0x816 (0025) | yes: types 42 / 46 (0025) |
-| SEND FX 1 P4 / P5 | FX 39 | hi / lo | kit 0x818 (0025) | yes: 43 / 47 |
-| SEND FX 2 TYPE / P1 | FX 0 | hi / lo | kit FX slot 37 (stock) | **no** (kit only) |
-| SEND FX 2 P2 / P3 | FX 40 | hi / lo | kit 0x81A (0025) | yes: 44 / 48 |
-| SEND FX 2 P4 / P5 | FX 41 | hi / lo | kit 0x81C (0025) | yes: 45 / 49 |
+| SFX1 / SFX2 (each track) | sound index 0 | hi / lo | kit sound, stored slot 41 (stock) | yes: type 41 + fine slot (one word) |
+| SEND FX 1 TYPE / ROUTE | FX 29 | hi / lo | kit FX slot 20 (stock) | **no** (kit only) |
+| SEND FX 1 P1 / P2 | FX 38 | hi / lo | kit 0x816 (0025) | yes, each half its own: types 42 / 46 (0025) |
+| SEND FX 1 P3 / P4 | FX 39 | hi / lo | kit 0x818 (0025) | yes, each half its own: 43 / 47 |
+| SEND FX 2 TYPE / ROUTE | FX 0 | hi / lo | kit FX slot 37 (stock) | **no** (kit only) |
+| SEND FX 2 P1 / P2 | FX 40 | hi / lo | kit 0x81A (0025) | yes, each half its own: 44 / 48 |
+| SEND FX 2 P3 / P4 | FX 41 | hi / lo | kit 0x81C (0025) | yes, each half its own: 45 / 49 |
 
-hi = bits 8..14, lo = bits 1..7: a lock's coarse slot and its `0x80 0x80` fine slot. Everything is in the **kit**,
-so each kit, and each pattern through its kit, has its own send-FX types and values; kit save / reload / copy and
-the pattern->kit switch carry them as they carry the stock FX words ([measured] for 0/29 by M0 on stock; 38..41 by
+P1..P4 are the effect's own (section 13's naming; this file's older sections, the records and `sfu.c` call them P2..P5,
+with ROUTE as P1). hi = bits 8..14, lo = bits 1..7: a lock's coarse slot and its `0x80 0x80` fine slot. Everything is in
+the **kit**, so each kit, and each pattern through its kit, has its own send-FX types and values; kit save / reload / copy
+and the pattern->kit switch carry them as they carry the stock FX words ([measured] for 0/29 by M0 on stock; 38..41 by
 0025's hooks; the two-kit test below).
 
 **TYPE is not p-lockable (documented choice).** An abrupt effect switch per step is rarely wanted, and TYPE shares
-its word with P1: a lock on P1 would freeze TYPE's half in the lock word too, so a later TYPE change would not reach
-that step. So lock-set is refused for TYPE **and P1** (with a trig held the knob does nothing); words 29 and 0 never
-carry a lock from 0029 and each FX has four lockable parameters (P2..P5). A stock or SysEx lock on type 20/37 still
-plays (the Sidecar fades a TYPE change over 10 ms, its own rule).
+its word with ROUTE: a lock on ROUTE would freeze TYPE's half in the lock word too, so a later TYPE change would not
+reach that step. So lock-set is refused for TYPE **and ROUTE** (with a trig held the knob does nothing); words 29 and 0
+never carry a lock from 0029 and each FX has four lockable parameters (P1..P4). A stock or SysEx lock on type 20/37
+still plays (the Sidecar fades a TYPE change over 10 ms, its own rule).
 
-Two knobs share a word: a lock made on one half takes the other half's current value (the step's lock if there is
-one, else the base); turning the other knob with that step held updates it. Clearing a lock clears both halves.
+**Two knobs share a word, their locks do not** (lock-halves, section 15, 2026-11-20). The live lock array has one word a
+step per parameter, so the lock word of FX 38..41 says which of its halves are locked (0025 design.md "lock-halves"):
+a lock made on P1 locks P1 only, and P2 on that step goes on following the kit (its base, turned or kit-switched); P2
+locked too keeps both; clearing P1's lock (trig held, its encoder pushed) leaves P2's. The file stores each half as its
+own lock type, as before. (Before 2026-11-20 a lock took the other half's current value with it and a clear cleared both.)
+SFX1 / SFX2 (sound index 0) still lock as one word: not changed.
 
 ## 3. How it is built [code; measured where noted]
 
@@ -72,7 +77,8 @@ one, else the base); turning the other knob with that step held updates it. Clea
   project-copy observer indexes the 38-entry FX reverse map with them and wrote a stray byte into stored FX slot 0
   [measured, before the fix]. 0029 writes those itself: the set's FX words, the FX trig array (what plays and what
   0025 reports) and the project copy's 0x816..0x81D (0025's storage).
-- **Locks:** the stock path (view +0x74 -> set +0x40 -> `track_lock_set` 0x400c0520) with the merged word; the
+- **Locks:** the stock path (view +0x74 -> set +0x40 -> `track_lock_set` 0x400c0520); for FX 38..41 the word holds
+  only the knob's half since lock-halves (section 15), the sound index 0 locks the merged word; the
   incremental save follows. For FX 38..41 it takes 0025's `sfx_incr` branch (a full rebuild, types 42..49) - the
   branch the storage spec's next step 2 asked to exercise [measured: below].
 - **core-ar2 events:** `ev_tick` for the init and the ASK. No key hook: the page key's repeat press is the stock
@@ -440,3 +446,41 @@ after the turn and dropped a host value then.
   (inside the stale window for any send between 330 and 380 ms) is taken, and the hold reads 0.
 - **Results:** it fails on sbw4 (the value is dropped; the hold is still 0x30f4ac77) and passes on sbw5 [measured].
 - **Build:** sbw5, .syx 6dc37d77d6eaf4e1b14c39cbd91b05ef347037659154d0b13a9b49d23ae2b244.
+
+## 12. lock-halves (2026-11-20): SEND FX P1..P4 locks independent per knob
+
+Tags as above; rytm-emu 1.74, DTEMU_STRICT=1. The storage and playback side and the lock word's encoding are 0025's (its design.md "lock-halves"): a lock word of FX 38..41
+says which halves are locked (`hi << 8 | lo << 1` both, `hi << 8 | 1` hi only, `lo << 8 | 3` lo only, 0xffff none).
+
+- **Lock get** (FX set +0x3c, `sfu_f_lget`): the knob's half if that half is locked, else -1, so a step locked on P1 shows
+  P2 as its base (not locked) and the held-trig redraw, 0026's 2A and `page_get_value` (all through +0x3c) agree.
+- **Lock set** (+0x40, `sfu_f_lset`): only the knob's half goes into the word (`lk_put`), the other half keeps its lock or
+  none; no base value is taken in any more. A stepped knob still locks its zone's lo.
+- **Lock clear** (+0x44, new wrapper `sfu_f_lclr`, a `ptr` patch at 0x401dcc34 = 1.74 0x401dcee4; stock 0x400a9aa2 ->
+  `track_lock_clear` [code]): with the trig held and the knob's encoder pushed, P1..P4 clear their own half. A word with
+  the other half locked too is set to that half alone; a half that is not locked clears nothing (returns 0); a word with
+  only this half goes to stock's clear.
+- **Base turns** (`fx_write_hi`): the FX trig array now takes only the turned half, so turning P2 while a step plays a P1
+  lock leaves P1's locked value playing until the next trig (the kit word and the project copy get the whole word as
+  before).
+- TYPE / ROUTE (words 29 / 0) stay kit only; SFX1 / SFX2 (sound index 0) are unchanged: one lock word for both.
+- **Cost:** 556 B more code in the area (`lk_half`, `lk_put`, `sfu_f_lclr`, the lock get / set changes), no state.
+- **Merging:** encoder order and view messages are untouched; the change is the FX set's lock wrappers, `fx_write_hi`, one
+  `ptr` patch (and its 1.74 hash in re/os/1.74.toml) and 0025's hooks.
+
+**Test** `sfu_emu.py TAG halves` (10 checks), SEND FX 1, knobs C / D = P1 / P2 = FX word 38 hi / lo, RECORD, trigs on
+steps 1 and 5:
+- T1 held + C turned: step 1's word is the hi half only, P1's value, the fine flag set, step 5 free; T1 held + C on step 5:
+  step 5 P1 alone;
+- D (P2's base) turned with no trig held: the kit's lo half moves, step 1's lock is unchanged (P2 is not frozen);
+- T1 held + D turned: both halves, P1's value kept;
+- T1 held + PUSH C: P1's half cleared alone, P2's lock stays;
+- PLAY: the 0x20 reports alternate step 1 = the kit's P1 with P2's lock and step 5 = P1's lock with the kit's P2; both
+  bases turned (stopped) and PLAY again: each step plays the new kit value in its unlocked half;
+- A01's stored slots: type 42 step 1 0xff / step 5 P1's value, type 46 step 1 P2's value / step 5 0xff;
+- power-off + cold boot, and SAVE PROJECT AS / wipe / LOAD PROJECT: both steps' lock words as they were.
+
+**Results** [measured, rytm-emu 1.74, DTEMU_STRICT=1; the Makefile's release set on OS 1.74, built with this change and
+the next two (amp-halves, section 13), against the same set without them]: `sfu_emu.py TAG halves` 10 / 0 (on the build
+without them 6 of 10 fail: a P1 lock stores both halves, PUSH C clears both, step 1 never plays P2's lock with the kit's
+P1). `sfx_emu.py fx38` now expects `7e01` for its type-45-only step (the hi half only).

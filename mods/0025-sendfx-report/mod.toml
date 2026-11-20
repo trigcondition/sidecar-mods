@@ -26,6 +26,9 @@ p-lock types 42..45 / 46..49 on the FX track (hi / lo halves; lock loader, full 
 detours), dropped harmlessly by stock. Emulator only (rytm-emu, 2026-10-16).
 After an active-kit change (a pattern on another kit) a track reports the active kit's words until its
 next trig copies them into the trig array (2026-10-30, design.md "Kits").
+lock-halves (2026-11-20): an FX 38..41 lock word says which half is locked (hi << 8 | 1, lo << 8 | 3, or
+both); load, save and a playback detour (0x40120968, the trig loop's lock list) keep the halves apart, the
+unlocked half playing the kit's. Needs the elekloader area (--area-elek 0025-sendfx-report): 1.4 kB.
 """
 
 [sources]

@@ -191,3 +191,65 @@ pool sound, 0x401205e2 stores -1 in trig_kit_copied [code, not run].
 `sfx_emu.py kitswitch` also covers (tag `sfxr2`, DTEMU_STRICT=1, `sfx_emu.py all`: 39 checks pass): A01 -> A02 -> A01 stopped
 (kit 0's values again), a switch while playing (A02 queued), BD's trigs after PLAY on A02 (lock 7700, then kit 1's
 4400) and UI edits of FX 38 / 40 (SEND FX 1 knob 3, SEND FX 2 knob 4) after a switch, reported with no revert.
+
+## lock-halves (2026-11-20): P1..P4 locks independent per knob
+
+Each of FX words 38..41 holds two SEND FX knobs (hi = bits 8..14, lo = bits 1..7; 0029 design.md section 2). The project
+file already kept one lock type per half (42..45 hi, 46..49 lo), but the live lock array has **one int16 per parameter
+per step** (`lock_pool_set` 0x400ac670: index 2837 t + 44 step + k, -1 none [code]) and the fine flag is **per track and
+parameter**, not per step (+5632 + k of the track's 5674 B [code]). So a lock on P1 froze P2's value into that step, and a
+clear cleared both. Tags as above; rytm-emu 1.74, DTEMU_STRICT=1; nothing flashed.
+
+**Which half is locked lives in the lock word itself** (no mask, no RAM). The word's bits 0 and 15 never carry a value
+(the halves are bits 8..14 / 1..7, max 0x7f00); bit 15 is left alone (stock tests a lock word for -1 / < 0), bit 0 marks a
+one-half lock, and the free half carries the locked half's value and which one it is:
+
+| word | meaning |
+|---|---|
+| 0xffff | no lock (stock) |
+| `hi << 8 \| lo << 1` (bit 0 clear) | both halves locked: the stock form, and every lock saved before this change |
+| `hi << 8 \| 1` | the hi half only; the lo half plays the kit's |
+| `lo << 8 \| 3` | the lo half only; the hi half plays the kit's |
+
+Why not the per-step mask of the plan: all 128 patterns plus the working one are resident live pattern objects
+(0x407c89e3 + 85760 p, the live kits start right after the 129th [measured addresses]; the loader 0x40009146 decodes each
+into its own lock array), so a mask would be 129 x 64 B = 8.3 kB (a large share of the
+elekloader area; the heap would do), would have to follow every stock copy of locks (step / track / pattern copy and
+paste, undo, the bank-to-working copy) to stay right, and a stale mask would misplay a copied lock. In the word, a copy
+of the word is a copy of its halves [inferred: stock copies lock words verbatim; not traced]. Stock code that reads these
+words only tests -1 (lock or none, unchanged) or goes through the hooks below and 0029's wrappers.
+
+| what | where | change |
+|---|---|---|
+| load | `sfx_lock_merge` (0x40009040's detour) | a type 42..45 slot's step sets the hi half, 46..49 the lo half; a step with only one of them gets the one-half form, with both the stock form; the step's lock count bumped once; a lo type sets the fine flag (as before) |
+| save | `sfx_rebuild_c` (0x400092aa's detour; the incremental save goes there for k >= 38, `sfx_incr`) | the hi slot gets the step's hi value only where the hi half is locked, the lo slot (written when the track's fine flag for k is set: the slots stock reserved) only where the lo half is; 0xff elsewhere |
+| playback | **new detour `sfx_play` at 0x40120968** (1.74 0x401209d4) | below |
+| UI | 0029's FX set wrappers: lock get / set and **new lock clear (+0x44)** | 0029 design.md section 15 |
+
+**Fine flag.** 0029's records lock with the fine flag (record +0x14 = 1, 0x400071a6), and the loader sets it for any lo
+type, so a word with a lo half locked always has it set and its lo slot is reserved at save. A pattern whose locks on k
+are all hi-only still gets a lo slot (all 0xff) when the flag is set: one slot of the 72, as before this change.
+
+**Playback** [code; measured]. The trig loop in the audio interrupt (the function around 0x40120000; 1.74 +0x6c) gets a
+trig's locks as a list, `{u16 track, u16 sound index, u16 value, u16 flags}` 8 B each (count at list +4, entries at +12;
+measured on the FX track: `000c 0026 2122 0000`, `000c 0029 7e00 0000` for FX 38 / 41 locks), and writes each value into
+the trig array (0x8000e5b0 + 84 t + 2 k: `movew %d4,%a1@(52,%d6:l:2)` with a1 0x8000e57c) and two arrays beside it
+(0x8000e57c + 4 (42 t + 26 + k + 578) as value << 16, + 2 (42 t + 26 + k + 2300)), each re-read from the entry. No mod
+hooked it before. The detour replaces the loop body's first two instructions (`movew %a0@,%d6`, `movew %a0@(4),%d4`, 6
+bytes, no address operand: the same bytes on 1.73 and 1.74) and rejoins at the third: a value with bit 0 clear (every
+stock lock value, an 8.8 word) goes straight on; with bit 0 set `sfx_play_c` checks track 12 and k 38..41 and writes the
+locked half, merged with the trig array's current word (the kit's), back into the entry, so the stock body stores the
+merged word in all three places. The trig array holds the kit's word there: the trig loop copies the kit into it at a
+trig whose kit differs or after a trig with locks (the per-track dirty byte, 0x8000fe30-ish, counts the lock entries)
+[code: 0x4012069a .. 0x40120a64 in 1.74], and a knob turn writes it directly (0029's `fx_write_hi`, which now writes
+only the turned half there). Cost: two instructions and a bit test per lock entry; a C call only for a one-half lock.
+The list is rebuilt per trig [inferred from `halves`' second PLAY, which plays the new kit half]; writing the entry back
+is safe as long as nothing replays a list (a replay would see the merged word: the same value).
+
+**The Sidecar** needs nothing: 0025's reporter sends the trig array's FX words 38..41 as played (above), so a one-half
+lock reaches it merged with the kit's other half [measured: `sfu_emu.py TAG halves`].
+
+**Area / cave.** 0025 grew 384 B (1098 -> 1482 B of code; its 52 B of state unchanged). It no longer fits its 1116-B
+cave claim (0x402cc920; on 1.74 that span is 1.74's own code [re/os/1.74.toml padding note]), so 0025 builds with
+`--area-elek 0025-sendfx-report` only, as the Makefile's release build does [inferred: a non-area build was not tried]. 0025 +384 B,
+0029 +556 B of code, no new state.

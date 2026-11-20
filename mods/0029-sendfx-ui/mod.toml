@@ -26,7 +26,8 @@ TYPE shows the Sidecar's names (host-link 21) and !NAME for a missing effect (22
 P2..P5 and numbers. The ASK never waits on USB (try-lock). Needs
 0025-sendfx-report (FX 38..41 storage) and 0022 sfx=1 for the names. 0.5.0: knobs G / H are
 BASE / WID, each send FX's return filter, held by the Sidecar (host-link 22 ver 2 both ways,
-records 1..4, never stored in the kit, no locks). Emulator only. design.md.
+records 1..4, never stored in the kit, no locks). lock-halves: SEND FX P1..P4 lock, show and clear their own
+half of FX 38..41 (FX set +0x44 wrapped too; 0025 plays it). Emulator only. design.md.
 """
 
 [sources]

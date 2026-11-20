@@ -6545,6 +6545,21 @@ expect_sha256 = "943f22d52d02aa79e51b3c1928fb1f7503821b7f48bb76ffd9bb0cf88b7badc
 entry  = "sfx_ksave"
 rejoin = 0x40007f92
 
+# Playback of FX 38..41 half locks (lock-halves, 2026-11-20): the audio interrupt's trig loop, the loop over a trig's
+# lock list (entries {track, sound index, value, flags}, 8 B; a0 the entry): `movew %a0@,%d6` and `movew %a0@(4),%d4`,
+# reimplemented. An entry whose value has bit 0 set on track 12, index 38..41, is one half locked: the stub writes the
+# locked half merged with the trig array's word (the kit's) back into the entry, and the stock body stores that.
+# Every other entry goes on unchanged (bit 0 of a stock 8.8 lock value is 0). Rejoins at the third instruction.
+[[detour]]
+owner  = "0025-sendfx-report"
+addr   = 0x40120968
+size   = 6
+expect_len = 6
+expect_sha256 = "a037881271c306709f58bc01b116af48199400e0571c6a1e4e413e3d2e61fb91"
+entry  = "sfx_play"
+rejoin = 0x4012096e
+reemit = false
+
 # ---------------------------------------------------------------- 0029-sendfx-ui
 # The Sidecar send FX pages (mods/0029-sendfx-ui/design.md). Code in elekloader's area: every detour
 # and from_symbol patch below is a site elekloader resolves. Addresses verified in the 1.73 image
@@ -7278,6 +7293,17 @@ expect_len  = 4
 expect_sha256 = "f0b55ce157005c129b152965c393a27931cf716a71bea6f43fb6a2bc5b0a4616"
 from_symbol = "sfu_f_lset"
 note        = "FxParameterSet +0x40 lock set"
+
+# lock-halves (2026-11-20): FxParameterSet +0x44, a step's lock cleared (set, id, step; stock 0x400a9aa2 ->
+# track_lock_clear): for SEND FX P1..P4 only that knob's half goes, the other half's lock stays.
+[[patch]]
+owner       = "0029-sendfx-ui"
+addr        = 0x401dcc34
+size        = 4
+expect_len  = 4
+expect_sha256 = "f293121ebae36a114caa1c687d2a19e1808d42bfce04d09ae5fac4906ea70424"
+from_symbol = "sfu_f_lclr"
+note        = "FxParameterSet +0x44 lock clear"
 
 # Parameter records 14..27 (dead 'Error' records: no CC table maps to them [measured]): kind (AMP 0x35 /
 # DELAY 0x39 / REVERB 0x38 group), container index (sound 0; FX 29 29 38 38 39 39 / 0 0 40 40 41 41), range

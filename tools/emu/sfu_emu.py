@@ -148,9 +148,11 @@ def t_locks(e):
     bd = [v for _, v in X.changes([(w, ws[0]) for w, t, ws in rx if t == 0], 0)]
     fx = [v for _, v in X.changes([(w, ws[2]) for w, t, ws in rx if t == 12], 0)]
     fx38b = w16(e, s, FXW + 76)
-    U.check(f"locks: 0x20 per step - BD {l0:04x} on step 1, {base:04x} on step 5; FX 38 {f38:04x} / {fx38b:04x}",
+    # lock-halves: P2 alone locks word 38's hi half (hi << 8 | 1); it plays with the kit's lo half
+    p38 = (f38 & 0xff00) | (fx38b & 0xff) if f38 & 1 else f38
+    U.check(f"locks: 0x20 per step - BD {l0:04x} on step 1, {base:04x} on step 5; FX 38 {p38:04x} / {fx38b:04x}",
             [l0, base] == bd[-2:] or [base, l0] == bd[-2:] and len(bd) >= 3, " ".join("%04x" % v for v in bd[:6]))
-    U.check("locks: FX word 38 alternates lock / base in the reports", f38 in fx and fx38b in fx and len(fx) >= 3,
+    U.check("locks: FX word 38 alternates lock / base in the reports", p38 in fx and fx38b in fx and len(fx) >= 3,
             " ".join("%04x" % v for v in fx[:6]))
     e.locks = (s2, e.clock + 3400, base, l0, f38, fx38b)
 
@@ -234,6 +236,122 @@ def t_kits(e):
     U.check(f"kits: A02 is on kit {kit_of_a2} (not 0); the reports carry TYPE 1/2 (A01, kit 0), then 5/6 (A02)",
             kit_of_a2 != 0 and (1, 2) in ty and (5, 6) in ty and ty.index((1, 2)) < ty.index((5, 6)), str(ty))
 
+
+
+def lk(w):
+    """An FX 38..41 lock word as (hi or None, lo or None): which halves are locked (0025 / 0029's lock-halves
+    encoding: 0xffff none, bit 0 clear both, hi << 8 | 1 the hi half only, lo << 8 | 3 the lo half only)."""
+    if w == 0xffff or w & 0x8000:
+        return (None, None)
+    if not w & 1:
+        return (w >> 8 & 0x7f, w >> 1 & 0x7f)
+    return (None, w >> 8 & 0x7f) if w & 2 else (w >> 8 & 0x7f, None)
+
+
+def stored_slot(e, snap, typ, track=12, pat=X.B0):
+    """A stored pattern's lock slot (typ, track): its 64 values, None if the pattern has no such slot."""
+    L = e.peek(snap, pat + 0x2091, 72 * 66)
+    for i in range(72):
+        if L[66 * i] == typ and L[66 * i + 1] == track:
+            return list(L[66 * i + 2:66 * i + 66])
+    return None
+
+
+def t_halves(e):
+    """lock-halves: SEND FX 1's P1 and P2 (the effect's; the page's C and D: FX word 38 hi / lo) lock independently. A
+    lock on P1 leaves P2 following the kit; a lock on P2 too keeps both; clearing P1 (T1 held + its encoder pushed)
+    leaves P2's lock; playback plays the locked half with the kit's other half; power-off / cold boot and SAVE PROJECT /
+    LOAD PROJECT keep each half (stored types 42 / 46, 0xff where a half is not locked)."""
+    base = lambda s: w16(e, s, FXW + 76)   # kit 0's FX word 38
+    # SEND FX 1, base P1 (C) and P2 (D), RECORD, trigs on steps 1 and 5, step 1 held: P1 locked
+    ev = [(50, "press", "FX"), (150, "press", "SRC"), (250, "turn", ("2:+20", 3, 20)), (350, "turn", ("3:+20", 2, 20)),
+          (450, "press", "RECORD"), (550, "press", "T1"), (650, "press", "T5"),
+          (800, "press", "T1:400M"), (900, "turn", ("2:+20", 3, 20))]   # (RECORD stays on: a held trig locks)
+    t = e.clock
+    s1 = e.run("halves-p1", 1400, ev, save=True)
+    t += 1400
+    b1, w1 = base(s1), lock(e, s1, 12, 0, 38)
+    h1, l1 = lk(w1)
+    U.check("halves: P1 locked on step 1 - the word's hi half only (P2 not locked), the value not the base's; step 5 "
+            "free; the fine flag set", h1 is not None and l1 is None and h1 != b1 >> 8 and
+            lock(e, s1, 12, 4, 38) == 0xffff and fine(e, s1, 12, 38) == 1,
+            f"lock {w1:04x} base {b1:04x} fine {fine(e, s1, 12, 38)}")
+    # P2's base turned: the step still has no P2 lock (it follows the kit), P1's lock unchanged
+    s2 = e.run("halves-base", 300, [(50, "turn", ("3:+20", 3, 20))], snap=s1, start=t, save=True)
+    t += 300
+    b2, w2 = base(s2), lock(e, s2, 12, 0, 38)
+    U.check("halves: P2's base turned - the kit's lo half moved, step 1's lock still P1 only with P1's value",
+            (b2 & 0xfe) != (b1 & 0xfe) and (b2 >> 8) == (b1 >> 8) and w2 == w1, f"base {b1:04x} -> {b2:04x} lock {w2:04x}")
+    # P2 locked too, on the same step: both halves, each its own value
+    s3 = e.run("halves-p2", 500, [(50, "press", "T1:300M"), (150, "turn", ("3:-20", 2, 20))], snap=s2, start=t,
+               save=True)
+    t += 500
+    w3 = lock(e, s3, 12, 0, 38)
+    h3, l3 = lk(w3)
+    U.check("halves: P2 locked on step 1 too - both halves, P1's value kept, P2's not the base's",
+            h3 == h1 and l3 is not None and l3 != (b2 >> 1 & 0x7f), f"lock {w3:04x} base {b2:04x}")
+    l3 = l3 or 0   # (a baseline build fails the check above; the rest still runs)
+    # P1's lock cleared alone: T1 held, C (P1's encoder) pushed
+    s4 = e.run("halves-clear", 500, [(50, "press", "T1:300M"), (150, "press", "PUSH_C:60M")], snap=s3, start=t,
+               save=True)
+    t += 500
+    w4 = lock(e, s4, 12, 0, 38)
+    U.check("halves: P1's lock cleared alone (T1 + PUSH C) - step 1 keeps P2's lock, P1 plays the kit again",
+            lk(w4) == (None, l3) and base(s4) == b2, f"lock {w4:04x} (was {w3:04x})")
+    # step 5: P1 locked alone (its P2 the kit's)
+    s4 = e.run("halves-p1s5", 500, [(50, "press", "T5:300M"), (150, "turn", ("2:+20", 4, 20))], snap=s4, start=t,
+               save=True)
+    t += 500
+    h5, l5 = lk(lock(e, s4, 12, 4, 38))
+    U.check("halves: step 5 P1 locked alone - its hi half only; step 1 unchanged", h5 is not None and l5 is None and
+            h5 != b2 >> 8 and lock(e, s4, 12, 0, 38) == w4, f"step 5 {lock(e, s4, 12, 4, 38):04x}")
+    h5 = h5 or 0
+    # playback: step 1 = the kit's P1 with P2's lock, step 5 = P1's lock with the kit's P2; then both bases turned while
+    # stopped and played again: each step follows the kit in its unlocked half
+    want1, want5 = (b2 & 0xff00) | l3 << 1, h5 << 8 | (b2 & 0xff)
+    s5 = e.run("halves-play", 900, [(50, "press", "RECORD"), (100, "press", "PLAY"), (800, "press", "STOP")], snap=s4,
+               start=t, save=True, extra=["--every", "5M"], env={"DTBOOT_PEEK": "8000e5b0"})
+    t += 900
+    fx = [v for _, v in X.changes([(w, ws[2]) for w, tr, ws in X.sendfx_rx(e, "halves-play") if tr == 12], 0)]
+    U.check(f"halves: PLAY - the reports alternate step 1 {want1:04x} (kit P1, locked P2) and step 5 {want5:04x} "
+            "(locked P1, kit P2)", want1 in fx and want5 in fx and b2 not in fx[1:] and len(fx) >= 3,
+            " ".join("%04x" % v for v in fx[:8]))
+    s6 = e.run("halves-base2", 300, [(50, "turn", ("2:-20", 2, 20)), (150, "turn", ("3:+20", 2, 20))], snap=s5,
+               start=t, save=True)
+    t += 300
+    b6 = base(s6)
+    want6, want56 = (b6 & 0xff00) | l3 << 1, h5 << 8 | (b6 & 0xff)
+    e.run("halves-play2", 900, [(100, "press", "PLAY")], snap=s6, start=t, extra=["--every", "5M"],
+          env={"DTBOOT_PEEK": "8000e5b0"})
+    fx2 = [v for _, v in X.changes([(w, ws[2]) for w, tr, ws in X.sendfx_rx(e, "halves-play2") if tr == 12], 0)]
+    U.check(f"halves: both bases turned ({b2:04x} -> {b6:04x}) - step 1 plays {want6:04x} (the new kit P1, P2's lock), "
+            f"step 5 {want56:04x} (P1's lock, the new kit P2)", b6 >> 8 != b2 >> 8 and (b6 & 0xfe) != (b2 & 0xfe) and
+            want6 in fx2 and want56 in fx2 and want1 not in fx2 and want5 not in fx2, " ".join("%04x" % v for v in fx2[:8]))
+    # stored: A01's slots (42, 12) step 1 0xff, (46, 12) step 1 P2's value
+    hs, ls = stored_slot(e, s6, 42), stored_slot(e, s6, 46)
+    U.check("halves: A01's stored slots - type 42 (P1) step 1 0xff and step 5 P1's lock, type 46 (P2) step 1 P2's lock "
+            "and step 5 0xff", hs is not None and ls is not None and hs[0] == 0xff and ls[0] == l3 and hs[4] == h5 and
+            ls[4] == 0xff,
+            f"42 {hs[:5] if hs else None} 46 {ls[:5] if ls else None}")
+    # power-off, cold boot: the lock word as it was
+    c = U.card_copy(e, "halves")
+    e.run("halves-off", 300, snap=s6, start=t, card=c, extra=["--power-off", f"{t + 100}M"])
+    s7 = e.run("halves-boot", 4400, X.DIALOGS, cold=True, card=c, save=True)
+    w5 = lock(e, s6, 12, 4, 38)
+    U.check("halves: power-off and cold boot - step 1's lock P2 only, step 5's P1 only, the kit word back",
+            lock(e, s7, 12, 0, 38) == w4 and lock(e, s7, 12, 4, 38) == w5 and base(s7) == b6, f"lock {lock(e, s7, 12, 0, 38):04x} base {base(s7):04x}")
+    # SAVE PROJECT AS, the live locks and A01's stored slots wiped, LOAD PROJECT: back from the file
+    ev, n = X.proj_keys(100, True)
+    s8 = e.run("halves-save", n, ev, snap=s7, start=4400, card=c, save=True)
+    wipe = {LOCKS + 5674 * 12 + 76: b"\xff\xff", BANK1 + 5674 * 12 + 76: b"\xff\xff",
+            LOCKS + 5674 * 12 + 88 * 4 + 76: b"\xff\xff", BANK1 + 5674 * 12 + 88 * 4 + 76: b"\xff\xff",
+            X.B0 + 0x2091: b"\xff" * (72 * 66 - 4)}
+    s9 = e.run("halves-wiped", 50, snap=s8, start=4400 + n, card=c, save=True, extra=X.pokes(e, s8, wipe))
+    ok = lock(e, s9, 12, 0, 38) == lock(e, s9, 12, 4, 38) == 0xffff
+    ev, n2 = X.proj_keys(100, False)
+    s10 = e.run("halves-load", n2, ev, snap=s9, start=4400 + n + 50, card=c, save=True)
+    U.check("halves: SAVE PROJECT, wiped, LOAD PROJECT - step 1's lock P2 only, step 5's P1 only again (from the file)",
+            ok and lock(e, s10, 12, 0, 38) == w4 and lock(e, s10, 12, 4, 38) == w5, f"wiped {ok} lock {lock(e, s10, 12, 0, 38):04x} want {w4:04x}")
 
 # struct sfu_x (sfu.c): lab[NLT] (130 B each), gen, shown_gen, cur[2], shown[2], lbl[2][4][5], fxset, dial, counters.
 # NLT 16 since rui1049 (8 before): every offset below moves by DL
@@ -485,7 +603,7 @@ def t_enumlock(e):
     l38 = lock(e, s, 12, 0, 38)
     base = w16(e, s, FXW + 76)
     U.check("enumlock: FX step 1 locks word 38 with LEN at a zone's lo (base LEN 0), step 5 free",
-            l38 != 0xffff and ((l38 & 0xfe) >> 1) in LEN_LO[1:] and (base & 0xfe) == 0 and lock(e, s, 12, 4, 38) == 0xffff,
+            l38 != 0xffff and lk(l38)[1] in LEN_LO[1:] and (base & 0xfe) == 0 and lock(e, s, 12, 4, 38) == 0xffff,
             f"lock {l38:04x} base {base:04x}")
     e.run("enumlock-off", 300, snap=s, start=e.clock + LATE + 900, card=c,
           extra=["--power-off", f"{e.clock + LATE + 1000}M"])
@@ -745,7 +863,7 @@ def t_fmname(e):
 
 
 TESTS = {"fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
-         "labels": t_labels, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
+         "labels": t_labels, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits, "halves": t_halves}
 
 
 def main():

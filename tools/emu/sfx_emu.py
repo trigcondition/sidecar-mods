@@ -252,8 +252,10 @@ def _fx38_check(e, snap, what, fw=None):
     k = [int.from_bytes(e.peek(snap, LIVE_KIT0 + 1942 + 2 * i, 2, fw=fw), "big") for i in range(4)]
     l38, l41 = fx_locks(e, snap, 38, fw), fx_locks(e, snap, 41, fw)
     fine = e.peek(snap, LIVE_LOCKS + 5674 * 12 + 5632 + 38, 4, fw=fw)
-    U.check(f"fx38: {what} - kit FX 38..41 1100 2200 3300 4400, locks FX 38 step 1 2122 (fine flag), FX 41 step 9 7e00",
-            k == [0x1100, 0x2200, 0x3300, 0x4400] and l38[0] == 0x2122 and l41[8] == 0x7e00 and fine[0] == 1 and
+    # FX 41 step 9 has a hi slot (45) only: since lock-halves the hi half alone, 7e01 (0025 design.md), played 7e00
+    U.check(f"fx38: {what} - kit FX 38..41 1100 2200 3300 4400, locks FX 38 step 1 2122 (fine flag), FX 41 step 9 7e01 "
+            "(the hi half only)",
+            k == [0x1100, 0x2200, 0x3300, 0x4400] and l38[0] == 0x2122 and l41[8] == 0x7e01 and fine[0] == 1 and
             l38[1:].count(0xffff) == 63 and l41.count(0xffff) == 63,
             f"kit {' '.join('%04x' % x for x in k)}, 38 s1 {l38[0]:04x}, 41 s9 {l41[8]:04x}, fine {fine.hex()}")
 

@@ -17,7 +17,9 @@
  * word. Two knobs share a word (hi = bits 8..14, lo = bits 1..7, a lock's coarse
  * and fine slots), so the parameter sets' read, write, lock-get and lock-set
  * (Sound/FxParameterSet vtables +0x28, +0x70, +0x3c, +0x40) are wrapped: for these
- * ids the value is the half, a write merges it into the word.
+ * ids the value is the half, a write merges it into the word. The FX 38..41 locks
+ * keep the halves apart (lock-halves, 2026-11-20): the lock word says which half is
+ * locked (lk_get), lock-set sets one half, lock-clear (+0x44, wrapped too) clears one.
  * TYPE and P1 (the halves of words 29 and 0) are kit only: lock-set is refused for
  * them, so those two words never carry a lock (a lock on P1 would hold TYPE too).
  *
@@ -210,6 +212,42 @@ static int32_t merge(int32_t i, int32_t raw, int32_t v) {
   if (v > 0x7f00) v = 0x7f00;
   return HALF(i) ? (raw & 0x7f00) | ((v >> 7) & 0xfe) : (v & 0x7f00) | (raw & 0xfe);
 }
+/* lock-halves (2026-11-20): an FX 38..41 lock word says which of its halves are locked (0025's sfx.c has the same
+   encoding and plays it): 0xffff none; hi << 8 | lo << 1 both (bit 0 clear, the stock form); hi << 8 | 1 the hi half
+   only; lo << 8 | 3 the lo half only. So P1..P4 (P2..P5 here) lock, show and clear one knob each. */
+#define LK_HI 1
+#define LK_LO 2
+static int32_t lk_get(int32_t w, int32_t *h, int32_t *l) {
+  w &= 0xffff;
+  if (w & 0x8000) return 0;
+  if (!(w & 1)) { *h = w >> 8 & 0x7f; *l = w >> 1 & 0x7f; return LK_HI | LK_LO; }
+  if (w & 2) { *l = w >> 8 & 0x7f; return LK_LO; }
+  *h = w >> 8 & 0x7f;
+  return LK_HI;
+}
+static int32_t lk_make(int32_t m, int32_t h, int32_t l) {
+  if (m == (LK_HI | LK_LO)) return h << 8 | l << 1;
+  if (m == LK_HI) return h << 8 | 1;
+  if (m == LK_LO) return l << 8 | 3;
+  return -1;
+}
+/* record i's half of lock word w as the half (0..0x7f00), -1 when that half is not locked */
+static int32_t lk_half(int32_t i, int32_t w) {
+  int32_t h = 0, l = 0, m = w < 0 ? 0 : lk_get(w, &h, &l);
+  if (!(m & (HALF(i) ? LK_LO : LK_HI))) return -1;
+  return (HALF(i) ? l : h) << 8;
+}
+/* lock word w with record i's half set to v (0..0x7f00; v < 0: that half unlocked); the other half as w has it */
+static int32_t lk_put(int32_t i, int32_t w, int32_t v) {
+  int32_t h = 0, l = 0, m = w < 0 ? 0 : lk_get(w, &h, &l), b = HALF(i) ? LK_LO : LK_HI;
+  if (v < 0) m &= ~b;
+  else {
+    m |= b;
+    if (v > 0x7f00) v = 0x7f00;
+    if (HALF(i)) l = v >> 8; else h = v >> 8;
+  }
+  return lk_make(m, h, l);
+}
 
 /* ---- stepped knobs: index <-> stored value ---- */
 static void tcache(int32_t fx, int32_t u) {
@@ -387,12 +425,13 @@ int32_t sfu_s_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
    and what 0025 reports) and the project copy's kit storage 0x816 (0025's slots, as its FX saver writes). */
 #define PROJ_KIT 0x407658e5u
 #define TRIG_FX  ((volatile uint16_t *)(0x8000e5b0u + 84u * 12u))
-static void fx_write_hi(void *set, int32_t c, int32_t w) {
+static void fx_write_hi(void *set, int32_t i, int32_t c, int32_t w) {
   void **obj = *(void ***)((uint8_t *)set + 20);
   volatile uint16_t *base = (volatile uint16_t *)((void *(*)(void *))((uint32_t *)*obj)[40 / 4])(obj);
   volatile uint8_t *pk = (volatile uint8_t *)(PROJ_KIT + 0x816u + 2u * (uint32_t)(c - 38));
+  int32_t keep = HALF(i) ? 0xff00 : 0x00ff;   /* lock-halves: the trig array keeps the other half (a step's lock on it) */
   base[c] = (uint16_t)w;
-  TRIG_FX[c] = (uint16_t)w;
+  TRIG_FX[c] = (uint16_t)((TRIG_FX[c] & keep) | (w & ~keep));
   pk[0] = (uint8_t)(w >> 8);
   pk[1] = (uint8_t)w;
 }
@@ -412,7 +451,7 @@ int32_t sfu_f_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
     see_fxset(set);
     v = merge(i, raw, to_half(i, v, (raw >> 8) & 0x7f));
     if (ISTYPE(i)) X.cur[i >= 8] = (uint8_t)((v >> 8) & 0x7f);
-    if (c >= 38) { fx_write_hi(set, c, v); return 1; }
+    if (c >= 38) { fx_write_hi(set, i, c, v); return 1; }
   }
   return F_WRITE(set, id, v, a, b);
 }
@@ -429,8 +468,10 @@ int32_t sfu_f_lget(void *set, int32_t id, int32_t step) {
   if (BW(id) || (OURS(id) && KITONLY(id - ID0))) return -1;
   r = F_LGET(set, id, step);
   if (!OURS(id) || r < 0) return r;
+  if (k_cidx[id - ID0] >= 38 && (r = lk_half(id - ID0, r)) < 0) return -1;   /* lock-halves: this knob's half */
+  else if (k_cidx[id - ID0] < 38) r = half_of(id - ID0, r);
   if (st.init) sync(set);
-  return to_knob(id - ID0, half_of(id - ID0, r));
+  return to_knob(id - ID0, r);
 }
 int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
   if (OURS(id)) {
@@ -453,10 +494,25 @@ int32_t sfu_f_lset(void *set, int32_t id, int32_t v, int32_t step) {
     if (KITONLY(id - ID0)) return 0;
     st.calls++;
     cur = F_LGET(set, id, step);
-    if (cur < 0) cur = F_READ(set, id);
-    v = merge(id - ID0, cur, to_half(id - ID0, v, 0));   /* a stepped P2..P5 locks the zone's lo */
+    /* lock-halves: only this knob's half is locked (a stepped P2..P5 locks the zone's lo); the other half keeps its
+       own lock or none, so it goes on playing the kit's value */
+    if (k_cidx[id - ID0] >= 38) v = lk_put(id - ID0, cur, to_half(id - ID0, v, 0));
+    else v = merge(id - ID0, cur < 0 ? F_READ(set, id) : cur, to_half(id - ID0, v, 0));
   }
   return F_LSET(set, id, v, step);
+}
+/* lock-halves: FxParameterSet +0x44, a step's lock cleared. P2..P5 clear their own half: the word keeps the other
+   half's lock (a lock set of the rest), and a half that is not locked clears nothing. */
+#define F_LCLR  ((lg_fn)0x400a9aa2u)
+int32_t sfu_f_lclr(void *set, int32_t id, int32_t step) {
+  if (OURS(id) && k_cidx[id - ID0] >= 38) {
+    int32_t cur = F_LGET(set, id, step), w;
+    st.calls++;
+    if (cur < 0 || lk_half(id - ID0, cur) < 0) return 0;
+    w = lk_put(id - ID0, cur, -1);
+    if (w >= 0) return F_LSET(set, id, w, step);
+  }
+  return F_LCLR(set, id, step);
 }
 
 /* page_get_value for our ids (the gate below): the set's value, a step's lock first */

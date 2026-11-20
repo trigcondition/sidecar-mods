@@ -171,37 +171,79 @@ __asm__(
 #define LOCK_STEP 88             /* a step: 42 words, then the u32 lock count at +84 */
 #define LOCK_FINE 5632           /* a track's 42 fine flags */
 
-/* Load (0x40008f98), a slot of type 42..49 on track 12: merge its 64 values into live FX index 38..41. */
+/* Lock words of FX 38..41, the two halves independent (lock-halves, 2026-11-20). Each word holds two knobs (hi = bits
+   8..14, lo = bits 1..7) and the live lock array has one word a step, so the word says which halves are locked:
+     0xffff                     no lock (stock's)
+     hi << 8 | lo << 1          both halves locked (bit 0 clear: the stock form, and every lock saved before)
+     hi << 8 | 1                the hi half only (the lo half plays the kit's)
+     lo << 8 | 3                the lo half only (the hi half plays the kit's)
+   Never negative but for 0xffff, so stock's lock tests (-1 / < 0) see a lock or none as before. The same encoding is in
+   0029 (its lock get / set / clear wrappers). The project file keeps one lock type per half (42..45 hi, 46..49 lo):
+   a half without a lock is 0xff in its slot. */
+#define LK_HI 1
+#define LK_LO 2
+static int lk_get(uint32_t w, int *h, int *l) {
+  w &= 0xffff;
+  if (w & 0x8000) return 0;
+  if (!(w & 1)) { *h = w >> 8 & 0x7f; *l = w >> 1 & 0x7f; return LK_HI | LK_LO; }
+  if (w & 2) { *l = w >> 8 & 0x7f; return LK_LO; }
+  *h = w >> 8 & 0x7f;
+  return LK_HI;
+}
+static uint16_t lk_make(int m, int h, int l) {
+  if (m == (LK_HI | LK_LO)) return (uint16_t)(h << 8 | l << 1);
+  if (m == LK_HI) return (uint16_t)(h << 8 | 1);
+  if (m == LK_LO) return (uint16_t)(l << 8 | 3);
+  return 0xffff;
+}
+
+/* Load (0x40008f98), a slot of type 42..49 on track 12: its 64 values into live FX index 38..41's lock words, each
+   as its own half (a step's other half stays as another slot of the pattern gives it, or unlocked). */
 void sfx_lock_merge(const volatile uint8_t *slot, volatile uint8_t *live) {
-  int ty = slot[0] - 42, k = 38 + (ty & 3), st;
+  int ty = slot[0] - 42, k = 38 + (ty & 3), st, half = ty < 4 ? LK_HI : LK_LO;
   volatile uint8_t *tr = live + LOCK_TRACK * 12;
   for (st = 0; st < 64; st++) {
-    int v = slot[2 + st];
+    int v = slot[2 + st], h = 0, l = 0, m;
     volatile uint16_t *w = (volatile uint16_t *)(tr + LOCK_STEP * st + 2 * k);
-    uint32_t o;
     if (v & 0x80) continue;
-    o = *w;
-    if (o == 0xffff) {
-      o = 0;
-      ++*(volatile uint32_t *)(tr + LOCK_STEP * st + 84);
-    }
-    *w = ty < 4 ? (uint16_t)((o & 0x00ff) | v << 8) : (uint16_t)((o & 0xff00) | v << 1);
+    m = lk_get(*w, &h, &l);
+    if (!m) ++*(volatile uint32_t *)(tr + LOCK_STEP * st + 84);
+    if (half == LK_HI) h = v; else l = v;
+    *w = lk_make(m | half, h, l);
   }
   if (ty >= 4) tr[LOCK_FINE + k] = 1;
 }
 
 /* Full rebuild (0x40009216) at FX index k >= 38 of track 12, with locks: the hi slot at n, the lo slot at n + 1 when
-   the index has its fine flag (exactly the slots stock counted for it). w: the index's word on step 0. */
+   the index has its fine flag (exactly the slots stock counted for it). w: the index's word on step 0. Only the locked
+   halves are written: a step locked on one half has 0xff in the other half's slot. */
 void sfx_rebuild_c(volatile uint8_t *slots, const volatile int16_t *w, int n, int k4, int fine) {
-  volatile uint8_t *h = slots + 66 * n, *l = h + 66;
+  volatile uint8_t *hs = slots + 66 * n, *ls = hs + 66;
   int st, k = k4 >> 2;
-  h[0] = 42 + k - 38; h[1] = 12;
-  if (fine) { l[0] = 46 + k - 38; l[1] = 12; }
+  hs[0] = 42 + k - 38; hs[1] = 12;
+  if (fine) { ls[0] = 46 + k - 38; ls[1] = 12; }
   for (st = 0; st < 64; st++, w += LOCK_STEP / 2) {
-    int v = *w;
-    h[2 + st] = v < 0 ? 0xff : (v >> 8) & 0x7f;
-    if (fine) l[2 + st] = v < 0 ? 0xff : (v >> 1) & 0x7f;
+    int h = 0, l = 0, m = lk_get((uint16_t)*w, &h, &l);
+    hs[2 + st] = m & LK_HI ? h : 0xff;
+    if (fine) ls[2 + st] = m & LK_LO ? l : 0xff;
   }
+}
+
+/* Playback (the audio interrupt's trig loop, 0x40120968: a trig's lock list, entries {track, sound index, value,
+   flags} of 8 B, each value written into the trig array and the two copies beside it). An FX 38..41 entry locked on
+   one half: its value becomes that half and the other half the trig array's word, which the trig loop has just copied
+   from the kit (a trig after a step with locks always copies it: the loop's dirty byte counts the lock entries) or
+   which a knob turn has written since [code]. Written back into the entry, so the stock body after the detour stores
+   the merged word everywhere it stores the value. */
+void sfx_play_c(volatile uint16_t *e) {
+  uint32_t k = e[1];
+  int h = 0, l = 0, m;
+  uint32_t cur;
+  if (e[0] != FX || k - 38 > 3) return;
+  m = lk_get(e[2], &h, &l);
+  cur = trig_sound_array[TW * FX + k];
+  if (m == LK_HI) e[2] = (uint16_t)(h << 8 | (cur & 0xff));
+  else if (m == LK_LO) e[2] = (uint16_t)((cur & 0xff00) | l << 1);
 }
 
 __asm__(
@@ -284,4 +326,24 @@ __asm__(
 "	move.w	%d0,68(%a2)\n"
 "	move.l	(%a1),0x50(%a2)\n"
 "	move.l	4(%a1),0x54(%a2)\n"
-"	jmp	0x40007f92\n");
+"	jmp	0x40007f92\n"
+/* 0x40120968 (movew %a0@,%d6; movew %a0@(4),%d4), the trig loop's lock list loop (a0 the entry, a1 0x8000e57c, a5
+   0x80005f10, d1 the count left, d0 the list's count; d4 d6 d7 a3 scratch of the body): reimplemented, rejoining at
+   0x4012096e. Bit 0 clear (every stock value: an 8.8 lock's bit 0 is 0) goes straight on; set: sfx_play_c rewrites an
+   FX 38..41 half lock, then d4 again. */
+"	.globl	sfx_play\n"
+"sfx_play:\n"
+"	move.w	(%a0),%d6\n"
+"	move.w	4(%a0),%d4\n"
+"	btst	#0,%d4\n"
+"	bne.s	1f\n"
+"	jmp	0x4012096e\n"
+"1:	lea	-16(%sp),%sp\n"
+"	movem.l	%d0-%d1/%a0-%a1,(%sp)\n"
+"	move.l	%a0,-(%sp)\n"
+"	jsr	sfx_play_c\n"
+"	addq.l	#4,%sp\n"
+"	movem.l	(%sp),%d0-%d1/%a0-%a1\n"
+"	lea	16(%sp),%sp\n"
+"	move.w	4(%a0),%d4\n"
+"	jmp	0x4012096e\n");
