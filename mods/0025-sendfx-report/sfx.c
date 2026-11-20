@@ -197,31 +197,49 @@ static uint16_t lk_make(int m, int h, int l) {
   return 0xffff;
 }
 
-/* Load (0x40008f98), a slot of type 42..49 on track 12: its 64 values into live FX index 38..41's lock words, each
-   as its own half (a step's other half stays as another slot of the pattern gives it, or unlocked). */
-void sfx_lock_merge(const volatile uint8_t *slot, volatile uint8_t *live) {
-  int ty = slot[0] - 42, k = 38 + (ty & 3), st, half = ty < 4 ? LK_HI : LK_LO;
-  volatile uint8_t *tr = live + LOCK_TRACK * 12;
+/* Load (0x40008f98): a slot's 64 values into one half of lock index k's words on track tr (keep: the halves the word
+   already had that stay; a value >= 0x80 leaves its step's half as it is). The step's lock count is bumped when its
+   word had no lock; a lo half sets the index's fine flag. */
+static void lk_load(const volatile uint8_t *s, volatile uint8_t *tr, int k, int half, int keep) {
+  int st;
   for (st = 0; st < 64; st++) {
-    int v = slot[2 + st], h = 0, l = 0, m;
+    int v = s[st], h = 0, l = 0, m;
     volatile uint16_t *w = (volatile uint16_t *)(tr + LOCK_STEP * st + 2 * k);
-    if (v & 0x80) continue;
-    m = lk_get(*w, &h, &l);
-    if (!m) ++*(volatile uint32_t *)(tr + LOCK_STEP * st + 84);
-    if (half == LK_HI) h = v; else l = v;
-    *w = lk_make(m | half, h, l);
+    m = lk_get(*w, &h, &l) & keep;
+    if (!(v & 0x80)) {
+      if (!m) ++*(volatile uint32_t *)(tr + LOCK_STEP * st + 84);
+      if (half == LK_HI) h = v; else l = v;
+      m |= half;
+    }
+    *w = lk_make(m, h, l);
   }
-  if (ty >= 4) tr[LOCK_FINE + k] = 1;
+  if (half == LK_LO) tr[LOCK_FINE + k] = 1;
+}
+/* A slot of type 42..49 on track 12 (t = 12): FX index 38..41, each type its own half (a step's other half stays as
+   another slot of the pattern gives it, or unlocked). amp-halves (2026-11-20), t < 12: the 0x80 0x80 fine slot after a
+   voice track's type 41 slot (sound index 0: SFX1 hi, SFX2 lo). Stock's coarse pass has written hi << 8 on every step
+   its slot locks; this slot says per step whether the lo half is locked too: a value is both halves (the stock form,
+   every lock saved before), 0xff after a coarse value the hi half only, a value after a coarse 0xff the lo half only
+   (stock ORs that into 0xffff: no lock). */
+void sfx_lock_merge(const volatile uint8_t *slot, volatile uint8_t *live, int t) {
+  int ty = slot[0] - 42, k = 0, half = LK_LO, keep = LK_HI;
+  if (t == FX) {
+    k = 38 + (ty & 3);
+    keep = LK_HI | LK_LO;
+    if (ty < 4) half = LK_HI;
+  }
+  lk_load(slot + 2, live + LOCK_TRACK * t, k, half, keep);
 }
 
-/* Full rebuild (0x40009216) at FX index k >= 38 of track 12, with locks: the hi slot at n, the lo slot at n + 1 when
-   the index has its fine flag (exactly the slots stock counted for it). w: the index's word on step 0. Only the locked
-   halves are written: a step locked on one half has 0xff in the other half's slot. */
-void sfx_rebuild_c(volatile uint8_t *slots, const volatile int16_t *w, int n, int k4, int fine) {
+/* Full rebuild (0x40009216) at FX index k >= 38 of track 12, or sound index 0 (k4 = 0) of a voice track t, with locks:
+   the hi slot at n, the lo slot at n + 1 when the index has its fine flag (exactly the slots stock counted for it). w:
+   the index's word on step 0. Only the locked halves are written: a step locked on one half has 0xff in the other
+   half's slot. FX: types 42 + k - 38 / 46 + k - 38 (0025's); voice tracks: type 41 and stock's 0x80 0x80 fine slot. */
+void sfx_rebuild_c(volatile uint8_t *slots, const volatile int16_t *w, int n, int k4, int fine, int t) {
   volatile uint8_t *hs = slots + 66 * n, *ls = hs + 66;
-  int st, k = k4 >> 2;
-  hs[0] = 42 + k - 38; hs[1] = 12;
-  if (fine) { ls[0] = 46 + k - 38; ls[1] = 12; }
+  int st, k = k4 >> 2, fx = t == FX;
+  hs[0] = fx ? k + 4 : 41; hs[1] = t;
+  if (fine) { ls[0] = fx ? k + 8 : 0x80; ls[1] = fx ? t : 0x80; }
   for (st = 0; st < 64; st++, w += LOCK_STEP / 2) {
     int h = 0, l = 0, m = lk_get((uint16_t)*w, &h, &l);
     hs[2 + st] = m & LK_HI ? h : 0xff;
@@ -236,12 +254,12 @@ void sfx_rebuild_c(volatile uint8_t *slots, const volatile int16_t *w, int n, in
    which a knob turn has written since [code]. Written back into the entry, so the stock body after the detour stores
    the merged word everywhere it stores the value. */
 void sfx_play_c(volatile uint16_t *e) {
-  uint32_t k = e[1];
+  uint32_t t = e[0], k = e[1];
   int h = 0, l = 0, m;
   uint32_t cur;
-  if (e[0] != FX || k - 38 > 3) return;
+  if (t == FX ? k - 38 > 3 : t > FX || k) return;   /* amp-halves: sound index 0 of a voice track too */
   m = lk_get(e[2], &h, &l);
-  cur = trig_sound_array[TW * FX + k];
+  cur = trig_sound_array[TW * t + k];
   if (m == LK_HI) e[2] = (uint16_t)(h << 8 | (cur & 0xff));
   else if (m == LK_LO) e[2] = (uint16_t)((cur & 0xff00) | l << 1);
 }
@@ -263,10 +281,11 @@ __asm__(
 "	moveq	#12,%d6\n"
 "	cmp.l	%d2,%d6\n"
 "	bne.s	2f\n"
+"	move.l	%d2,-(%sp)\n"
 "	move.l	%a3,-(%sp)\n"
 "	move.l	%a2,-(%sp)\n"
 "	jsr	sfx_lock_merge\n"
-"	addq.l	#8,%sp\n"
+"	lea	12(%sp),%sp\n"
 "	moveq	#-1,%d0\n"
 "	moveq	#-1,%d1\n"
 "2:	jmp	0x40009128\n"
@@ -280,18 +299,21 @@ __asm__(
 "	moveq	#12,%d4\n"
 "	cmp.l	%d1,%d4\n"
 "	beq.s	1f\n"
+"	tst.l	%d3\n"                            /* amp-halves: a voice track's index 0 is ours too */
+"	beq.s	3f\n"
 "	jmp	0x40009354\n"
 "1:	cmp.l	#152,%d3\n"
 "	blt.s	2f\n"
-"	lea	-12(%sp),%sp\n"
+"3:	lea	-12(%sp),%sp\n"
 "	movem.l	%d1/%a0-%a1,(%sp)\n"
+"	move.l	%d1,-(%sp)\n"
 "	move.l	%d2,-(%sp)\n"
 "	move.l	%d3,-(%sp)\n"
 "	move.l	%d0,-(%sp)\n"
 "	move.l	%a1,-(%sp)\n"
 "	move.l	%a0,-(%sp)\n"
 "	jsr	sfx_rebuild_c\n"
-"	lea	20(%sp),%sp\n"
+"	lea	24(%sp),%sp\n"
 "	movem.l	(%sp),%d1/%a0-%a1\n"
 "	lea	12(%sp),%sp\n"
 "	jmp	0x4000932c\n"
@@ -301,14 +323,39 @@ __asm__(
 "	.globl	sfx_incr\n"
 "sfx_incr:\n"
 "	cmp.l	%d0,%d3\n"
-"	bne.s	1f\n"
+"	bne.s	3f\n"
 "	moveq	#37,%d2\n"
 "	cmp.l	%a0,%d2\n"
-"	bcc.s	1f\n"
-"	jmp	0x40009572\n"
+"	bcs.s	4f\n"
+"	bra.s	1f\n"
+"3:	move.l	%a0,%d2\n"                       /* amp-halves: a voice track's index 0 too (d2 is set again at 0x4000945e) */
+"	bne.s	1f\n"
+"4:	jmp	0x40009572\n"
 "1:	move.l	(0,%a1,%a0.l*4),%d5\n"         /* displaced, verbatim */
 "	clr.l	%d4\n"
 "	jmp	0x4000945a\n"
+/* amp-halves: 0x400090d8 (movel #5674,%d2), the loader's 0x80 0x80 fine slot once its context is valid (d0 the index,
+   d1 the track, a2 the slot, a3 the live locks; d0 / d1 stay the context, as stock keeps them). A voice track's index 0
+   goes to sfx_lock_merge, then the next slot (0x40009128); everything else on to stock's OR loop (0x400090de). */
+"	.globl	sfx_fine\n"
+"sfx_fine:\n"
+"	tst.l	%d0\n"
+"	bne.s	1f\n"
+"	moveq	#12,%d2\n"
+"	cmp.l	%d1,%d2\n"
+"	beq.s	1f\n"
+"	move.l	%d0,-(%sp)\n"
+"	move.l	%d1,-(%sp)\n"
+"	move.l	%d1,-(%sp)\n"
+"	move.l	%a3,-(%sp)\n"
+"	move.l	%a2,-(%sp)\n"
+"	jsr	sfx_lock_merge\n"
+"	lea	12(%sp),%sp\n"
+"	move.l	(%sp)+,%d1\n"
+"	move.l	(%sp)+,%d0\n"
+"	jmp	0x40009128\n"
+"1:	move.l	#5674,%d2\n"                     /* displaced, verbatim */
+"	jmp	0x400090de\n"
 /* FX loader 0x40007f42 (lsll #8,%d0; movew %d0,%a0@(8)): a0 the live FX words, a1 the storage block (0x7C6): then
    storage +0x50..+0x57 (kit 0x816..0x81D) -> live words 38..41 (+76). */
 "	.globl	sfx_kload\n"

@@ -224,7 +224,7 @@ words only tests -1 (lock or none, unchanged) or goes through the hooks below an
 | load | `sfx_lock_merge` (0x40009040's detour) | a type 42..45 slot's step sets the hi half, 46..49 the lo half; a step with only one of them gets the one-half form, with both the stock form; the step's lock count bumped once; a lo type sets the fine flag (as before) |
 | save | `sfx_rebuild_c` (0x400092aa's detour; the incremental save goes there for k >= 38, `sfx_incr`) | the hi slot gets the step's hi value only where the hi half is locked, the lo slot (written when the track's fine flag for k is set: the slots stock reserved) only where the lo half is; 0xff elsewhere |
 | playback | **new detour `sfx_play` at 0x40120968** (1.74 0x401209d4) | below |
-| UI | 0029's FX set wrappers: lock get / set and **new lock clear (+0x44)** | 0029 design.md section 15 |
+| UI | 0029's FX set wrappers: lock get / set and **new lock clear (+0x44)** | 0029 design.md section 12 |
 
 **Fine flag.** 0029's records lock with the fine flag (record +0x14 = 1, 0x400071a6), and the loader sets it for any lo
 type, so a word with a lo half locked always has it set and its lo slot is reserved at save. A pattern whose locks on k
@@ -253,3 +253,40 @@ lock reaches it merged with the kit's other half [measured: `sfu_emu.py TAG halv
 cave claim (0x402cc920; on 1.74 that span is 1.74's own code [re/os/1.74.toml padding note]), so 0025 builds with
 `--area-elek 0025-sendfx-report` only, as the Makefile's release build does [inferred: a non-area build was not tried]. 0025 +384 B,
 0029 +556 B of code, no new state.
+
+## amp-halves (2026-11-20): SFX1 / SFX2 locks independent per knob
+
+The same lock-word encoding as "lock-halves" above, now also on
+**sound index 0 of the voice tracks 0..11** (SFX1 hi = bits 8..14, SFX2 lo = bits 1..7; 0029's AMPLITUDE 2 page). Stock
+stores that index as lock type 41 (the coarse values, hi) plus its `0x80 0x80` fine slot (lo) [code: the sound reverse map
+0x401c59cc (1.74 0x401c5c7c) [0] = 41, the forward map 0x401c5a74 [41] = 0]. Tags as above; rytm-emu 1.74, DTEMU_STRICT=1;
+nothing flashed. Bit 0 of a sound index 0 lock word was free: stock's loader writes `coarse << 8 | fine << 1` [code], and
+the sound tag that once lived in index 0 is at +0x6e / slot 47 since 2026-10-16 (0021 design.md) and never had locks.
+
+| what | where (1.73; 1.74) | change |
+|---|---|---|
+| load | **new detour `sfx_fine` 0x400090d8** (same on 1.74; `movel #5674,%d2`, the first instruction of the fine slot's OR loop, reached only with a valid context: d0 the index >= 0, d1 the track != -1) | track < 12 and index 0: `sfx_lock_merge` (now `(slot, live, track)`) over the fine slot, keeping only the hi half the coarse pass wrote: fine value + coarse value = both (stock form), coarse value + fine 0xff = hi only, fine value + coarse 0xff = lo only (count bumped; stock ORs it into 0xffff: no lock); the fine flag set; then 0x40009128 with d0 / d1 kept. Anything else: the instruction re-emitted, rejoin 0x400090de |
+| save, full | `sfx_rebuild` 0x400092aa (existing) | a voice track with d3 = 0 (index 0) also goes to `sfx_rebuild_c` (now with the track): type 41 and, with the fine flag, the `0x80 0x80` slot; only the locked halves, 0xff elsewhere |
+| save, incremental | `sfx_incr` 0x40009454 (existing) | a voice track's index 0 also takes the tail call into the full rebuild (0x40009572), as FX >= 38 does |
+| playback | `sfx_play` 0x40120968; 1.74 0x401209d4 (existing) | `sfx_play_c` accepts track < 12 with index 0: the locked half merged with that track's trig array word 0 (the kit's, or a sound lock's pool sound: the trig loop copies it first, as for any lock) |
+| UI | 0029's Sound set wrappers (0029 design.md section 13) | |
+
+The stock coarse pass stays as it is (it writes `hi << 8` for every coarse value): the new detour only reinterprets it
+when a fine slot follows, so a type 41 slot with no fine slot (a lock made without the fine flag) loads as stock's
+`hi << 8` [code]. Within a type 41 + fine pair, stock's own rebuild writes coarse and fine from the same word, so a stock
+file never has a coarse value with fine 0xff or the reverse [code: 0x400092f6..0x4000931e]: every file saved before
+loads into the same words (`ampold`).
+
+**A stock (unmodded) Rytm with a file that has one-half SFX locks** [code; measured for both-halves files in `ampold`]:
+a hi-only step (coarse value, fine 0xff) loads as `hi << 8`, i.e. SFX2 locked to 0 on that step; a lo-only step (coarse
+0xff, fine value) is no lock. Stock plays sound index 0 nowhere audible (only 0025 reports it), so nothing sounds
+different on stock; but a stock save rewrites the hi-only step as both halves with SFX2 = 0 and drops the lo-only one, which
+is what a modded Rytm then loads back. A both-halves lock round-trips through stock unchanged.
+
+**Not changed:** turning SFX1 or SFX2's base while a step plays a one-half lock goes through the stock write, which stores
+the whole kit word in the trig array, so the locked half plays the kit's value until the track's next trig (stock does the
+same to a both-halves lock). The FX words do not (0029's `fx_write_hi` keeps the other half); for the sound words that would
+need the Sound set's trig array row (not traced) [inferred].
+
+**Cost**: 0025 +142 B of code (1482 -> 1624: `sfx_fine` 50, `lk_load` shared by both load paths, `sfx_rebuild_c` +32,
+`sfx_play_c` +8, the two existing stubs +6 each), no state.

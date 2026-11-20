@@ -6500,7 +6500,8 @@ reemit = false
 # half of `bnew 0x40009354` (pc-relative: reimplemented; its displacement word is left dead, nothing branches into
 # 0x400092ac..0x400092b1). Not 0x400092b2: tracks 0..11 branch back to 0x400092b6 (0x4000935e). Track 12 with k < 38
 # goes on to 0x400092b2 as stock; k >= 38 (stock would read past the FX reverse map, 38 entries, and write types
-# 9..12) gets types 42..49 and goes on at 0x4000932c (d0 = the slot count stock reserved).
+# 9..12) gets types 42..49 and goes on at 0x4000932c (d0 = the slot count stock reserved). amp-halves: a voice track's
+# index 0 (d3 = 0) is written there too (type 41 and its 0x80 0x80 slot, only the locked halves).
 [[detour]]
 owner  = "0025-sendfx-report"
 addr   = 0x400092aa
@@ -6513,7 +6514,8 @@ elek_size = 8         # in elekloader's area: the whole bnew (+ 1 nop)
 reemit = false
 
 # The incremental lock save (0x4000940c): `movel %a1@(0,%a0:l:4),%d5` (the same map) and `clrl %d4`, re-emitted;
-# FX index >= 38 takes the save's own tail call into the full rebuild (0x40009572).
+# FX index >= 38 takes the save's own tail call into the full rebuild (0x40009572); amp-halves: a voice track's index 0
+# too.
 [[detour]]
 owner  = "0025-sendfx-report"
 addr   = 0x40009454
@@ -6522,6 +6524,20 @@ expect_len = 6
 expect_sha256 = "c9ca4496371162bd36e4eda10f2920366440a1015328f95a79d3508c262457b7"
 entry  = "sfx_incr"
 rejoin = 0x4000945a
+
+# amp-halves (2026-11-20): the lock loader's 0x80 0x80 fine slot once its context is valid (0x400090c4..0x400090d6:
+# d0 the index >= 0, d1 the track != -1): `movel #5674,%d2`, the first instruction of stock's OR loop. A voice track's
+# sound index 0 (SFX1 hi / SFX2 lo) goes to sfx_lock_merge (which half each step locks: a coarse value with fine 0xff the
+# hi half only, a fine value after a coarse 0xff the lo half only; both, the stock form), then 0x40009128 (the next
+# slot, d0 / d1 kept). Everything else: the instruction re-emitted, rejoin 0x400090de.
+[[detour]]
+owner  = "0025-sendfx-report"
+addr   = 0x400090d8
+size   = 6
+expect_len = 6
+expect_sha256 = "b2f1ee2a1d36a12a12ca0ac548c6067f32cf34e0ead80f464c97e40b17f4a07c"
+entry  = "sfx_fine"
+rejoin = 0x400090de
 
 # The kit FX loader 0x40007f02 after its map loop: `lsll #8,%d0` and `movew %d0,%a0@(8)`, re-emitted, then storage
 # +0x50..+0x57 (kit 0x816..0x81D) into live FX words 38..41.
@@ -6547,7 +6563,8 @@ rejoin = 0x40007f92
 
 # Playback of FX 38..41 half locks (lock-halves, 2026-11-20): the audio interrupt's trig loop, the loop over a trig's
 # lock list (entries {track, sound index, value, flags}, 8 B; a0 the entry): `movew %a0@,%d6` and `movew %a0@(4),%d4`,
-# reimplemented. An entry whose value has bit 0 set on track 12, index 38..41, is one half locked: the stub writes the
+# reimplemented. An entry whose value has bit 0 set on track 12, index 38..41 (amp-halves: or a voice track, index 0),
+# is one half locked: the stub writes the
 # locked half merged with the trig array's word (the kit's) back into the entry, and the stock body stores that.
 # Every other entry goes on unchanged (bit 0 of a stock 8.8 lock value is 0). Rejoins at the third instruction.
 [[detour]]
@@ -7304,6 +7321,17 @@ expect_len  = 4
 expect_sha256 = "f293121ebae36a114caa1c687d2a19e1808d42bfce04d09ae5fac4906ea70424"
 from_symbol = "sfu_f_lclr"
 note        = "FxParameterSet +0x44 lock clear"
+
+# amp-halves (2026-11-20): SoundParameterSet +0x44, a step's lock cleared (set, id, step; stock 0x400a9956 ->
+# track_lock_clear): for SFX1 / SFX2 (sound index 0) only that knob's half goes, the other half's lock stays.
+[[patch]]
+owner       = "0029-sendfx-ui"
+addr        = 0x401dcbb8
+size        = 4
+expect_len  = 4
+expect_sha256 = "9de744da8f24c2bd0351a3b01f75e63ddebb4298273f71acb9d0f7aced01365a"
+from_symbol = "sfu_s_lclr"
+note        = "SoundParameterSet +0x44 lock clear"
 
 # Parameter records 14..27 (dead 'Error' records: no CC table maps to them [measured]): kind (AMP 0x35 /
 # DELAY 0x39 / REVERB 0x38 group), container index (sound 0; FX 29 29 38 38 39 39 / 0 0 40 40 41 41), range

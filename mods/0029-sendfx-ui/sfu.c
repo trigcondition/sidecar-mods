@@ -460,7 +460,7 @@ int32_t sfu_s_lget(void *set, int32_t id, int32_t step) {
   if (OURS(id) && KITONLY(id - ID0)) return -1;
   r = S_LGET(set, id, step);
   if (r < 0) return r;
-  if (OURS(id)) return half_of(id - ID0, r);
+  if (OURS(id)) return lk_half(id - ID0, r);   /* amp-halves: SFX1 / SFX2 each its own half (-1: only the other's) */
   return xmode(id) ? x_knob(id, r) : r;
 }
 int32_t sfu_f_lget(void *set, int32_t id, int32_t step) {
@@ -468,19 +468,15 @@ int32_t sfu_f_lget(void *set, int32_t id, int32_t step) {
   if (BW(id) || (OURS(id) && KITONLY(id - ID0))) return -1;
   r = F_LGET(set, id, step);
   if (!OURS(id) || r < 0) return r;
-  if (k_cidx[id - ID0] >= 38 && (r = lk_half(id - ID0, r)) < 0) return -1;   /* lock-halves: this knob's half */
-  else if (k_cidx[id - ID0] < 38) r = half_of(id - ID0, r);
+  if ((r = lk_half(id - ID0, r)) < 0) return -1;   /* lock-halves: this knob's half (P1..P4: TYPE / ROUTE returned above) */
   if (st.init) sync(set);
   return to_knob(id - ID0, r);
 }
 int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
   if (OURS(id)) {
-    int32_t cur;
     if (KITONLY(id - ID0)) return 0;
     st.calls++;
-    cur = S_LGET(set, id, step);
-    if (cur < 0) cur = S_READ(set, id);
-    v = merge(id - ID0, cur, v);
+    v = lk_put(id - ID0, S_LGET(set, id, step), v);   /* amp-halves: only this knob's half; the other keeps its lock or none */
   } else if (xmode(id)) {   /* a stepped list knob locks the stored value; rui1038: a banked one the lock's (or word's) bank */
     int32_t cur = S_LGET(set, id, step);
     v = x_keep(id, x_half(id, v), cur >= 0 ? cur : S_READ(set, id));
@@ -490,30 +486,31 @@ int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
 int32_t sfu_f_lset(void *set, int32_t id, int32_t v, int32_t step) {
   if (BW(id)) return 0;
   if (OURS(id)) {
-    int32_t cur;
     if (KITONLY(id - ID0)) return 0;
     st.calls++;
-    cur = F_LGET(set, id, step);
     /* lock-halves: only this knob's half is locked (a stepped P2..P5 locks the zone's lo); the other half keeps its
-       own lock or none, so it goes on playing the kit's value */
-    if (k_cidx[id - ID0] >= 38) v = lk_put(id - ID0, cur, to_half(id - ID0, v, 0));
-    else v = merge(id - ID0, cur < 0 ? F_READ(set, id) : cur, to_half(id - ID0, v, 0));
+       own lock or none, so it goes on playing the kit's value (TYPE / ROUTE refused above: every other knob is FX 38..41) */
+    v = lk_put(id - ID0, F_LGET(set, id, step), to_half(id - ID0, v, 0));
   }
   return F_LSET(set, id, v, step);
 }
 /* lock-halves: FxParameterSet +0x44, a step's lock cleared. P2..P5 clear their own half: the word keeps the other
-   half's lock (a lock set of the rest), and a half that is not locked clears nothing. */
+   half's lock (a lock set of the rest), and a half that is not locked clears nothing. amp-halves: SoundParameterSet
+   +0x44 the same for SFX1 / SFX2 (sound index 0). TYPE / ROUTE never carry a lock: the stock clear. */
 #define F_LCLR  ((lg_fn)0x400a9aa2u)
-int32_t sfu_f_lclr(void *set, int32_t id, int32_t step) {
-  if (OURS(id) && k_cidx[id - ID0] >= 38) {
-    int32_t cur = F_LGET(set, id, step), w;
+#define S_LCLR  ((lg_fn)0x400a9956u)
+static int32_t lclr(void *set, int32_t id, int32_t step, lg_fn get, ls_fn put, lg_fn clr) {
+  if (OURS(id) && !KITONLY(id - ID0)) {
+    int32_t cur = get(set, id, step), w;
     st.calls++;
     if (cur < 0 || lk_half(id - ID0, cur) < 0) return 0;
     w = lk_put(id - ID0, cur, -1);
-    if (w >= 0) return F_LSET(set, id, w, step);
+    if (w >= 0) return put(set, id, w, step);
   }
-  return F_LCLR(set, id, step);
+  return clr(set, id, step);
 }
+int32_t sfu_f_lclr(void *set, int32_t id, int32_t step) { return lclr(set, id, step, F_LGET, F_LSET, F_LCLR); }
+int32_t sfu_s_lclr(void *set, int32_t id, int32_t step) { return lclr(set, id, step, S_LGET, S_LSET, S_LCLR); }
 
 /* page_get_value for our ids (the gate below): the set's value, a step's lock first */
 int32_t sfu_get(void **view, int32_t id, int32_t lock) {

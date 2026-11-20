@@ -353,6 +353,196 @@ def t_halves(e):
     U.check("halves: SAVE PROJECT, wiped, LOAD PROJECT - step 1's lock P2 only, step 5's P1 only again (from the file)",
             ok and lock(e, s10, 12, 0, 38) == w4 and lock(e, s10, 12, 4, 38) == w5, f"wiped {ok} lock {lock(e, s10, 12, 0, 38):04x} want {w4:04x}")
 
+def snd(t):
+    """kit 0's sound index 0 (SFX1 hi / SFX2 lo) of track t"""
+    return SND0 + 152 * t
+
+
+def amp_slots(e, snap, t, pat=X.B0, fw=None):
+    """A stored pattern's sound index 0 locks of track t: (type 41 slot's 64 values, its 0x80 0x80 fine slot's or None),
+    None if the pattern has no (41, t) slot."""
+    L = e.peek(snap, pat + 0x2091, 72 * 66, fw=fw)
+    for i in range(72):
+        if L[66 * i] == 41 and L[66 * i + 1] == t:
+            f = L[66 * (i + 1) + 2:66 * (i + 1) + 66] if i < 71 and L[66 * (i + 1):66 * (i + 1) + 2] == b"\x80\x80" else None
+            return list(L[66 * i + 2:66 * i + 66]), list(f) if f else None
+    return None
+
+
+def amp_rx(e, run, t):
+    """track t's sound index 0 as reported (0x20) in run `run`, its changes"""
+    return [v for _, v in X.changes([(w, ws[0]) for w, tr, ws in X.sendfx_rx(e, run) if tr == t], 0)]
+
+
+def t_amphalves(e):
+    """amp-halves: AMPLITUDE 2's SFX1 and SFX2 (sound index 0 hi / lo) lock independently on every track. A lock on
+    SFX1 leaves SFX2 following the kit; SFX2 locked too keeps both; clearing SFX1 (trig held + encoder A pushed) leaves
+    SFX2's; BD, CP and RS (CP / RS one voice) play the locked half with the kit's other half; power-off / cold boot and
+    SAVE PROJECT / LOAD PROJECT keep each half (type 41 and its 0x80 0x80 fine slot, 0xff where a half is not locked)."""
+    BD, RS, CP = 0, 2, 3
+    base = lambda s, t=BD: w16(e, s, snd(t))
+    # AMPLITUDE 2, BD's SFX1 (A) and SFX2 (B) bases, RECORD, trigs on steps 1 and 5, step 1 held: SFX1 locked
+    ev = [(50, "press", "AMP"), (150, "press", "AMP"), (250, "turn", ("0:+20", 3, 20)), (350, "turn", ("1:+20", 2, 20)),
+          (450, "press", "RECORD"), (550, "press", "T1"), (650, "press", "T5"),
+          (800, "press", "T1:400M"), (900, "turn", ("0:+20", 3, 20))]
+    t = e.clock
+    s1 = e.run("amph-p1", 1400, ev, save=True)
+    t += 1400
+    b1, w1 = base(s1), lock(e, s1, BD, 0, 0)
+    h1, l1 = lk(w1)
+    U.check("amphalves: BD SFX1 locked on step 1 - the word's hi half only (SFX2 not locked), not the base's value; "
+            "step 5 free; the fine flag set", h1 is not None and l1 is None and h1 != b1 >> 8 and (b1 & 0xfe) and
+            lock(e, s1, BD, 4, 0) == 0xffff and fine(e, s1, BD, 0) == 1,
+            f"lock {w1:04x} base {b1:04x} fine {fine(e, s1, BD, 0)}")
+    # SFX2's base turned: step 1 has no SFX2 lock (it follows the kit), SFX1's lock unchanged
+    s2 = e.run("amph-base", 300, [(50, "turn", ("1:+20", 3, 20))], snap=s1, start=t, save=True)
+    t += 300
+    b2, w2 = base(s2), lock(e, s2, BD, 0, 0)
+    U.check("amphalves: SFX2's base turned - the kit's lo half moved, step 1's lock still SFX1 only with its value",
+            (b2 & 0xfe) != (b1 & 0xfe) and (b2 >> 8) == (b1 >> 8) and w2 == w1, f"base {b1:04x} -> {b2:04x} lock {w2:04x}")
+    # SFX2 locked too on step 1: both halves, each its own value
+    s3 = e.run("amph-p2", 500, [(50, "press", "T1:300M"), (150, "turn", ("1:-20", 2, 20))], snap=s2, start=t, save=True)
+    t += 500
+    w3 = lock(e, s3, BD, 0, 0)
+    h3, l3 = lk(w3)
+    U.check("amphalves: SFX2 locked on step 1 too - both halves (the stock form), SFX1's value kept, SFX2's not the base's",
+            h3 == h1 and l3 is not None and l3 != (b2 >> 1 & 0x7f) and not w3 & 1, f"lock {w3:04x} base {b2:04x}")
+    l3 = l3 or 0   # (a baseline build fails above; the rest still runs)
+    # SFX1's lock cleared alone: T1 held, encoder A pushed
+    s4 = e.run("amph-clear", 500, [(50, "press", "T1:300M"), (150, "press", "PUSH_A:60M")], snap=s3, start=t, save=True)
+    t += 500
+    w4 = lock(e, s4, BD, 0, 0)
+    U.check("amphalves: SFX1's lock cleared alone (T1 + PUSH A) - step 1 keeps SFX2's lock, SFX1 plays the kit again",
+            lk(w4) == (None, l3) and base(s4) == b2, f"lock {w4:04x} (was {w3:04x})")
+    # step 5 SFX1 alone; CP (trigs 1, 3) step 3 SFX2 alone; RS (one voice with CP; trigs 2, 4) step 2 SFX1 alone; each
+    # track's bases turned first (its own kit sound)
+    ev = [(50, "press", "T5:300M"), (150, "turn", ("0:+20", 4, 20)),
+          (500, "press", "CP"), (600, "turn", ("0:+20", 2, 20)), (700, "turn", ("1:+20", 3, 20)),
+          (800, "press", "T1"), (900, "press", "T3"), (1000, "press", "T3:300M"), (1100, "turn", ("1:+20", 4, 20)),
+          (1500, "press", "RS"), (1600, "turn", ("0:+20", 3, 20)), (1700, "turn", ("1:+20", 2, 20)),
+          (1800, "press", "T2"), (1900, "press", "T4"), (2000, "press", "T2:300M"), (2100, "turn", ("0:+20", 4, 20))]
+    s5 = e.run("amph-tracks", 2500, ev, snap=s4, start=t, save=True)
+    t += 2500
+    h5, l5 = lk(lock(e, s5, BD, 4, 0))
+    U.check("amphalves: BD step 5 SFX1 locked alone - its hi half only; step 1 unchanged", h5 is not None and l5 is None
+            and h5 != b2 >> 8 and lock(e, s5, BD, 0, 0) == w4, f"step 5 {lock(e, s5, BD, 4, 0):04x}")
+    h5 = h5 or 0
+    bc, br = base(s5, CP), base(s5, RS)
+    hc, lc = lk(lock(e, s5, CP, 2, 0))
+    hr, lr = lk(lock(e, s5, RS, 1, 0))
+    U.check("amphalves: CP step 3 SFX2 alone, RS step 2 SFX1 alone (one voice, two tracks); their steps 1 / 4 free; "
+            "each kit sound's own bases", hc is None and lc is not None and lc != bc >> 1 & 0x7f and hr is not None and
+            lr is None and hr != br >> 8 and lock(e, s5, CP, 0, 0) == 0xffff and lock(e, s5, RS, 3, 0) == 0xffff and
+            bc >> 8 and bc & 0xfe and br >> 8 and br & 0xfe and base(s5) == b2,
+            f"CP {lock(e, s5, CP, 2, 0):04x} base {bc:04x} RS {lock(e, s5, RS, 1, 0):04x} base {br:04x} BD base {base(s5):04x}")
+    lc, hr = lc or 0, hr or 0
+    # playback: each locked step plays its locked half with the kit's other half
+    s6 = e.run("amph-play", 900, [(50, "press", "RECORD"), (100, "press", "PLAY"), (800, "press", "STOP")], snap=s5,
+               start=t, save=True, extra=["--every", "5M"], env={"DTBOOT_PEEK": "8000e5b0"})
+    t += 900
+    want1, want5 = (b2 & 0xff00) | l3 << 1, h5 << 8 | (b2 & 0xff)
+    bd, cp, rs = amp_rx(e, "amph-play", BD), amp_rx(e, "amph-play", CP), amp_rx(e, "amph-play", RS)
+    U.check(f"amphalves: PLAY - BD alternates step 1 {want1:04x} (kit SFX1, locked SFX2) and step 5 {want5:04x} (locked "
+            "SFX1, kit SFX2)", want1 in bd and want5 in bd and b2 not in bd[1:] and len(bd) >= 3,
+            " ".join("%04x" % v for v in bd[:8]))
+    wc, wr = (bc & 0xff00) | lc << 1, hr << 8 | (br & 0xff)
+    U.check(f"amphalves: PLAY - CP step 3 {wc:04x} (kit SFX1, locked SFX2) and step 1 the kit's {bc:04x}; RS step 2 "
+            f"{wr:04x} (locked SFX1, kit SFX2) and step 4 the kit's {br:04x}", wc in cp and bc in cp and wr in rs and
+            br in rs, "CP " + " ".join("%04x" % v for v in cp[:8]) + " RS " + " ".join("%04x" % v for v in rs[:8]))
+    # BD's bases turned again (stopped) and PLAY: each step follows the kit in its unlocked half
+    s7 = e.run("amph-base2", 400, [(50, "press", "BD"), (150, "turn", ("0:-20", 2, 20)), (250, "turn", ("1:+20", 2, 20))],
+               snap=s6, start=t, save=True)
+    t += 400
+    b7 = base(s7)
+    want7, want57 = (b7 & 0xff00) | l3 << 1, h5 << 8 | (b7 & 0xff)
+    e.run("amph-play2", 900, [(100, "press", "PLAY")], snap=s7, start=t, extra=["--every", "5M"],
+          env={"DTBOOT_PEEK": "8000e5b0"})
+    bd2 = amp_rx(e, "amph-play2", BD)
+    U.check(f"amphalves: BD's bases turned ({b2:04x} -> {b7:04x}) - step 1 plays {want7:04x} (the new kit SFX1, SFX2's "
+            f"lock), step 5 {want57:04x} (SFX1's lock, the new kit SFX2)", b7 >> 8 != b2 >> 8 and
+            (b7 & 0xfe) != (b2 & 0xfe) and want7 in bd2 and want57 in bd2 and want1 not in bd2 and want5 not in bd2,
+            " ".join("%04x" % v for v in bd2[:8]))
+    # stored: A01's (41, t) slots and their fine slots, 0xff where a half is not locked
+    sb, sc, sr = amp_slots(e, s7, BD), amp_slots(e, s7, CP), amp_slots(e, s7, RS)
+    ok = (sb and sb[1] and sc and sc[1] and sr and sr[1] and (sb[0][0], sb[1][0], sb[0][4], sb[1][4]) == (0xff, l3, h5, 0xff)
+          and (sc[0][2], sc[1][2]) == (0xff, lc) and (sr[0][1], sr[1][1]) == (hr, 0xff))
+    U.check("amphalves: A01's stored slots - (41, BD) step 1 0xff / fine SFX2's lock, step 5 SFX1's lock / fine 0xff; "
+            "(41, CP) step 3 0xff / SFX2's; (41, RS) step 2 SFX1's / 0xff", bool(ok),
+            f"BD {[(x[0], x[4]) for x in sb] if sb and sb[1] else sb} CP {[x[2] for x in sc] if sc and sc[1] else sc} "
+            f"RS {[x[1] for x in sr] if sr and sr[1] else sr}")
+    words = lambda s: [lock(e, s, BD, 0, 0), lock(e, s, BD, 4, 0), lock(e, s, CP, 2, 0), lock(e, s, RS, 1, 0)]
+    want = words(s7)
+    # power-off, cold boot
+    c = U.card_copy(e, "amph")
+    e.run("amph-off", 300, snap=s7, start=t, card=c, extra=["--power-off", f"{t + 100}M"])
+    s8 = e.run("amph-boot", 4400, X.DIALOGS, cold=True, card=c, save=True)
+    U.check("amphalves: power-off and cold boot - the four one-half locks as they were, BD's kit word back",
+            words(s8) == want and base(s8) == b7, " ".join("%04x" % v for v in words(s8)) + " want " +
+            " ".join("%04x" % v for v in want))
+    # SAVE PROJECT AS, the live locks and A01's stored slots wiped, LOAD PROJECT: back from the file
+    ev, n = X.proj_keys(100, True)
+    s9 = e.run("amph-save", n, ev, snap=s8, start=4400, card=c, save=True)
+    wipe = {X.B0 + 0x2091: b"\xff" * (72 * 66 - 4)}
+    for tr, st in ((BD, 0), (BD, 4), (CP, 2), (RS, 1)):
+        for L in (LOCKS, BANK1):
+            wipe[L + 5674 * tr + 88 * st] = b"\xff\xff"
+    s10 = e.run("amph-wiped", 50, snap=s9, start=4400 + n, card=c, save=True, extra=X.pokes(e, s9, wipe))
+    ok = words(s10) == [0xffff] * 4
+    ev, n2 = X.proj_keys(100, False)
+    s11 = e.run("amph-load", n2, ev, snap=s10, start=4400 + n + 50, card=c, save=True)
+    U.check("amphalves: SAVE PROJECT, wiped, LOAD PROJECT - the four one-half locks again (from the file)",
+            ok and words(s11) == want, f"wiped {ok} " + " ".join("%04x" % v for v in words(s11)))
+
+
+def t_ampold(e):
+    """amp-halves back-compat: a project saved by stock with SFX locks (type 41 + its fine slot: both halves; a type 41
+    slot with no fine slot: the hi half, lo 0) loads into the same lock words on this build, plays them as stock's
+    words and is saved back into the same slots."""
+    BD, CP = 0, 3
+    ed = {X.B0 + 0x2091 + 66 * X.FREE_SLOT: X.lockslot(41, BD, {0: 0x33, 4: 0x44, 8: 0x10}) + bytes([0x80, 0x80]) +
+          X.lockslot(0, 0, {0: 0x21, 4: 0x05, 8: 0x00})[2:] + X.lockslot(41, CP, {0: 0x22, 2: 0x11})}
+    ed.update(X.trig_bits(e, e.snap, BD, [0, 4, 8, 12]))
+    ed.update(X.trig_bits(e, e.snap, CP, [0, 2, 4]))
+    # stock: cold boot with those slots, then SAVE PROJECT AS (stock's own full rebuild writes the file)
+    s, c = X.poke_boot(e, "ampold-stock", ed, fw=X.STOCK)
+    ev, n = X.proj_keys(100, True)
+    s1 = e.run("ampold-ssave", n, ev, snap=s, start=4400, card=c, save=True, fw=X.STOCK)
+    st_words = lambda s, fw=None: [int.from_bytes(e.peek(s, LOCKS + 5674 * tr + 88 * st, 2, fw=fw), "big")
+                                   for tr, st in ((BD, 0), (BD, 4), (BD, 8), (BD, 12), (CP, 0), (CP, 2), (CP, 4))]
+    sw = st_words(s1, X.STOCK)
+    stock_slots = [amp_slots(e, s1, t, fw=X.STOCK) for t in (BD, CP)]
+    U.check("ampold: stock's live words 3342 440a 1000 ffff / 2200 1100 ffff and its slots", sw ==
+            [0x3342, 0x440a, 0x1000, 0xffff, 0x2200, 0x1100, 0xffff], " ".join("%04x" % v for v in sw))
+    # this build on that card: power-off (stock), cold boot (stock's stored state through this build's loader), PLAY
+    at = 4400 + n
+    e.run("ampold-off", 300, snap=s1, start=at, card=c, fw=X.STOCK, extra=["--power-off", f"{at + 100}M"])
+    s2 = e.run("ampold-boot", 4400, X.DIALOGS, cold=True, card=c, save=True)
+    keys = ((BD, 0), (BD, 4), (BD, 8), (BD, 12), (CP, 0), (CP, 2), (CP, 4))
+    bw = [lock(e, s2, tr, st, 0) for tr, st in keys]
+    U.check("ampold: this build, cold boot on stock's state - the same lock words (both halves, the stock form)",
+            bw == sw, " ".join("%04x" % v for v in bw))
+    kb, kc = w16(e, s2, snd(BD)), w16(e, s2, snd(CP))
+    s3 = e.run("ampold-play", 1000, [(50, "press", "NO"), (100, "press", "PLAY"), (900, "press", "STOP")], snap=s2,
+               start=4400, save=True, card=c, extra=["--every", "5M"], env={"DTBOOT_PEEK": "8000e5b0"})
+    bd, cp = amp_rx(e, "ampold-play", BD), amp_rx(e, "ampold-play", CP)
+    U.check(f"ampold: PLAY - BD 3342 440a 1000 and the kit's {kb:04x}, CP 2200 1100 and the kit's {kc:04x}: the words as "
+            "stock plays them", all(v in bd for v in (0x3342, 0x440a, 0x1000, kb)) and all(v in cp for v in (0x2200, 0x1100, kc)),
+            "BD " + " ".join("%04x" % v for v in bd[:8]) + " CP " + " ".join("%04x" % v for v in cp[:6]))
+    # LOAD PROJECT (the file stock saved)
+    ev, n2 = X.proj_keys(100, False)
+    s3 = e.run("ampold-load", n2, ev, snap=s3, start=5400, card=c, save=True)
+    ow = [lock(e, s3, tr, st, 0) for tr, st in keys]
+    U.check("ampold: this build, LOAD PROJECT of stock's file - the same lock words", ow == sw,
+            " ".join("%04x" % v for v in ow))
+    n2 += 1000
+    ev, n3 = X.proj_keys(100, True)
+    s4 = e.run("ampold-save", n3, ev, snap=s3, start=4400 + n2, card=c, save=True)
+    ours = [amp_slots(e, s4, t) for t in (BD, CP)]
+    U.check("ampold: SAVE PROJECT by this build - A01's (41, BD) + fine and (41, CP) slots byte for byte stock's",
+            ours == stock_slots and stock_slots[0] and stock_slots[0][1] and stock_slots[1] and stock_slots[1][1] is None,
+            f"{ours} / {stock_slots}")
+
+
 # struct sfu_x (sfu.c): lab[NLT] (130 B each), gen, shown_gen, cur[2], shown[2], lbl[2][4][5], fxset, dial, counters.
 # NLT 16 since rui1049 (8 before): every offset below moves by DL
 NLT = 16
@@ -863,7 +1053,7 @@ def t_fmname(e):
 
 
 TESTS = {"fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
-         "labels": t_labels, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits, "halves": t_halves}
+         "labels": t_labels, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits, "halves": t_halves, "amphalves": t_amphalves, "ampold": t_ampold}
 
 
 def main():

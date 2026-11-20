@@ -29,6 +29,8 @@ next trig copies them into the trig array (2026-10-30, design.md "Kits").
 lock-halves (2026-11-20): an FX 38..41 lock word says which half is locked (hi << 8 | 1, lo << 8 | 3, or
 both); load, save and a playback detour (0x40120968, the trig loop's lock list) keep the halves apart, the
 unlocked half playing the kit's. Needs the elekloader area (--area-elek 0025-sendfx-report): 1.4 kB.
+amp-halves (2026-11-20): the same for sound index 0 (SFX1 / SFX2) of tracks 1..12: type 41 + its fine
+slot per half (loader detour 0x400090d8, the rebuild / incremental save / playback detours extended). 1.6 kB.
 """
 
 [sources]
