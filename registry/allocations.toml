@@ -7551,3 +7551,44 @@ expect_len  = 4
 expect_sha256 = "e7ad781371ea7a327ff1463e377903a8687982eddca6bcc012ff691db0a6ad33"
 from_symbol = "cu_sa_short"
 note        = "machine 43 short name: SMPR"
+
+# P2: the Rytm's sample layer under a Sidecar voice. The audio interrupt's call of the voice mixer (voice_output_mix,
+# `jsr 0x4010ea2c`, its argument pushed just before), after sample_render (0x40121218) has written S for every voice:
+# ext_mix_det zeroes S (0x800067f8 + 128 v) of the voices ext_render marked this block, makes the call itself and
+# jumps back after it. Nothing branches into 0x40121230..0x40121233.
+[[detour]]
+owner  = "0021-ext"
+gate    = "slots"
+addr   = 0x4012122e
+size   = 6
+expect_len = 6
+expect_sha256 = "ed4fec70eb8f3226061fe2cfd3c3bfb4fd2cd64f74833b85bed9dd2de032440f"
+entry  = "ext_mix_det"
+rejoin = "none"
+
+# 0.5.2 sample skip: the stock sample player (sample_render 0x4011c64c) skips its per-voice work for the voices
+# ext_render marked this block (ext_smute). Its voice loop (voice = 88(sp), record a3), two sites [disasm 1.73; 1.74
+# +0x6c, the same bytes]: before the resampler (`movel %a3@(12),%d5; movel %d5,%d2`, the beq at 0x4011cba8 lands on
+# its first byte) a marked voice jumps past it to the DMA bookkeeping (0x4011cc56); before the filter (`lea %a3@(44),%a0;
+# movel %a0,%sp@-`, the beqs/bles at 0x4011ccb8/0x4011ccbc land on its first byte) a marked voice's sample is stopped,
+# its filter state cleared and the loop steps to the next voice (0x4011cef2). The stubs re-emit the displaced pairs and
+# jump back themselves. Nothing branches into 0x4011cbb0..0x4011cbb3 or 0x4011ccdc..0x4011ccdf.
+[[detour]]
+owner  = "0021-ext"
+gate    = "slots"
+addr   = 0x4011cbae
+size   = 6
+expect_len = 6
+expect_sha256 = "4f78e406c4eacfa50fc79bcf93ee1078bc5218814ea4bc6014eb7eaa4a9ba023"
+entry  = "ext_sr_mac"
+rejoin = "none"
+
+[[detour]]
+owner  = "0021-ext"
+gate    = "slots"
+addr   = 0x4011ccda
+size   = 6
+expect_len = 6
+expect_sha256 = "65fafa24356ca41b30135033f21e3e99bafdc6aa48560d28bbf3e2cf4da9080b"
+entry  = "ext_sr_filt"
+rejoin = "none"

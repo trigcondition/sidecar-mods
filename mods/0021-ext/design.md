@@ -113,8 +113,9 @@ FIN VEL GLD VOL - Plaits' internal-envelope amounts to timbre, morph and pitch,
 the OUT -> AUX crossfade, fine tune, velocity sensitivity, glide and output gain.
 They live in the sound's sample words (17..24), so they are stored, p-locked and
 LFO'd as stock's sample parameters are, with the sample words' defaults (64 64
-0 0 0 120 0 100); EXT mutes the voice's sample layer (sample gain 0x80007000 +
-8v) since TMD sits in the sample-select word. RS TEST's records 422..429 are
+0 0 0 120 0 100); EXT mutes the voice's sample layer since TMD sits in the
+sample-select word (with slots=1: S zeroed at the mixer, section "The sample layer under a
+Sidecar voice"; the sample gain 0x80007000 + 8v it zeroes scales buffer B only). RS TEST's records 422..429 are
 rewritten for them (machine field 0x36 and SMPL's ids, as FM4's page 2), and
 three lookups are replaced whole: a page's record (0x4003795a) and title
 (0x4003793c) answer them on SMPL (page ids 4/5) for machine 44, and
@@ -1080,3 +1081,104 @@ The host's Digitakt-style sample player as a machine of its own; DSP SAMPLE (45)
 
 Tests [measured, rytm-emu-mdpage]: `cu_emu.py TAG sa saknobs`, `bk_emu.py TAG salist`, `sa44_emu.py TAG`; all fail
 on bfd (43 not in the list: 23 downs reach PLAITS), pass on saa.
+
+## The sample layer under a Sidecar voice (P2, slots=1 only, emulator only)
+
+A 0.4.4 user heard the Rytm's own samples under PLAITS and SOPHIE: page 2 of every Sidecar machine is the sample words
+17..24, and the stock sample player reads them for every voice. 0021's `SGAIN(v) = 0` (0x80007000 + 8v) was meant to
+mute that layer but scales buffer B only. The audio block, in order [disasm, 1.74 / 1.73]:
+
+1. sample_prepare 0x4011c1e0 / 0x4011c174 (called at 0x40121134 / 0x401210c8);
+2. the engine loop (`jsr %a1@` at 0x40121242 / 0x401211d6): ext_render runs here;
+3. sample_render 0x4011c6b8 / 0x4011c64c (called at 0x40121284 / 0x40121218), the only writer of
+   S = 0x800067f8 + 128 v (32 longs a voice, every voice, every block);
+4. voice_output_mix 0x4010ea98 / 0x4010ea2c (called at 0x4012129a / 0x4012122e), which adds S at a fixed weight.
+
+S is written after ext_render, so ext_render cannot zero it. Instead ext_render marks the voice (`ext_smute`, a bit
+per voice, set where it zeroes SGAIN: same `ext_layer_kept` / UT NOISE exceptions), and a detour at the mixer's call
+(registry: 0x4012122e, 6 B, `jsr 0x4010ea2c`; nothing branches into it) runs `ext_mix_det`: `ext_smute_apply` zeroes S
+of the marked voices and clears the marks, then the stub makes the displaced call (its argument still on the stack)
+and jumps back after it (0x40121234). A voice that leaves a Sidecar machine is not marked in the next block. Only the
+slots=1 image (the release's) has it: the claim is gated `slots`, and the slots=0 image is unchanged.
+
+Sample table [disasm]: 0x41329e70 + 16 slot (131 slots: +0 PCM pointer, +4 rate, +8 length, +12 step 2.30); an empty
+slot points at a silence buffer, so SMP 0 plays silence. A trig starts the voice when its trig word has bit 8.
+
+Test: `us_emu.py <tag> smplayer` fills slots 1..127 with a square wave (pokes into the browser preview's buffer
+0x4b8372c0) and turns SMPL D up: on a stock BD machine S (voice 0) is nonzero 2M after a BD trig (the control); on
+PLAITS it is zero. mv0 (before): PLAITS 0x12d8a492, the same as stock; mv2: 0.
+
+## 0.5.2: the sample player skips Sidecar voices (slots=1 only, emulator only)
+
+The mute above silences S but the stock sample player still does all its work for those voices: sample_render runs
+every voice every block, playing or not (an idle voice resamples a silence buffer), about 1.7 M instructions a second a
+voice (notes: the machine-list lag research). Clearing the voice's bit in the sample-start mask (the call at 0x401210c8
+/ 0x40121134) would save nothing: it only stops new starts; and that mask is built before the engine loop, so the voice's
+machine of this block is not yet known there (ext_smute is set by ext_render, inside the loop). So the player itself
+skips the voices that ext_render marked this block (`ext_smute`, the same exceptions: UT NOISE and `ext_layer_kept`).
+
+sample_render 0x4011c64c (1.73; 1.74 0x4011c6b8, the whole function the same bytes but four absolute addresses, +0x6c)
+[disasm]: a voice loop, v = 88(sp) 0..7, record a3 = 0x80005b30 + 92 v (+40 the voice plays a sample: set at a start,
+cleared at a stop or the sample's end; +44..+91 its filter state, 48 bytes, which a start clears). Each pass, in order:
+
+1. the next voice's start (from the previous block's mask 0x80005868) and its DMA source (0x80005820 / 0x80005824), and
+   this voice's position: needed by the next voice, so it always runs;
+2. 0x4011cbae..0x4011cc54: the resampler, 64 iterations (inner loop 0x4011cc10);
+3. 0x4011cc56..0x4011ccd8: the DMA bookkeeping for the next voice (waits, carry-over copy to 0x80005844): always runs;
+4. 0x4011ccda..0x4011cef0: the filter, 16 iterations (0x4011cd42), and the output stage: S = 0x800067f8 + 128 v and the
+   gain ramp (+16);
+5. 0x4011cef2: the step to the next voice.
+
+Two detours (registry, gate `slots`; both 6 bytes of two whole instructions, the same bytes on 1.74, whose sites are
+0x4011cc1a / 0x4011cd46; the only branches to them land on their first bytes: 0x4011cba8, 0x4011ccb8, 0x4011ccbc):
+
+- 0x4011cbae (`movel %a3@(12),%d5; movel %d5,%d2`) -> `ext_sr_mac`: a marked voice jumps to 0x4011cc56 (3), else the
+  pair is re-emitted and it rejoins at 0x4011cbb4;
+- 0x4011ccda (`lea %a3@(44),%a0; movel %a0,%sp@-`) -> `ext_sr_filt`: a marked voice gets +40 = 0 (its sample stops, as
+  the stock stop does) and +44..+91 zeroed (as a start does), then jumps to 0x4011ceee (1.74 0x4011cf5a), the
+  voice's `movclrl %acc0,%a0; movclrl %acc1,%d6` right before step 5; else the pair is re-emitted and it rejoins at
+  0x4011cce0. (Review F1: the first build jumped to 0x4011cef2, past the two movclrl. The resampler's first macw, the
+  filter's first macl into ACC1 and the mixer called next all start from ACC0 / ACC1 as the previous voice left them,
+  cleared; with all 8 voices skipped the mixer would have met the engine loop's residue. a0 and d6 are dead at the
+  loop head. In the emulator the residue was 0: `smpall` is byte-identical to ss0 with and without the fix.)
+
+Nothing live crosses either skip: d0/d1 are free at both sites (written before they are read on every path), every
+register 3 and 5 read is loaded there, the stack is balanced at both sites (the resampler's push is inside 2), and the
+temporaries 2 and 4 use (0x8000e1d0..0x8000e41f) are written before they are read for each voice. ext_smute does not
+change inside sample_render (ext_render sets it earlier in the same interrupt, ext_mix_det clears it after the mixer).
+
+Marking (review F2): ext_render sets the voice's ext_smute bit only while the voice's owner track runs one of
+ext_render's machines (35..52). A voice shared by two tracks (RS/CP, MT/HT, CH/OH, CY/CB) keeps the engine of the last
+SYN trig, so after a Sidecar track's SYN trig a stock track's sample-only trig (TRIG page SYN off) runs ext_render with
+the stock track as the owner; 0.5.0 played that track's sample, 201d1ed muted it, and the guard plays it again. The
+voice flag cannot tell (PLAITS' flag is 0x00, as a stock machine's). The SGAIN zeroing is left as in 0.5.0. The mirror
+case is pre-existing in 0.5.0 and left alone: a stock-latched engine and a sample-only trig from the Sidecar track
+plays the Rytm sample from the Sidecar machine's page-2 words.
+
+A skipped voice's S is not written, so the mixer detour (`ext_smute_apply`, above) is no longer belt and braces: it is
+what silences that S (stale data from the voice's last unskipped block otherwise). Starts are not masked: a start on a
+marked voice is stopped in the same block (+40 cleared), and a voice that leaves a Sidecar machine is not marked in
+its first stock block, so a stock trig there starts as on stock. Returning to stock, the voice is idle with a clear
+filter: nothing resumes until its next trig (before: a sample that was still running muted played on).
+
+As with the mute, the skip follows ext_render: a voice runs its new machine's engine from its first trig on that
+machine (the engine pointer 0x419ca110 + 4 v is latched at a SYN trig), so a Sidecar track's voice is skipped from its
+first trig on.
+
+Cost: the stubs cost about 10 instructions a voice a block; a skipped voice saves the resampler and filter (in the
+emulator about 1.7 M instructions a second a voice).
+
+Tests [measured, rytm-emu-qperf, OS 1.74]: `us_emu.py <tag> smpcpu` counts the resampler's and filter's iterations a
+block: 8 voices on stock, 7 with BD on PLAITS, 6 with BD and SD on PLAITS, 8 with BD on a user slot that keeps the
+layer (before: 8 in every case); `smplong` and `smpswitch` check that the player is stopped (+40 clear) under PLAITS
+and after a switch to it; `smpref` (US_REF=<an earlier tag>) that the mixer's 8 voice columns and a stock voice's S
+are byte-identical to a build without the skip; `smplayer smpvoices smpnoise smpseq` unchanged. Fix round:
+`smpshared` (CY on PLAITS trigged, CB stock with SYN off trigs sample-only on the shared voice 6: CB's S not zero and
+the player runs 8 voices; fails on ss1) and `smpall` (8 tracks, one a voice, on PLAITS through their lists: the player
+runs 0 voices and the mixer's voice columns are byte-identical to US_REF's; it passes on ss1 too by design: the
+emulator's engine loop leaves ACC0 / ACC1 at 0, so it checks F1's outcome, not a failure before it). Words 8..15 of
+the mixer ring's 64-byte frames are written by the CPU too (a write watch: the mixer stores word 9 at pc 0x4010eb44
+and words 14/15 at 0x4010edc6, 1.74). In smpall no word differs from ss0. In smpref words 8..15 differ by +-1 in 9
+words between ss0 and ss1/ss2: probably timing (the build changes how many instructions the interrupt runs), not
+proven. smpref compares words 0..7 (the 8 voice columns) only; smpall checks words 0..7 and reports a difference in any word (none). (An earlier
+note here said no CPU touches words 8..15: that `--watch-read` probe could not see SRAM reads, so it proved nothing.)
