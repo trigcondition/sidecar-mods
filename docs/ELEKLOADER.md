@@ -4,8 +4,8 @@ The Sidecar's mods for the Analog Rytm MKII come as an [elekloader](https://gith
 build your own firmware file from it in the web page at <https://irpina.github.io/elekloader/>, on your own computer,
 from the stock OS file you download from Elektron. Then you flash that file like any OS update.
 
-The Rytm firmware 0.5.0 is built for **OS 1.74 only** (the OS Elektron offers now): there is no 0.5.0 build for OS
-1.73. A Rytm on OS 1.73 needs Elektron's stock OS 1.74 first (below, "From 1.73 to 1.74"). elekloader refuses a
+The Rytm firmware 0.5.1.1 is built for **OS 1.74 only** (the OS Elektron offers now): there is no 0.5.1.1 build for
+OS 1.73. A Rytm on OS 1.73 needs Elektron's stock OS 1.74 first (below, "From 1.73 to 1.74"). elekloader refuses a
 module made for another OS. The 0.4.4 release still has builds for both OSes. Read the whole page once before you
 start, the recovery section included.
 
@@ -15,7 +15,7 @@ start, the recovery section included.
 |---|---|---|
 | `Analog-Rytm_MKII_OS1.74.syx` | the stock OS 1.74, in Elektron's `Analog-Rytm_MKII_OS1.74_dist.zip` | `cb0f99d620edde994fb860c0e79cc2464e427d06882828cfdfb00fc53700e123` |
 | `core-0.1-os1.74.elemod` | elekloader's core-ar2 0.1 for OS 1.74: the boot copier and hook bus every elekloader mod builds on | `89c00065e8f83ce839978c45a32200e09879682b8b95cbff0bdb71ca09dc3c8a` |
-| `rytm-sidecar-0.5.0-os1.74.elemod` | the Sidecar mods, all in one module, for OS 1.74 | `328cecb336e270348ef4936c386a7a3bad19075f3486561385e8c7a7a164012e` |
+| `rytm-sidecar-0.5.1.1-os1.74.elemod` | the Sidecar mods, all in one module, for OS 1.74 | `5edea14a5d5fd0af5b944d1f257e9b62468a23dc1f64a9d5d96756ab9926edf0` |
 
 The two `.elemod` files are published together, with `SHA256SUMS`, `LICENSE`, `NOTICE`, `TOOLCHAIN.txt` and the
 source of elekloader's parts (`elekloader-13fa795-core-ar2-src.tar.gz`, `elekloader-c150ac5-src.tar.gz`). Check both
@@ -45,8 +45,8 @@ and they call each other at fixed addresses.
 
 1. Open <https://irpina.github.io/elekloader/>.
 2. Choose your stock firmware: `Analog-Rytm_MKII_OS1.74.syx`. The page knows it by its hash.
-3. Add your own mods: `core-0.1-os1.74.elemod` and `rytm-sidecar-0.5.0-os1.74.elemod`. Use our core file, not one
-   the page lists: the page's Rytm cores are newer ones (0.3 and up), which keep mod storage where the Sidecar keeps
+3. Add your own mods: `core-0.1-os1.74.elemod` and `rytm-sidecar-0.5.1.1-os1.74.elemod`. Use our core file, not
+   one the page lists: the page's Rytm cores are newer ones (0.3 and up), which keep mod storage where the Sidecar keeps
    its settings, and are refused (below).
 4. Tick `rytm-sidecar`. Ticking it ticks the core it requires. The check should say there are no conflicts.
 5. **Set the version to your OS: `1.74`.** The page's default for the Rytm is `2.0a`. **Never flash a
@@ -54,7 +54,7 @@ and they call each other at fixed addresses.
    2.0a, and going back to stock from there is untested: the OS carries "Downgrade not possible" and the bootstrap a
    VERSION CHECK (`docs/FLASHING.md`, "Downgrades"), so either route, USB or the STARTUP menu, may refuse it.
 6. Build, and download the `.syx`. Its sha256, as built from this branch, with version 1.74:
-   `17bcca0119c97676567018f1f42c5f1206948bf632f0444410dd69caa6649514`.
+   `108c4749d498510c389a2e33ef6fe9ead1acb030a866e329f3c47b5a972e1f2c`.
 
    If yours differs, do not flash it: see the next section.
 
@@ -69,7 +69,7 @@ build with the command line at the pinned commit instead:
     git clone https://github.com/irpina/elekloader && cd elekloader
     git checkout c150ac583a4b7e6d64680d5592f4a40f409193f7
     python3 -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx --mod core-0.1-os1.74.elemod \
-        --mod rytm-sidecar-0.5.0-os1.74.elemod --out sidecar.syx --version 1.74
+        --mod rytm-sidecar-0.5.1.1-os1.74.elemod --out sidecar.syx --version 1.74
 
 and check that `sidecar.syx` has the sha256 above.
 
@@ -120,7 +120,7 @@ your own copy of the 1.73 file if you want to go back to it.
   the same bytes the Sidecar mods already keep their own settings in (0013/0021: the sound's spare bytes; 0025: kit
   FX words 38..41). Both would overwrite each other's settings, silently. The module says so in a way elekloader
   enforces: it claims the first two bytes of each of core 0.2's storage hooks (without changing them), so elekloader
-  refuses the build with *"rytm-sidecar 0.5.0 site ... and core 0.2 site ... overlap"*. The format has no way to say
+  refuses the build with *"rytm-sidecar 0.5.1.1 site ... and core 0.2 site ... overlap"*. The format has no way to say
   "core 0.1 only" directly (`resources.core` is a minimum). If you see that message, you ticked a newer core: untick
   it and tick `core-0.1.elemod`. The guard has limits: it catches core 0.2's own storage hooks, at those addresses,
   under today's elekloader, whose overlap check counts any shared byte (on 1.74 the cores 0.2 to 0.6 hook the same
@@ -140,7 +140,7 @@ stock 1.73 and stock 1.74 works.
 
 ## Source and licence
 
-The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this release is the tag `v0.5.0` of
+The mods are GPL-2.0-or-later (`LICENSE`, `NOTICE`). The source of this release is the tag `v0.5.1.1` of
 <https://github.com/trigcondition/sidecar-mods>: `make setup` then
 `make release OS=1.74` builds the 1.74 `.elemod` files from it (the tree also still builds 1.73 with `make release`), byte for byte with the toolchain in `TOOLCHAIN.txt` (GNU
 binutils 2.47 `m68k-elf-as`, Python 3.14; another assembler version may give other bytes). `NOTICE` names the exact
