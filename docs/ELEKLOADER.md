@@ -132,11 +132,13 @@ your own copy of the 1.73 file if you want to go back to it.
 
 ## Status
 
-0.5.0 (the hashes above, OS 1.74) has passed the emulator suites (4011 checks; the two known failures are stock's own
-UP+RECORD / UP+PLAY CLASH) and flash rehearsals 9/9 from stock 1.74, back to stock 1.74 and from the previous test
-build. The same firmware (its `.syx` has the sha256 above, byte for byte) has run on a real Rytm since 2026-11-13.
-The 1.74 builds have run on real units since 2026-11-04 (0.4.0, then 0.4.4), and flashing back and forth between
-stock 1.73 and stock 1.74 works.
+0.5.1.1 (the hashes above, OS 1.74) is 0.5.0 plus two fixes: the stock sample player skips the voices under a Sidecar
+machine, and the SMPL key never shows the waveform sub-page of a Sidecar machine. It has passed the emulator suites
+(4329 checks; the two known failures are stock's own UP+RECORD / UP+PLAY CLASH), the sample player checks on the
+release image and flash rehearsals 9/9 from stock 1.74, back to stock 1.74, from 0.5.0 and from the previous test
+builds. 0.5.0 (`rytm-sidecar-0.5.0-os1.74.elemod`, sha256
+`328cecb336e270348ef4936c386a7a3bad19075f3486561385e8c7a7a164012e`) has run on real Rytms since 2026-11-13, the 1.74
+builds since 2026-11-04 (0.4.0, then 0.4.4), and flashing back and forth between stock 1.73 and stock 1.74 works.
 
 ## Source and licence
 
