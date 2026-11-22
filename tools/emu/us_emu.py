@@ -1462,6 +1462,431 @@ def t_kitguard(e):
           and word0(e, s2) == (FP_A, FP_A), f"{got} {word0(e, s2)}")
 
 
+# ---------------------------------------------------------------------------- the sample layer under a Sidecar machine
+# The stock sample player (1.74 0x4011c6b8, after the engine loop) writes S = 0x800067f8 + 128 v for every voice from the
+# owner track's sample words 17..24; the mixer (0x4010ea98) adds S at a fixed weight. 0021's SGAIN = 0 never reached it
+# (notes: the 0.4.4 report "page-2 knobs play the Rytm's samples"). A filled slot without a project sample: slot 1's
+# entry (0x41329e80: PCM pointer, rate, length, step 2.30) aimed at a square wave in the browser preview's buffer.
+SMP_TAB, SMP_PCM, S_BUF, LIVE0 = 0x41329e70, 0x4b8372c0, 0x800067f8, 0x8000f7a8
+SMP_N = 512
+
+
+def smp_pokes():
+    """--poke args: slots 1..127 = a square wave (the slot word comes from the knob: SMPL_KNOBS)."""
+    pk = []
+    pcm = b"".join((0x4000 if (i // 32) % 2 else 0xC000).to_bytes(2, "big") for i in range(SMP_N))
+    for i in range(0, len(pcm), 4):
+        pk += ["--poke", f"{SMP_PCM + i:x}={pcm[i:i + 4].hex()}"]
+    ent = SMP_PCM.to_bytes(4, "big") + (0xBB800000).to_bytes(4, "big") + SMP_N.to_bytes(4, "big") + (0x40000000).to_bytes(4, "big")
+    for slot in range(1, 128):   # whichever slot the knob reaches
+        for i in range(0, 16, 4):
+            pk += ["--poke", f"{SMP_TAB + 16 * slot + i:x}={ent[i:i + 4].hex()}"]
+    return pk
+
+
+# the SMPL page's D (stock SMP, PLAITS' AUX: word 19) a few steps up: a filled slot (every fourth tick moves a step, R4)
+SMPL_KNOBS = [(10, "press", "SMPL"), (30, "turn", ("3:+8", 12, 6))]
+# the same with LOP (G) on first: a looped sample (measured, mv4: LOP turned after SMP set SMP back to 0; LOP first, then
+# SMP, and the stock machine's loop still plays 2 s after the trig)
+SMPL_LOOP = [(10, "press", "SMPL"), (30, "turn", ("6:+8", 4, 8)), (100, "turn", ("3:+8", 12, 6))]
+# DAISYSP's SMPL page has its own layout: SMP (word 19) is knob B (measured, mv4)
+SMPL_DSP = [(10, "press", "SMPL"), (30, "turn", ("1:+8", 12, 6))]
+
+
+def s_level(e, snap, v=0):
+    b = e.peek(snap, S_BUF + 128 * v, 128)
+    return max(abs(int.from_bytes(b[i:i + 4], "big", signed=True)) for i in range(0, 128, 4))
+
+
+MIX_RING = 0x80000000   # the mixer's output: 4 slots (index *0x42f92124 & 3) of 2 KB, 32 frames of 64 bytes, voice v at +4v
+
+
+def mix_v0(e, snap):
+    """Voice 0's column of the mixer's output ring, every slot (what the mixer wrote for the last four blocks)."""
+    b = e.peek(snap, MIX_RING, 4 * 2048)
+    return b"".join(b[o:o + 4] for o in range(0, len(b), 64))
+
+
+def t_smplayer(e):
+    """P2 (0021): with the slots filled and BD's SMP on one, a BD trig plays the sample on a stock machine (control: the
+    recipe plays) but not on PLAITS: S (voice 0) is zero when the mixer reads it. Before the fix the Sidecar voice
+    played it at full weight. S is read at the end of the run; the fix zeroes it before the mixer, so it stays zero."""
+    ev, t = walk_list(100, UI["downs"]["plaits"])
+    s1 = e.run("smp-plaits", t, ev, save=True)
+    check("smplayer: BD on PLAITS (44)", e.peek(s1, 0x8000ea00, 1)[0] == 44, e.peek(s1, 0x8000ea00, 1).hex())
+    # a user slot with the sample page (flag 0, the layer kept, as an old DIGIDRUM sound): its layer plays
+    sk, tk = select_u1_with(e, "smp-kept0", [P.meta_messages(1, 3, P.ST_READY, 0, "SINE TEST", "SINE", "", [])],
+                            length_after=100)
+    check("smplayer: BD on U1 (35), U1's layer kept (sample page)",
+          (e.peek(sk, 0x8000ea00, 1)[0], e.peek(sk, sym("us") + sym("us_off_layer"), 1)[0]) == (35, 1),
+          e.peek(sk, 0x8000ea00, 1).hex())
+    lv, mx = {}, {}
+    for nm, snap, st in (("stock", None, None), ("plaits", s1, e.clock + t), ("kept", sk, e.clock + tk + 100)):
+        # 2M after the trig: the voice plays (+40 set) [measured, mv0: it stops within ~4M, the sample has no loop]
+        for filled in (True, False):   # the same events without the slots filled: the mixer's output must differ only by S
+            s = e.run(f"smp-{nm}{'' if filled else '-empty'}", 242, SMPL_KNOBS + [(240, "press", "BD")], save=True,
+                      snap=snap, start=st, extra=smp_pokes() if filled else [])
+            mx[nm, filled] = mix_v0(e, s)
+            if filled:
+                lv[nm] = s_level(e, s)
+                print(f"    {nm}: S peak {lv[nm]:#x}, BD machine {e.peek(s, 0x8000ea00, 1)[0]}, live words 17..24 "
+                      f"{e.peek(s, LIVE0 + 34, 16).hex()}, voice 0 {e.peek(s, 0x80005b30, 8).hex()}")
+        nd = sum(mx[nm, True][i:i + 4] != mx[nm, False][i:i + 4] for i in range(0, len(mx[nm, True]), 4))
+        print(f"    {nm}: mixer output voice 0, frames that differ filled / empty: {nd} of {len(mx[nm, True]) // 4}")
+        mx[nm] = nd
+    check("smplayer: (control) BD on its stock machine plays the slot (S voice 0 not zero)", lv["stock"] > 0x1000, hex(lv["stock"]))
+    check("smplayer: (control) stock: the mixer's output for voice 0 changes with the slot filled", mx["stock"] > 0, str(mx["stock"]))
+    check("smplayer: BD on PLAITS: the slot silent (S voice 0 zero)", lv["plaits"] == 0, hex(lv["plaits"]))
+    check("smplayer: BD on PLAITS: the mixer's output for voice 0 is the same with the slot filled or empty", mx["plaits"] == 0,
+          str(mx["plaits"]))
+    check("smplayer: BD on U1 with the sample page (layer kept): the slot plays (S voice 0 not zero)", lv["kept"] > 0x1000,
+          hex(lv["kept"]))
+    check("smplayer: kept: the mixer's output for voice 0 changes with the slot filled", mx["kept"] > 0, str(mx["kept"]))
+
+
+# ---- the flash review's gaps for the sample-layer mute (notes: mods test gaps 1): more voices, UT NOISE, a machine
+# switch, a pattern's trig, a looped sample
+def ck(what, ok, detail=""):
+    check(what, bool(ok), detail if isinstance(detail, str) else str(detail))
+
+
+def mix_v(e, snap, v):
+    """Voice v's column of the mixer's output ring, every slot (voice v at +4v of each 64-byte frame)."""
+    b = e.peek(snap, MIX_RING, 4 * 2048)
+    return b"".join(b[o + 4 * v:o + 4 * v + 4] for o in range(0, len(b), 64))
+
+
+def ndiff(x, y):
+    return sum(x[i:i + 4] != y[i:i + 4] for i in range(0, min(len(x), len(y)), 4))
+
+
+def smpl_two(first, second):
+    """first (the track the snapshot has selected) re-pressed, its SMPL D up, then second's pad (selects it) and its SMPL
+    D up. (A pad pressed right before SMPL makes a combo: 95M between them. Measured: a different pad as the first press
+    after the machine walk does not take the SMPL turn.)"""
+    return [(5, "press", first), (100, "press", "SMPL"), (120, "turn", ("3:+8", 12, 6)), (220, "press", second),
+            (240, "turn", ("3:+8", 12, 6))]
+
+
+VOICES = {}
+
+
+def voice_of(e, key):
+    """The voice whose S a track plays (measured: its pad trigged with its SMPL D up and the slots filled, the S that is
+    not zero; BD 0)"""
+    if key not in VOICES:
+        s = e.run(f"smpv-voice-{key}", 342, [(5, "press", key), (100, "press", "SMPL"), (120, "turn", ("3:+8", 12, 6)),
+                                              (340, "press", key)], save=True, extra=smp_pokes())
+        lv = [s_level(e, s, v) for v in range(8)]
+        VOICES[key] = lv.index(max(lv)) if max(lv) > 0x1000 else None
+        print(f"    {key} plays S of voice {VOICES[key]} ({[hex(x) for x in lv]})")
+    return VOICES[key]
+
+
+def smp_pair(e, name, snap, start, events, trig_keys, at, voices, end=None):
+    """events then trig_keys pressed at `at`, read at `end` (2M after the trig), filled and empty: {v: (S level, mixer
+    frames that differ filled / empty)}"""
+    res, mx = {}, {}
+    for filled in (True, False):
+        s = e.run(f"{name}{'' if filled else '-empty'}", end or at + 2, events + [(at, "press", k) for k in trig_keys],
+                  save=True, snap=snap, start=start, extra=smp_pokes() if filled else [])
+        for v in voices:
+            mx[v, filled] = mix_v(e, s, v)
+            if filled:
+                res[v] = s_level(e, s, v)
+    return {v: (res[v], ndiff(mx[v, True], mx[v, False])) for v in voices}
+
+
+def t_smpvoices(e):
+    """Two voices trigged in the same block, both with a filled slot: the Sidecar voice's S zero and its mixer column the
+    same filled or empty; the stock voice's S not zero and its column different. BD on PLAITS + SD stock, BD stock + SD
+    on PLAITS, BD stock + CY on PLAITS (CY/CB, the last voice); each voice measured first (voice_of)."""
+    cases = []
+    ev, t = walk_list(100, UI["downs"]["plaits"])
+    cases.append(("bdp", e.run("smpv-bd", t, ev, save=True), t, "BD", "SD"))
+    ev, t = walk_list(100, UI["downs_sd_plaits"])
+    cases.append(("sdp", e.run("smpv-sd", t, [(50, "press", "SD")] + ev, save=True), t, "SD", "BD"))
+    ev, t = walk_list(100, UI["downs_cy_plaits"])
+    cases.append(("cyp", e.run("smpv-cy", t, [(50, "press", "CY")] + ev, save=True), t, "CY", "BD"))
+    for nm, snap, t, pk, sk in cases:
+        pv, sv = voice_of(e, pk), voice_of(e, sk)
+        trk = {"BD": 0, "SD": 1, "CY": 10}[pk]
+        mach = e.peek(snap, 0x8000ea00 + trk, 1)[0]
+        r = smp_pair(e, f"smpv-{nm}", snap, e.clock + t, smpl_two(pk, sk), [pk, sk], 400, (pv, sv))
+        print(f"    {nm}: PLAITS {pk} (voice {pv}, machine {mach}): S {r[pv][0]:#x}, mixer differs {r[pv][1]}; stock {sk} "
+              f"(voice {sv}): S {r[sv][0]:#x}, mixer differs {r[sv][1]}")
+        ck(f"smpvoices {nm}: the Sidecar voice ({pk} on PLAITS) silent: S zero, mixer column as with the slot empty",
+           mach == 44 and r[pv] == (0, 0), (mach, r[pv]))
+        ck(f"smpvoices {nm}: the stock voice ({sk}) plays: S not zero, its mixer column changes with the slot",
+           r[sv][0] > 0x1000 and r[sv][1] > 0, r[sv])
+
+
+def t_smpnoise(e):
+    """DAISYSP with INP NOISE (UT NOISE plays through the sample layer: 0021 keeps it): with a filled slot, BD's S not
+    zero and the mixer column changes filled / empty."""
+    ev, t = walk_list(100, UI["downs"]["daisysp"])
+    s1 = e.run("smpn-dsp", t + 200, ev + [(t, "press", "SRC"), (t + 20, "turn", ("4:+8", 5, 6))], save=True)
+    inp = e.peek(s1, LIVE0 + 2 * 13, 2)[0]
+    print(f"    BD machine {e.peek(s1, 0x8000ea00, 1)[0]}, INP word {inp} -> input {(inp * 11) >> 7} (2 NOISE)")
+    ck("smpnoise: BD on DAISYSP, INP NOISE", (inp * 11) >> 7 == 2, inp)
+    r = smp_pair(e, "smpn", s1, e.clock + t + 200, SMPL_DSP, ["BD"], 240, (0,))
+    print(f"    S {r[0][0]:#x}, mixer differs {r[0][1]}")
+    ck("smpnoise: UT NOISE keeps the layer: S not zero, the mixer column changes with the slot", r[0][0] > 0x1000 and
+          r[0][1] > 0, r[0])
+
+
+def machine_switch(e, name, snap, start, walk, at_end=0.3):
+    """walk (events) changes BD's machine; a first run finds the clock where the machine byte last changes (peeks every
+    0.1M; the list previews the machines it passes), a second run ends at_end M after it with BD trigged 2M before: (S
+    level at its end, machine, switch M)"""
+    m0 = e.peek(snap, 0x8000ea00, 1)[0]
+    end = walk[-1][0] + 300
+    s = e.run(f"{name}-find", end, walk, save=True, snap=snap, start=start, extra=smp_pokes() + ["--every", "0.1M"],
+              env=dict(DTBOOT_PEEK="8000ea00"))
+    sw, last = None, m0
+    for line in e.log.splitlines():
+        m = re.match(r"^\s*([\d.]+)M pc=", line)
+        if m:
+            clk = float(m.group(1))
+        x = re.search(r"\[8000ea00\]=([0-9a-f]{2})", line)
+        if x and line.lstrip().startswith("peek") and int(x.group(1), 16) != last:
+            last, sw = int(x.group(1), 16), clk   # the list previews each machine it passes: the last change counts
+    if sw is None:
+        return None, e.peek(s, 0x8000ea00, 1)[0], None
+    t = sw - start
+    s = e.run(f"{name}-at", round(t + at_end, 3), walk + [(round(t - 2, 3), "press", "BD")], save=True, snap=snap,
+              start=start, extra=smp_pokes())
+    return s_level(e, s), e.peek(s, 0x8000ea00, 1)[0], t
+
+
+def t_smpswitch(e):
+    """A ringing sample, BD's machine switched (the machine list): stock -> PLAITS, S zero in the block after the
+    switch (BD trigged 2M before it, read 0.3M = 2 blocks after); PLAITS -> stock, then SMP up again and a trig: the slot
+    plays (S not zero 2M after it: the mark cleared). (Measured, mv4: PLAITS' defaults set the sample words, SMP 0, so
+    the second half sets SMP again and needs its own trig.)"""
+    s0 = e.run("smps-pre", 240, SMPL_LOOP, save=True)
+    st = e.clock + 240
+    walk, t = walk_list(120, UI["downs"]["plaits"])
+    walk = [(20, "press", "SRC")] + walk   # from the SMPL page the first SRC opens the SRC page (measured)
+    lv, mach, t1 = machine_switch(e, "smps-up", s0, st, walk)
+    print(f"    stock -> PLAITS: the machine byte {mach} at +{t1}M; S 2 blocks after: {lv if lv is None else hex(lv)}")
+    ck("smpswitch: stock -> PLAITS: S zero in the blocks right after the switch", mach == 44 and lv == 0, (mach, lv))
+    a1 = e.peek(os.path.join(e.tmp, "smps-up-at.snap"), SMP_ACTIVE, 1)[0]
+    ck("smpswitch: stock -> PLAITS: the ringing sample is stopped (voice 0's +40 flag clear 2 blocks after the switch)",
+       a1 == 0, a1)
+    s1 = e.run("smps-mid", t + 100, walk, save=True, snap=s0, start=st)
+    back = [(20 + UI["step_M"] * i, "press", k) for i, k in enumerate(UI["list_open"] + ["UP"] * UI["downs"]["plaits"] +
+                                                                       [UI["list_confirm"]])]
+    end = back[-1][0]   # PLAITS' defaults took the sample words (SMP 0, measured): SMP up again, then a trig
+    s2 = e.run("smps-back", end + 302, back + [(end + 100, "press", "SMPL"), (end + 120, "turn", ("3:+8", 12, 6)),
+                                               (end + 300, "press", "BD")], save=True, snap=s1, start=st + t + 100,
+               extra=smp_pokes())
+    mach2, lv2 = e.peek(s2, 0x8000ea00, 1)[0], s_level(e, s2)
+    print(f"    PLAITS -> stock: machine {mach2}, SMP word {e.peek(s2, LIVE0 + 38, 2).hex()}; S 2M after a trig: {lv2:#x}")
+    ck("smpswitch: PLAITS -> stock: the slot plays again (S not zero 2M after a trig)", mach2 != 44 and lv2 > 0x1000,
+       (mach2, lv2))
+
+
+def t_smpseq(e):
+    """As smplayer, but BD's trig comes from the pattern (GRID REC: step 1 placed, PLAY): on PLAITS S zero and the mixer
+    column as with the slot empty; on its stock machine S not zero (the control). (A step whose sample trig is off is
+    not covered: the TRIG page's lock needs a held trig and a turn the suites do not drive yet.)"""
+    ev, t = walk_list(100, UI["downs"]["plaits"])
+    s1 = e.run("smpq-plaits", t, ev, save=True)
+    pat = SMPL_KNOBS + [(150, "press", "RECORD"), (170, "press", "T1"), (190, "press", "RECORD")]
+    for nm, snap, st, pv in (("stock", None, None, False), ("plaits", s1, e.clock + t, True)):
+        r = smp_pair(e, f"smpq-{nm}", snap, st, pat, ["PLAY"], 240, (0,))
+        print(f"    {nm}: S {r[0][0]:#x}, mixer differs {r[0][1]}")
+        if pv:
+            ck("smpseq: PLAITS: the pattern's trig plays no sample (S zero, mixer as with the slot empty)", r[0] == (0, 0), r[0])
+        else:
+            ck("smpseq: (control) stock: the pattern's trig plays the slot (S not zero)", r[0][0] > 0x1000, r[0])
+
+
+# the stock sample player (sample_render 0x4011c64c), per audio block [disasm, 1.73; 1.74 +0x6c]: its voice loop's head
+# (once per voice), the resampler's inner loop (64 a voice) and the filter's (16 a voice); the mixer (once a block)
+SR_VOICE, SR_MAC, SR_FILT, SR_MIX = 0x4011c70e, 0x4011cc10, 0x4011cd42, 0x4010ea2c
+SMP_ACTIVE = 0x80005b58   # voice 0's player record (0x80005b30 + 92 v) +40: the voice plays a sample
+
+
+def player_rate(e, name, snap, start, events=(), length=40, extra=()):
+    """Runs length M from snap with the player's loops counted: (blocks, voices, resampler and filter iterations a
+    block)"""
+    e.run(name, length, events, count=(SR_VOICE, SR_MAC, SR_FILT, SR_MIX), save=True, snap=snap, start=start,
+          extra=list(extra))
+    c = e.counts
+    nb = c.get(SR_MIX, 0) or 1
+    return nb, c.get(SR_VOICE, 0) / nb, c.get(SR_MAC, 0) / nb, c.get(SR_FILT, 0) / nb
+
+
+def t_smpcpu(e):
+    """The sample-skip fix (0.5.2): the stock sample player does no per-voice work for a voice whose track runs a Sidecar
+    machine that does not keep the layer. Counted per audio block over 40M with the slots filled, SMPL D up and the voice
+    trigged (a sample would play): its voice loop still visits 8 voices, but the resampler (64 iterations a voice) and
+    the filter (16) run for 8 voices on stock, 7 with BD on PLAITS, 6 with BD and SD on PLAITS, 8 again with BD on U1
+    keeping the layer (sample page). Before the fix all four run 8."""
+    ev, t = walk_list(100, UI["downs"]["plaits"])
+    sp = e.run("smpc-bd", t, ev, save=True)
+    ev2, t2 = walk_list(100, UI["downs_sd_plaits"])
+    spp = e.run("smpc-sd", t2, [(50, "press", "SD")] + ev2, save=True, snap=sp, start=e.clock + t)
+    sk, tk = select_u1_with(e, "smpc-kept0", [P.meta_messages(1, 3, P.ST_READY, 0, "SINE TEST", "SINE", "", [])],
+                            length_after=100)
+    cases = (("stock", None, e.clock, 8), ("bd", sp, e.clock + t, 7), ("bdsd", spp, e.clock + t + t2, 6),
+             ("kept", sk, e.clock + tk + 100, 8))
+    for nm, snap, st, want in cases:
+        # both pads at once (as smpvoices): a voice runs its new machine's engine from its first trig on it
+        trig = SMPL_KNOBS + [(240, "press", k) for k in (("BD", "SD") if nm == "bdsd" else ("BD",))]
+        e.run(f"smpc-{nm}-pre", 242, trig, save=True, snap=snap, start=st, extra=smp_pokes())
+        pre = os.path.join(e.tmp, f"smpc-{nm}-pre.snap")
+        nb, vo, mac, flt = player_rate(e, f"smpc-{nm}", pre, (st or e.clock) + 242)
+        mach = [e.peek(pre, 0x8000ea00 + k, 1)[0] for k in (0, 1)]
+        print(f"    {nm}: BD/SD machines {mach}, {nb} blocks: voices {vo:.2f}, resampler {mac:.2f} ({mac / 64:.2f} voices), "
+              f"filter {flt:.2f} ({flt / 16:.2f} voices) a block")
+        ck(f"smpcpu {nm}: the player's voice loop visits 8 voices a block", abs(vo - 8) < 0.05, vo)
+        ck(f"smpcpu {nm}: the resampler runs for {want} voices a block", abs(mac - 64 * want) < 2, mac)
+        ck(f"smpcpu {nm}: the filter runs for {want} voices a block", abs(flt - 16 * want) < 1, flt)
+
+
+def t_smpref(e):
+    """Stock audio unchanged by the sample skip: BD on PLAITS and SD on its stock machine, the slots filled, SMPL D up on
+    both, both trigged; the mixer's output ring (4 blocks) and SD's S read 2, 50 and 100M after the trig are written to
+    build/emu/<tag>/smpref.bin; with US_REF=<tag> the 8 voice columns (words 0..7 of each 64-byte frame) and SD's S must
+    be byte-identical to that build's (a build before the fix: the skipped voice's S is zeroed at the mixer either way,
+    every other voice must not change). Words 8..15 are written by the CPU too (a write watch: word 9 at pc 0x4010eb44,
+    words 14/15 at 0x4010edc6, 1.74); between ss0 and ss1/ss2 they differ by +-1 in 9 words here (in smpall in none):
+    probably timing (the build changes the interrupt's instruction count), not proven, so they are not compared."""
+    ev, t = walk_list(100, UI["downs"]["plaits"])
+    s1 = e.run("smpr-bd", t, ev, save=True)
+    st = e.clock + t
+    ev2 = smpl_two("BD", "SD") + [(400, "press", "BD"), (400, "press", "SD")]
+    out = b""
+    for dt in (2, 50, 100):
+        s = e.run(f"smpr-{dt}", 400 + dt, ev2, save=True, snap=s1, start=st, extra=smp_pokes())
+        if dt == 2:
+            ck("smpref: (control) SD (stock) plays the slot, BD (PLAITS) does not", s_level(e, s, 2) > 0x1000 and
+               s_level(e, s, 0) == 0, (hex(s_level(e, s, 2)), hex(s_level(e, s, 0))))
+        out += e.peek(s, MIX_RING, 4 * 2048) + e.peek(s, S_BUF + 128 * 2, 128)
+    open(os.path.join(e.out, "smpref.bin"), "wb").write(out)
+    ref = os.environ.get("US_REF")
+    if ref:
+        r = open(os.path.join(ROOT, "build", "emu", ref, "smpref.bin"), "rb").read()
+        bad = {}
+        for k in range(0, min(len(r), len(out)), 4):
+            o = k % (4 * 2048 + 128)
+            if r[k:k + 4] != out[k:k + 4] and (o >= 4 * 2048 or (o % 64) < 32):
+                w = "S(SD)" if o >= 4 * 2048 else f"voice {(o % 64) // 4}"
+                bad[w] = bad.get(w, 0) + 1
+        print(f"    against {ref}: {len(out)} bytes, words that differ: {bad or 'none'}")
+        ck(f"smpref: the mixer's 8 voice columns and SD's S byte-identical to {ref}'s", len(r) == len(out) and not bad, bad)
+
+
+def to_plaits(e, name, key, snap, start):
+    """key's track (selected by its pad) to PLAITS through its machine list: a first run walks 45 DOWNs, peeking the
+    machine byte after each step (the list previews what it passes), the second walks to the first 44 and confirms.
+    Returns (snapshot, its clock)."""
+    t = ["BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"].index(key)
+    a = 0x8000ea00 + (t & ~3)
+    ev, _ = walk_list(100, 45, confirm=False)
+    e.run(f"{name}-find", 100 + 100 * 47, [(50, "press", key)] + ev, snap=snap, start=start,
+          extra=["--every", "100M"], env=dict(DTBOOT_PEEK=f"{a:08x}"))
+    seq = [int(m.group(1)[2 * (t & 3):2 * (t & 3) + 2], 16) for m in re.finditer(rf"\[{a:08x}\]=([0-9a-f]{{8}})", e.log)]
+    # status lines every 100M: index 2 is after the list opened (SRC SRC at 100, 200), index 2 + k after k DOWNs
+    downs = next(k for k in range(1, 46) if seq[2 + k] == 44)
+    ev, tt = walk_list(100, downs)
+    s = e.run(f"{name}-walk", tt, [(50, "press", key)] + ev, save=True, snap=snap, start=start)
+    return s, start + tt, downs
+
+
+def t_smpall(e):
+    """All 8 voices on PLAITS (8 tracks, one a voice, each through its machine list), every voice trigged: the player
+    skips every voice, and the mixer's output (8 voice columns, 4 blocks, read 2, 20 and 60M after the trigs) is
+    byte-identical to a build without the skip (US_REF=<tag>; written to build/emu/<tag>/smpall.bin). The stock loop
+    leaves ACC0 / ACC1 cleared after each voice and the mixer, called next, starts from them: a skip of all 8 must
+    leave them so too. It passes on ss1 (before review F1) too, by design: in the emulator the engine loop leaves ACC0 /
+    ACC1 at 0, so this checks the outcome the fix guarantees, it cannot show the residue (the accumulators are not
+    visible to a test). Words 8..15 are reported, none differed from ss0; only words 0..7 are checked."""
+    pads = ["BD", "SD", "RS", "BT", "LT", "MT", "CH", "CY"]   # one track a voice
+    snap, clk, dn = None, e.clock, {}
+    for k in pads:
+        snap, clk, dn[k] = to_plaits(e, f"smpa-{k}", k, snap, clk)
+    print(f"    DOWNs to PLAITS: {dn}")
+    ev = [(50, "press", k) for k in pads]
+    out = b""
+    for dt in (2, 20, 60):
+        s = e.run(f"smpa-{dt}", 50 + dt, ev, save=True, snap=snap, start=clk)
+        out += e.peek(s, MIX_RING, 4 * 2048)
+    mach = list(e.peek(s, 0x8000ea00, 12))
+    eng = [e.u32(s, 0x419ca110 + 4 * v) for v in range(8)]
+    er = elek_sym(e, "rytm-0021-ext:ext_render")
+    print(f"    machines {mach}; voices on ext_render {sum(x == er for x in eng)}")
+    ck("smpall: 8 tracks (one a voice) on PLAITS, all 8 voices running ext_render",
+       all(mach[t] == 44 for t in (0, 1, 2, 4, 5, 6, 8, 10)) and all(x == er for x in eng), (mach, [hex(x) for x in eng]))
+    nb, vo, mac, flt = player_rate(e, "smpa-cpu", s, clk + 110, length=10)
+    print(f"    resampler {mac:.2f}, filter {flt:.2f} a block")
+    open(os.path.join(e.out, "smpall.bin"), "wb").write(out)
+    ref = os.environ.get("US_REF")
+    if ref:
+        r = open(os.path.join(ROOT, "build", "emu", ref, "smpall.bin"), "rb").read()
+        bad = {}
+        for k in range(0, min(len(r), len(out)), 4):
+            if r[k:k + 4] != out[k:k + 4]:
+                w = (k % 64) // 4
+                bad[w] = bad.get(w, 0) + 1
+        print(f"    against {ref}: words that differ by frame word: {bad or 'none'}")
+        ck(f"smpall: the mixer's 8 voice columns byte-identical to {ref}'s", len(r) == len(out) and
+           not any(w < 8 for w in bad), bad)
+
+
+def t_smpshared(e):
+    """A voice shared by two tracks (CY / CB, voice 6): CY on PLAITS trigged (its SYN trig sets the voice's engine to
+    ext_render), then CB (stock, TRIG page SYN off: a sample-only trig, the engine stays CY's) trigged with a filled slot
+    on its SMPL D: ext_render runs with CB as the owner and must not mark the voice, so CB's sample plays (S of voice 6
+    not zero, the player runs for 8 voices). 0.5.0 played it; 201d1ed muted it."""
+    # CB: TRIG page SYN (E) off; CY to PLAITS and trigged; then CB selected by its pad (already sample-only), its SMPL D
+    # up and its trig (measured: CY's walk put CB's SMP word back to 0, so CB's SMPL comes after it)
+    ev = [(10, "press", "CB"), (40, "press", "TRIG"), (70, "turn", ("4:-8", 4, 6))]
+    walk, t = walk_list(300, UI["downs_cy_plaits"])
+    ev += [(200, "press", "CY"), (250, "press", "SRC")] + walk   # from the TRIG page the first SRC opens SRC
+    ev += [(t + 50, "press", "CY"), (t + 200, "press", "CB"), (t + 350, "press", "SMPL"), (t + 370, "turn", ("3:+8", 12, 6))]
+    end = t + 602   # CB trigged at t + 600, read 2M after
+    ev += [(t + 600, "press", "CB")]
+    s = e.run("smpsh", end, ev, save=True, extra=smp_pokes())
+    mach = list(e.peek(s, 0x8000ea00 + 10, 2))
+    own = e.peek(s, 0x40290dd8 + 6, 1)[0]
+    eng = e.u32(s, 0x419ca110 + 4 * 6)
+    lv = s_level(e, s, 6)
+    print(f"    CY/CB machines {mach}, voice 6 owner {own}, engine {eng:#x} (ext_render "
+          f"{elek_sym(e, 'rytm-0021-ext:ext_render') or 0:#x}), S of voice 6 {lv:#x}")
+    ck("smpshared: CY on PLAITS, CB stock, voice 6 owned by CB with CY's engine (ext_render)",
+       mach[0] == 44 and mach[1] != 44 and own == 11 and eng == elek_sym(e, "rytm-0021-ext:ext_render"), (mach, own, hex(eng)))
+    ck("smpshared: CB's sample-only trig plays its sample (S of voice 6 not zero)", lv > 0x1000, hex(lv))
+    nb, vo, mac, flt = player_rate(e, "smpsh-cpu", s, e.clock + end, length=4)
+    ck("smpshared: the player runs for all 8 voices (voice 6 not skipped)", abs(mac - 512) < 2, mac)
+
+
+def t_smplong(e):
+    """A looped sample (SMPL LOP up) on PLAITS, read at five times over 2 s after the trig: S zero and the mixer ring's
+    four slots for voice 0 as with the slot empty, every reading (the mark kept every block, not the trig's only); the
+    control: on the stock machine the loop still plays at the last reading."""
+    ev, t = walk_list(100, UI["downs"]["plaits"])
+    s1 = e.run("smpl-plaits", t, ev, save=True)
+    knobs = SMPL_LOOP
+    bad, act = [], []
+    for k, dt in enumerate((2, 100, 200, 300, 400)):   # the trig at 240, read dt M after it (400M = 2 s)
+        r = smp_pair(e, f"smpl-{k}", s1, e.clock + t, knobs, ["BD"], 240, (0,), end=240 + dt)
+        bad += [(dt, r[0])] if r[0] != (0, 0) else []
+        act += [(dt, e.peek(os.path.join(e.tmp, f"smpl-{k}.snap"), SMP_ACTIVE, 1)[0])]
+    print(f"    readings that heard the sample: {bad}; voice 0's player flag (+40) by reading: {act}")
+    ck("smplong: PLAITS, a looped sample: silent at every reading over 2 s", not bad, bad)
+    ck("smplong: PLAITS: the player is stopped (voice 0's +40 flag clear at every reading: no muted loop runs on)",
+       all(a == 0 for _, a in act), act)
+    c = e.run("smpl-stock", 640, knobs + [(240, "press", "BD")], save=True, extra=smp_pokes())
+    lv = s_level(e, c)
+    ck("smplong: (control) the stock machine's loop still plays 2 s after the trig", lv > 0x1000, hex(lv))
+    ck("smplong: (control) stock: voice 0's +40 flag set 2 s after the trig", e.peek(c, SMP_ACTIVE, 1)[0] != 0,
+       e.peek(c, SMP_ACTIVE, 1).hex())
+
+
 TESTS = {"base": t_base,"exciter": t_exciter, "variants": t_variants, "takeover": t_takeover, "enum": t_enum, "enum36": t_enum36, "old16": t_old16,
          "names": t_names, "labels": t_labels, "unused": t_unused, "dspmod": t_dspmod, "junopat": t_junopat, "writeback": t_writeback, "texts": t_texts,
          "page2": t_page2, "poweroff": t_poweroff, "stock": t_stock, "strict": t_strict, "menu": t_menu,
@@ -1469,7 +1894,10 @@ TESTS = {"base": t_base,"exciter": t_exciter, "variants": t_variants, "takeover"
          "tag": t_tag, "tagpool": t_tagpool, "taglock": t_taglock, "tagname": t_tagname, "untagged": t_untagged,
          "tagkeep": t_tagkeep, "install": t_install, "tag14": t_tag14, "tagpower": t_tagpower,
          "assigntrig": t_assigntrig, "choosetrig": t_choosetrig, "tagkit1": t_tagkit1, "assigngen": t_assigngen,
-         "freshtrig": t_freshtrig, "installfail": t_installfail, "shortpart": t_shortpart, "kitguard": t_kitguard}
+         "freshtrig": t_freshtrig, "smplayer": t_smplayer, "installfail": t_installfail, "shortpart": t_shortpart, "kitguard": t_kitguard,
+         "smpvoices": t_smpvoices, "smpnoise": t_smpnoise, "smpswitch": t_smpswitch, "smpseq": t_smpseq, "smplong": t_smplong,
+         "smpcpu": t_smpcpu, "smpref": t_smpref,
+         "smpshared": t_smpshared, "smpall": t_smpall}
 
 
 def main():

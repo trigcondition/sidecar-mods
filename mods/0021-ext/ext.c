@@ -145,6 +145,9 @@ struct ext_voice {
 #define REPORT_GAP 16
 __attribute__((section(".exts"))) struct ext_voice ext_state[8];
 #define SGAIN(v) ((volatile int32_t *)(0x80007000u + 8u * (v)))
+#if EXT_SLOTS
+extern volatile uint8_t ext_smute;   /* voices whose sample layer (S) ext_mix_det zeroes before this block's mix */
+#endif
 
 static void ext_project(void);
 void ext_gate(int32_t voice);
@@ -450,6 +453,13 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
 #endif
     SGAIN(voice & 7)[0] = 0;
     SGAIN(voice & 7)[1] = 0;
+#if EXT_SLOTS
+    /* SGAIN scales B only: the sample layer S is zeroed at the mix (and the player skips the voice). Only while the
+       owner runs a Sidecar machine: a voice shared by two tracks keeps the engine of the last SYN trig, so a stock
+       track's sample-only trig runs ext_render with the stock track as the owner, and its sample must play (0.5.2;
+       35 = US_FIRST (U1, defined further down), 18u = the 18 machines 35..52 ext_render plays, us_flag_tab's) */
+    if ((uint32_t)(MACHINE_OF(OWNER(voice)) - 35) < 18u) ext_smute |= (uint8_t)(1u << (voice & 7));
+#endif
   }
   for (i = 0; i < NP; ++i) {
     p[i] = ((uint16_t)params[i] >> 1) & 0x3fff;   /* value << 7 | fraction >> 1 */
@@ -1410,6 +1420,65 @@ US1 int32_t ext_layer_kept(int32_t vb, int32_t voice) {
   if (m >= 0x50 && m <= 0x70) return us.layer[(m - 0x50) >> 3];
   return 0;
 }
+
+/* P2: the Rytm's sample layer under a Sidecar voice. The stock sample player (sample_render 0x4011c64c, called at
+   0x40121218, after the engine loop that runs ext_render) writes S = 0x800067f8 + 128 v (32 longs) for every voice from
+   the owner track's words 17..24, which are the machines' page 2; the mixer (voice_output_mix 0x4010ea2c) adds S at a
+   fixed weight, so SGAIN = 0 never muted it. The mixer's call (0x4012122e, `jsr 0x4010ea2c`, its one argument pushed)
+   is detoured here: S of every voice ext_render marked this block is zeroed, then the mixer runs and the interrupt
+   resumes after the call. The marks are this block's: a voice that leaves a Sidecar machine is not marked again. */
+USR volatile uint8_t ext_smute;
+US1 void ext_smute_apply(void) {
+  uint32_t m = ext_smute, v, i;
+  ext_smute = 0;
+  for (v = 0; m; ++v, m >>= 1)
+    if (m & 1u)
+      for (i = 0; i < 32u; ++i) ((volatile int32_t *)(0x800067f8u + 128u * v))[i] = 0;
+}
+__asm__(
+    "  .section .us1,\"ax\"\n"
+    "  .globl ext_mix_det\n"
+    "ext_mix_det:\n"            /* reached by a jmp: (sp) = the mixer's argument */
+    "  jsr ext_smute_apply\n"   /* d0/d1/a0/a1 only, which the mixer's call clobbers anyway */
+    "  jsr 0x4010ea2c\n"        /* the displaced call, its argument still on the stack */
+    "  jmp 0x40121234\n");
+
+/* 0.5.2 sample skip: the stock sample player does no work for those voices. sample_render (0x4011c64c) runs every voice
+   every block, playing or not (an idle voice resamples a silence buffer), at about 1.7 M instructions a second a voice;
+   the voices ext_render marked this block (ext_smute: the same exceptions) skip its resampler and its filter and
+   output: two detours in its voice loop (voice = 88(sp), record a3 = 0x80005b30 + 92 v), the DMA bookkeeping between
+   them still runs (it feeds the next voice). A skipped voice's sample is stopped (+40 = 0, as the stock stop) and its
+   filter state (+44, 48 bytes, what a stock start clears) zeroed, and it rejoins at the voice's two movclrl (ACC0 / ACC1
+   cleared, as after every stock voice); its S is not written, ext_smute_apply zeroes it. */
+__asm__(
+    "  .section .us1,\"ax\"\n"
+    "  .globl ext_sr_mac\n"
+    "ext_sr_mac:\n"                 /* 0x4011cbae, before the resampler; d0/d1 are free here */
+    "  movel %sp@(88),%d1\n"
+    "  mvzb ext_smute,%d0\n"
+    "  btst %d1,%d0\n"
+    "  bnes 1f\n"
+    "  movel %a3@(12),%d5\n"        /* the displaced pair */
+    "  movel %d5,%d2\n"
+    "  jmp 0x4011cbb4\n"
+    "1:jmp 0x4011cc56\n"            /* past the resampler, to the DMA bookkeeping */
+    "  .globl ext_sr_filt\n"
+    "ext_sr_filt:\n"                /* 0x4011ccda, before the filter; d0/d1 are free here */
+    "  movel %sp@(88),%d1\n"
+    "  mvzb ext_smute,%d0\n"
+    "  btst %d1,%d0\n"
+    "  bnes 2f\n"
+    "  lea %a3@(44),%a0\n"          /* the displaced pair */
+    "  movel %a0,%sp@-\n"
+    "  jmp 0x4011cce0\n"
+    "2:clrb %a3@(40)\n"             /* the sample stops */
+    "  lea %a3@(44),%a0\n"
+    "  moveq #11,%d0\n"
+    "3:clrl %a0@+\n"                /* the filter state, 12 longs */
+    "  subql #1,%d0\n"
+    "  bpls 3b\n"
+    "  jmp 0x4011ceee\n");          /* the loop's movclrl of ACC0/ACC1 (the resampler, the filter and the mixer
+                                      start from them cleared), then its step to the next voice */
 
 /* us_copy, us_zero, us_text_in: out of .us1 since rui1031 (.us1 holds 6-OP FM's / MULTISAMPLE's page 2), in the free
    tails of the caves of .exte, .ext6 and .extm (.extx .extz .exty) */

@@ -93,11 +93,17 @@ RLED_SHARDS = [   # (tests, env, est s after the stock_state peek change)
 # files -> suites. ALL: everything in the image or every harness reads it. NONE: nothing a suite runs.
 ALL_PATHS = ("mods/0000-shared/", "mods/0027-elekloader/", "mods/0028-elek-hello/", "registry/", "re/symbols.toml",
              "stock/", "tools/build.py", "tools/layout.py", "tools/symbols.py", "Makefile", "tools/emu/us_base.sh",
-             "tools/emu/us_ui.json", "tools/emu/us_window.py", "build/suites/run.sh", "VERSION")
+             "tools/emu/us_ui.json", "tools/emu/us_window.py", "build/suites/run.sh", "VERSION",
+             "re/os/")   # the port's address map: every 1.74 suite runs through it
+
 NONE_PATHS = ("docs/", "re/subsystems/", "re/ghidra/", "tools/comp/", "tools/test_", "tools/cavescan.py",
               "tools/verify.py", "tools/release_check.py", "tools/voice_dac_timing.py", "tools/us_records.py",
               "tools/emu/suites.py", "tools/emu/README.md", "tools/emu/el_area.py", "LICENSE", "NOTICE", ".gitignore",
               "requirements.txt", "README.md", "CLAUDE.md")
+# measurement scripts (F4 / machine-list lag), not suites; no suite imports them
+NONE_PATHS += ("tools/emu/lag_emu.py", "tools/emu/lag_base.sh", "tools/emu/mll_emu.py", "tools/emu/soak_emu.py",
+               "tools/emu/keytime_emu.py", "tools/emu/hostcost_emu.py", "tools/emu/modcost_emu.py",
+               "tools/emu/boot_emu.py")
 PATH_SUITES = {"tools/build_rui.sh": set(SUITES), "tools/looper_base.sh": set(SUITES)}
 # the mods every image carries (enabled by default, stock sites) that no suite is about: the quick suites that boot
 # the image and drive its UI, as a smoke test (the full set runs before a flash)
