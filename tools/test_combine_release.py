@@ -13,16 +13,16 @@ SHA = "a" * 40
 OTHER = "b" * 40
 
 
-def make_folder(d, os_name, suffix, core, extra=None, toolchain=None):
+def make_folder(d, os_name, suffix, core, extra=None, toolchain=None, version="0.4.0"):
     os.makedirs(d)
     files = {
         f"core-0.1{suffix}.elemod": f"core {os_name}",
-        f"rytm-sidecar-0.4.0{suffix}.elemod": f"bundle {os_name}",
+        f"rytm-sidecar-{version}{suffix}.elemod": f"bundle {os_name}",
         f"elekloader-{core}-core-ar2-src.tar.gz": f"core source {core}",
         "elekloader-c150ac5-src.tar.gz": "builder source",
         "LICENSE": "GPL",
         "NOTICE": "notice",
-        "TOOLCHAIN.txt": toolchain or f"release 0.4.0 for OS {os_name}, built from sidecar-mods {SHA}\nas 2.47\n",
+        "TOOLCHAIN.txt": toolchain or f"release {version} for OS {os_name}, built from sidecar-mods {SHA}\nas 2.47\n",
     }
     files.update(extra or {})
     for n, text in files.items():
@@ -67,6 +67,16 @@ class Combine(unittest.TestCase):
         # the combined SHA256SUMS lists exactly the other eleven files, with their hashes
         combine_release.read_folder(self.out)
         self.assertEqual(len(open(os.path.join(self.out, "SHA256SUMS")).read().splitlines()), 11)
+
+    def test_four_part_version(self):
+        # a fixes release between two others (0.5.1.1): the version names pass through as they are
+        make_folder(self.a, "1.73", "", "8972d70", version="0.5.1.1")
+        make_folder(self.b, "1.74", "-os1.74", "13fa795", version="0.5.1.1")
+        self.assertEqual(self.run_it(), 0)
+        names = os.listdir(self.out)
+        self.assertIn("rytm-sidecar-0.5.1.1.elemod", names)
+        self.assertIn("rytm-sidecar-0.5.1.1-os1.74.elemod", names)
+        self.assertIn("release 0.5.1.1 for OS 1.74,", open(os.path.join(self.out, "TOOLCHAIN-os1.74.txt")).read())
 
     def assert_refused(self):
         self.assertEqual(self.run_it(), 1)
