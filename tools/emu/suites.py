@@ -3,6 +3,8 @@
 
     tools/emu/suites.py TAG --changed REV       the suites covering what differs from REV (commits, the working tree's
                                                 edits, untracked files); REV may be a range A..B
+    tools/emu/suites.py TAG --host-changed REV  the host checkout (RYTM_TEENSY) differs from REV: its sim/protocol.py or
+                                                sim/remote_ui.py -> rui, pm, sv, bk (alone, or together with --changed)
     tools/emu/suites.py TAG --full              every suite (once, before a flash)
     tools/emu/suites.py TAG SUITE [SUITE ...]   these suites
     ... --plan                                  print the jobs (why each, its command, its estimate) and run nothing
@@ -25,9 +27,13 @@ Isolation as run.sh's: a job gets build/emu_jobs/JOB/ as RYTM_OUT_ROOT (the mani
 build/emu/*/ copied in) and as TMPDIR; ports are ephemeral; the shared base cards are only read.
 
 Shards: a suite whose tests share nothing between them (no state on the Emu object, no module cache another test needs
-unmade) runs as several processes, each a subset of its tests (and, for stockupkeys / stockup, a subset of the keys
-through the suites' own UPKEYS / STOCKUP_KEYS). Every check still runs; a sharded suite repeats a few baseline runs
-per shard (and stockup's one menu control check runs in both its shards).
+unmade) runs as several processes, each a subset of its tests (SPLITS: us, sfu, sfx, md, sq, bk, pj; rled also, for
+stockupkeys / stockup, a subset of the keys through the suites' own UPKEYS / STOCKUP_KEYS). Every check still runs; a
+sharded rled repeats a few baseline runs per shard (and stockup's one menu control check runs in both its shards). A
+shard table that no longer matches the script's TESTS is not used: the suite runs as one process, with a note.
+
+Estimates: build/suites/est.json keeps each passing job's seconds from its last run (keyed by the job and what it runs);
+--plan and the longest-first order use them, then the table's est.
 """
 import argparse
 import ast
@@ -47,30 +53,30 @@ ENV_DEFAULTS = {   # as build/suites/run.sh
 
 # ---- what covers what
 # mods: the mods a suite exercises (its docstring and symbols); imports: the suite scripts it imports (a change to
-# one reruns this one too); est: wall seconds measured 2026-10-29 (rel0-3-0, run.sh -j 5, build/emu_jobs birth
-# times to build/suites/*.log mtimes), for the longest-first order and the plan's estimate.
+# one reruns this one too); est: a suite's wall seconds as one process, measured 2026-11-19 (OS 1.74, --full -j 4,
+# before the shards), for the longest-first order and the plan's estimate when build/suites/est.json has no entry.
 SUITES = {
-    "rled": dict(mods={"0026"}, est=6099),
-    "us":   dict(mods={"0021", "0029", "0023", "0014", "0004"}, est=1649),
-    "sfu":  dict(mods={"0029", "0021", "0025"}, imports={"us", "sfx"}, est=1193),
-    "pj":   dict(mods={"0026"}, est=904),
-    "sfx":  dict(mods={"0025"}, imports={"us"}, est=709),
-    "bk":   dict(mods={"0029", "0026"}, imports={"sv", "rui"}, est=665),
-    "sq":   dict(mods={"0026", "0021"}, est=597),
-    "cu":   dict(mods={"0021", "0029", "0026"}, imports={"pc"}, est=245),
-    "sp":   dict(mods={"0021", "0029"}, imports={"us", "sfx"}, est=215),
-    "rui":  dict(mods={"0026"}, est=187),
-    "sv":   dict(mods={"0026", "0029", "0021"}, imports={"rui"}, est=173),
-    "pc":   dict(mods={"0026", "0021", "0022"}, est=102),
-    "mrep": dict(mods={"0026", "0021"}, est=91),
-    "md":   dict(mods={"0021", "0029"}, imports={"us", "sfx"}, est=300),
-    "mi":   dict(mods={"0021", "0026", "0022"}, imports={"pc", "cu"}, est=90),
-    "ar":   dict(mods={"0021", "0026", "0022"}, imports={"us"}, est=120),
-    "fxin": dict(mods={"0030", "0022", "0024"}, est=43),
+    "rled": dict(mods={"0026"}, est=6099),   # one process, 2026-10-29 (its shards: RLED_SHARDS)
+    "us":   dict(mods={"0021", "0029", "0023", "0014", "0004"}, est=1890),
+    "sfu":  dict(mods={"0029", "0021", "0025"}, imports={"us", "sfx"}, est=1369),
+    "pj":   dict(mods={"0026"}, est=922),
+    "sfx":  dict(mods={"0025"}, imports={"us"}, est=1010),
+    "bk":   dict(mods={"0029", "0026"}, imports={"sv", "rui"}, est=915),
+    "sq":   dict(mods={"0026", "0021"}, est=888),
+    "cu":   dict(mods={"0021", "0029", "0026"}, imports={"pc"}, est=387),
+    "sp":   dict(mods={"0021", "0029"}, imports={"us", "sfx"}, est=233),
+    "rui":  dict(mods={"0026"}, est=276),
+    "sv":   dict(mods={"0026", "0029", "0021"}, imports={"rui"}, est=239),
+    "pc":   dict(mods={"0026", "0021", "0022"}, est=109),
+    "mrep": dict(mods={"0026", "0021"}, est=93),
+    "md":   dict(mods={"0021", "0029"}, imports={"us", "sfx"}, est=1520),
+    "mi":   dict(mods={"0021", "0026", "0022"}, imports={"pc", "cu"}, est=168),
+    "ar":   dict(mods={"0021", "0026", "0022"}, imports={"us"}, est=236),
+    "fxin": dict(mods={"0030", "0022", "0024"}, est=66),
     "td":   dict(mods={"0023"}, imports={"us"}, est=37),
     "frz":  dict(mods={"0029"}, est=22),
-    "sa44": dict(mods={"0021", "0026", "0014"}, imports={"us", "sfx"}, est=120),   # 0.5.0: SAMPLER on a 0.4.4 Rytm (needs build/emu/f44b)
-    "pm":   dict(mods={"0026"}, imports={"rui"}, est=160),   # 0.5.0: the Rytm's own params modulated (ops 04..07)
+    "sa44": dict(mods={"0021", "0026", "0014"}, imports={"us", "sfx"}, est=87),   # 0.5.0: SAMPLER on a 0.4.4 Rytm (needs build/emu/f44b)
+    "pm":   dict(mods={"0026"}, imports={"rui"}, est=217),   # 0.5.0: the Rytm's own params modulated (ops 04..07)
 }
 # rled's 24 tests by their dtboot runs (rel0-3-0's job dir): stockupkeys 254, stockup 116, stocktrigup 44, upstock 38,
 # menustock 23 (long runs), upamp 20, the rest 6..18 each. Every rled test is independent (Emu keeps no run state;
@@ -90,19 +96,80 @@ RLED_SHARDS = [   # (tests, env, est s after the stock_state peek change)
     (RLED_REST[7:], {}, 260),
 ]
 
+# Suites whose tests share nothing (each runs from the base snapshot; no state on the Emu object; a lazy cache is only
+# made inside the tests that use it, so those stay in one shard: sfu's pages + names, sq's pin + pinvel) run as several
+# processes. (tests, est s): the tests by their seconds in a full OS 1.74 run (.times files), balanced to about 500 s
+# a shard, in the suite's own order. The runner checks the table against the script's TESTS and falls back to one
+# process, with a note, when they differ (a test added to a script and not here).
+SPLITS = {
+    "us": [
+        (["old16", "dspmod", "strict", "stale", "tagpower", "assigntrig", "installfail", "shortpart", "kitguard"], 488),
+        (["base", "exciter", "names", "writeback", "page2", "stock", "choose", "tag", "tagkeep", "tag14"], 487),
+        (["takeover", "enum", "enum36", "labels", "texts", "poweroff", "assign", "sound", "tagpool", "choosetrig",
+          "assigngen"], 491),
+        (["variants", "unused", "junopat", "menu", "load", "window", "taglock", "tagname", "untagged", "install",
+          "tagkit1", "freshtrig"], 486),
+    ],
+    "sfu": [
+        (["labels", "locks", "save", "stock"], 530),   # stock reads save's (and locks') result: same shard
+        (["enumlock", "enumkit", "ext", "bw", "bw2"], 441),
+        (["fmname", "enum", "typelist", "cost", "bwwrap", "pages", "names", "kits"], 407),
+    ],
+    "sfx": [
+        (["fx38", "stock"], 619),   # stock reads fx38's result: same shard (fx38 alone is ~470 s)
+        (["nokit", "report", "migrate", "sendlock", "reload", "kitswitch"], 394),
+    ],
+    "md": [
+        (["fresh", "nohost", "kitload", "convert", "hold", "dspold"], 503),
+        (["list", "labels", "kit", "tracks", "stuck", "dspmix", "switch"], 502),
+        (["sound", "stops", "ask", "plock", "paste", "old", "marker", "same030"], 503),
+    ],
+    "sq": [
+        (["savereload", "fill", "pause", "stock", "rec", "state", "scale", "dirty", "freezeprobe", "trktrig", "trkyes",
+          "playmode", "disp", "seqpage", "upcombo", "upseq", "fillwrite", "fillpersist", "fillqueue", "otherplay_live",
+          "otherprobe"], 442),
+        (["recleds", "jump", "ticks", "switch", "mode", "solo", "hello", "pin", "pinvel", "edits", "seqedit", "fetch",
+          "fetchrace", "noreload", "yestime", "trkfx", "lockkeys", "yes", "trigkey", "trkpad", "otherplay",
+          "otherfm"], 438),
+    ],
+    "bk": [
+        (["range", "lock", "browse", "salist", "sa2a", "sabusy", "upt", "nrpn", "popups", "dspknob", "dsplistlock",
+          "dspnrpn", "upsrc", "latehost", "polymenu", "uplrlist"], 456),
+        (["preset", "knob", "text", "list", "browsefunc", "browseknob", "saopen", "listlock", "scale", "banka", "tbldef",
+          "dsplist", "dspbrowse", "dsptext", "dsplock", "dspold"], 456),
+    ],
+    "pj": [
+        (["hello", "saveto_empty", "copypaste", "clear", "locked", "init", "renameactive", "createnew", "setters"], 450),
+        (["saveas", "saveto", "clearactive", "delete", "rename", "load", "loadsave", "lock", "reloadactive", "nohost",
+          "kits"], 466),
+    ],
+}
+DEFAULT_EST = 300   # a suite script not in SUITES yet (see pick)
+
 # files -> suites. ALL: everything in the image or every harness reads it. NONE: nothing a suite runs.
 ALL_PATHS = ("mods/0000-shared/", "mods/0027-elekloader/", "mods/0028-elek-hello/", "registry/", "re/symbols.toml",
+             "re/os/",   # the OS ports' address maps: every suite runs on a ported tree
+             
              "stock/", "tools/build.py", "tools/layout.py", "tools/symbols.py", "Makefile", "tools/emu/us_base.sh",
-             "tools/emu/us_ui.json", "tools/emu/us_window.py", "build/suites/run.sh", "VERSION")
+             "tools/emu/us_ui.json", "tools/emu/us_window.py", "build/suites/run.sh", "VERSION",
+             "re/os/")   # the port's address map: every 1.74 suite runs through it
+
 NONE_PATHS = ("docs/", "re/subsystems/", "re/ghidra/", "tools/comp/", "tools/test_", "tools/cavescan.py",
               "tools/verify.py", "tools/release_check.py", "tools/voice_dac_timing.py", "tools/us_records.py",
               "tools/emu/suites.py", "tools/emu/README.md", "tools/emu/el_area.py", "LICENSE", "NOTICE", ".gitignore",
               "requirements.txt", "README.md", "CLAUDE.md")
+# measurement scripts (F4 / machine-list lag), not suites; no suite imports them
+NONE_PATHS += ("tools/emu/lag_emu.py", "tools/emu/lag_base.sh", "tools/emu/mll_emu.py", "tools/emu/soak_emu.py",
+               "tools/emu/keytime_emu.py", "tools/emu/hostcost_emu.py", "tools/emu/modcost_emu.py",
+               "tools/emu/boot_emu.py")
 PATH_SUITES = {"tools/build_rui.sh": set(SUITES), "tools/looper_base.sh": set(SUITES)}
 # the mods every image carries (enabled by default, stock sites) that no suite is about: the quick suites that boot
 # the image and drive its UI, as a smoke test (the full set runs before a flash)
 SMOKE = ["frz", "td", "fxin", "rui", "sv"]
 STOCK_SITE_MODS = {"0002", "0003", "0004", "0006", "0008", "0009", "0010", "0012", "0013", "0020"}
+
+
+HOST_FILES = ("sim/protocol.py", "sim/remote_ui.py")   # RYTM_TEENSY's modules the rui family imports
 
 
 def importers(name):
@@ -132,8 +199,13 @@ def pick(files):
             add(SUITES, f)
         elif f.startswith(NONE_PATHS) or f.endswith(".md"):
             continue
-        elif f.startswith("tools/emu/") and f.endswith("_emu.py") and f[10:-7] in SUITES:
-            add(importers(f[10:-7]), f)
+        elif f.startswith("tools/emu/") and f.endswith("_emu.py"):
+            name = f[10:-7]
+            if name in SUITES:
+                add(importers(name), f)
+            else:   # a new suite script: it runs alone (a default estimate); not every suite
+                add([name], f + " (new suite)")
+                notes.append(f"{f}: not in SUITES (suites.py); it runs alone; register it there (mods, imports, est)")
         elif f.startswith("mods/"):
             mod = f.split("/")[1][:4]
             hit = [s for s, d in SUITES.items() if mod in d["mods"]]
@@ -197,8 +269,26 @@ def shards(suite, emu, shard, notes):
             notes.append("rled not sharded: RLED_SHARDS / RLED_UPKEYS in suites.py miss rled_emu.py's TESTS / UPKEYS")
         else:
             return [(f"rled.{i + 1}", t, e, est) for i, (t, e, est) in enumerate(RLED_SHARDS)]
-    est = SUITES[suite]["est"] if suite != "rled" else 1700   # rled unsharded after the peek change (estimate)
+    elif suite in SPLITS and shard:
+        tests = [t for ts, _ in SPLITS[suite] for t in ts]
+        if sorted(tests) != sorted(script_names(suite, "TESTS") or ()):
+            notes.append(f"{suite} not sharded: SPLITS[{suite!r}] in suites.py misses {suite}_emu.py's TESTS")
+        else:
+            return [(f"{suite}.{i + 1}", ts, {}, est) for i, (ts, est) in enumerate(SPLITS[suite])]
+    est = SUITES.get(suite, {}).get("est", DEFAULT_EST) if suite != "rled" else 1700   # rled unsharded (estimate)
     return [(suite, None, {}, est)]
+
+
+def est_key(j):
+    """A job's key in build/suites/est.json: its name and what it runs (a changed shard table is a new key)."""
+    return j["name"] + "|" + ",".join(j["tests"] or ["all"]) + "|" + ",".join(f"{k}={v}" for k, v in j["env"].items())
+
+
+def load_est(sdir):
+    try:
+        return json.load(open(os.path.join(sdir, "est.json")))
+    except (OSError, ValueError):
+        return {}
 
 
 def setup(jobdir):
@@ -276,6 +366,8 @@ def main():
     ap.add_argument("tag")
     ap.add_argument("suites", nargs="*")
     ap.add_argument("--changed", metavar="REV")
+    ap.add_argument("--host-changed", metavar="REV",
+                    help="the host checkout (RYTM_TEENSY) differs from REV: sim/protocol.py, sim/remote_ui.py -> rui, pm, sv, bk")
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--plan", action="store_true")
     ap.add_argument("-j", type=int, default=6)
@@ -284,8 +376,8 @@ def main():
     ap.add_argument("--fails", type=int, default=8)
     ap.add_argument("--keep-snaps", action="store_true")
     a = ap.parse_args()
-    if sum(map(bool, (a.changed, a.full, a.suites))) != 1:
-        sys.exit("suites.py: give one of --changed REV, --full or SUITE names")
+    if sum(map(bool, (a.changed or a.host_changed, a.full, a.suites))) != 1:
+        sys.exit("suites.py: give one of --changed REV and / or --host-changed REV, --full or SUITE names")
     bad = [s for s in a.suites if s not in SUITES]
     if bad:
         sys.exit(f"suites.py: no suite {bad}; known: {' '.join(SUITES)}")
@@ -298,13 +390,23 @@ def main():
     elif a.suites:
         why = {s: ["named"] for s in a.suites}
     else:
-        files = changed_files(a.changed)
-        why, notes = pick(files)
-        print(f"changed since {a.changed}: {len(files)} file(s) -> {len(why)} suite(s)")
+        why, notes = {}, []
+        if a.changed:
+            files = changed_files(a.changed)
+            why, notes = pick(files)
+            print(f"changed since {a.changed}: {len(files)} file(s) -> {len(why)} suite(s)")
 
     env0 = dict(os.environ)
     for k, v in ENV_DEFAULTS.items():
         env0.setdefault(k, v)
+    if a.host_changed:   # the host checkout's protocol modules are what rui and its importers talk to
+        host = os.path.expanduser(env0["RYTM_TEENSY"])
+        hfiles = subprocess.run(["git", "-C", host, "diff", "--name-only", a.host_changed], capture_output=True,
+                                text=True, check=True).stdout.split()
+        hit = [f for f in hfiles if f in HOST_FILES]
+        for s in importers("rui") if hit else ():
+            why.setdefault(s, []).append("host " + hit[0])
+        print(f"host changed since {a.host_changed}: {len(hfiles)} file(s) -> {len(hit)} protocol file(s)")
     emu = os.path.expanduser(env0["RYTM_EMU"])
     py = os.path.join(ROOT, ".venv", "bin", "python")
     py = py if os.path.exists(py) else sys.executable
@@ -312,6 +414,9 @@ def main():
     for s in why:
         for name, tests, env, est in shards(s, emu, not a.no_shard, notes):
             jobs.append(dict(name=name, suite=s, tests=tests, env=env, est=est))
+    seen = load_est(os.path.join(ROOT, "build", "suites"))   # the last runs' seconds: the plan tells the truth
+    for j in jobs:
+        j["est"] = seen.get(est_key(j), j["est"])
     jobs.sort(key=lambda j: -j["est"])   # longest first: the pool stays full to the end
 
     base = os.path.join(emu, "sections", f"us_{a.tag}.snap")
@@ -398,6 +503,12 @@ def main():
                 for x in open(list(summary[s]["shards"].values())[0]["log"], errors="replace").readlines()[-5:]:
                     print("      " + x.rstrip()[:300])
     wall = round(time.monotonic() - t_start)
+    seen = load_est(sdir)   # passing jobs' seconds (the parallel run's: the alone rerun is not typical)
+    seen.update({est_key(j): res[(j["name"], "")]["secs"] for j in jobs if res[(j["name"], "")]["rc"] == 0})
+    tmp = os.path.join(sdir, f"est.json.{os.getpid()}")   # whole file or none: a reader never sees half of it
+    with open(tmp, "w") as f:
+        json.dump(seen, f, indent=1, sort_keys=True)
+    os.replace(tmp, os.path.join(sdir, "est.json"))
     with open(os.path.join(sdir, "summary.txt"), "w") as out:
         for s in sorted(summary):
             pr = next((rc for rc in summary[s]["parallel_rc"].values() if rc != 0), 0)

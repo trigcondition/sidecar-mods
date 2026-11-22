@@ -242,7 +242,10 @@ def stock_state(e, r):
     slots, sel = e.panel(r)[:2]
     d = dict(oled=r["oled"], **{f"led{i}": v for i, v in slots.items()})
     d.update({f"sel{i}": v for i, v in enumerate(sel.split(", "))})   # 1038: each selector byte its own item
-    d.update({f"mem{a:x}+{i:x}": e.peek(r, a + i, min(256, n - i)) for a, n in STATE for i in range(0, n, 256)})
+    for a, n in STATE:   # one dtpeek a range, cut into the same 256-byte items (was one dtpeek an item: 47 a state, now 5)
+        m = e.peek(r, a, n)
+        assert len(m) == n, f"stock_state: dtpeek {a:#x}+{n} gave {len(m)} bytes"   # a failed read must not compare equal
+        d.update({f"mem{a:x}+{i:x}": m[i:i + 256] for i in range(0, n, 256)})
     return d
 
 
