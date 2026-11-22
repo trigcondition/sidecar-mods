@@ -7181,6 +7181,19 @@ entry     = "sfu_getv"
 rejoin    = 0x4003846a
 elek_size = 8
 
+# 0.5.2 (F9): the page key's cycle, the site 0013's hpf_cycle claims (the same six bytes; the two are never in one build,
+# 0026 excludes 0013): `movel %a2@(140),%d1; addql #1,%d1` before the remsl. smpl_cycle_det makes d1 0 on the SamplePageView
+# of a Sidecar machine's track, so the SMPL key's second press does not cycle to SMPL WAVEFORM there. Nothing branches
+# into 0x4003ab88..0x4003ab8b (0013's note); 0029's title detour (0x4003ab94) is after the remsl and does not overlap.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x4003ab86
+size      = 6
+expect_len = 6
+expect_sha256 = "d11e9d52863c6ceead4047bb65f0a7f4c8f43dc883d5b4e35a6842349f960866"
+entry     = "smpl_cycle_det"
+rejoin    = 0x4003ab8c
+
 # The page key's cycle (index + 1 % count): push the new page's title, as 0004 did.
 [[detour]]
 owner     = "0029-sendfx-ui"
