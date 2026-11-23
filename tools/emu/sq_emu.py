@@ -740,13 +740,20 @@ def t_dirty(e):
     check("dirty: a placed trig: 0B 00 (pattern A01)", len(d) >= 1 and d[0][7] == 0, [m.hex() for m in d])
     # dirty wanted (2E flags bit 3 = none wanted: the host's pattern view off, no pattern write): no walk, no 0B; an older
     # host never sets it (the two runs above: always on). ed + 0x174: the walk's done mask (0: never walked since boot)
-    DONE = e.sym("ed") + 0x174
+    DONE = e.syms["rytm-0026-remote-ui:ed"] + 0x174
     ev = [(300, "usb", mask2e((), 8)), (500, "press", "RECORD"), (520, "press", "T3"), (540, "press", "RECORD")]
     r = e.run("dirty_off", 900, ev)
     d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    ed_ = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0A]
     walked = e.peek(r["snap"], DONE, 4)
-    check("dirty: not wanted (2E flags 8): a placed trig, no 0B, and no walk at all (done mask 0)",
-          not d and walked == b"\0\0\0\0", ([m.hex() for m in d], walked.hex()))
+    # (the trig placed in GRID REC is also an edit report, 2D 0A 0D: its own 0B goes as before - the edit reports and
+    # their dirty flag do not depend on the walk)
+    check("dirty: not wanted (2E flags 8): no walk at all (done mask 0); a placed trig's 0B only with its edit report",
+          walked == b"\0\0\0\0" and len(d) <= len(ed_) and (not d or ed_), ([m.hex() for m in d + ed_], walked.hex()))
+    r = e.run("dirty_off_idle", 900, [(300, "usb", mask2e((), 8)), (350, "press", "PLAY"), (850, "press", "STOP")])
+    d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    check("dirty: not wanted, playing: no 0B, no walk", not d and e.peek(r["snap"], DONE, 4) == b"\0\0\0\0",
+          [m.hex() for m in d])
     ev = [(300, "usb", mask2e((), 8)), (450, "usb", mask2e((), 0))]
     r = e.run("dirty_on", 900, ev)
     d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
