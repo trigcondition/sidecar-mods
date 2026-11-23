@@ -2900,3 +2900,14 @@ QUICK PERF) 0.08 M (unchanged), `pin_frame` 0.04 M, the UART8 writer 0.03 M, `sq
 Changed here, behaviour identical: `pin_frame` reads DTCN0 (a peripheral read, slow on the device) only once the frame
 is worked on, after the two early returns that every block of a Rytm without a pinned track takes; `pin`'s timing
 statistic covers the same work.
+
+## 2D 0B DIRTY only when wanted (2E flags bit 3)
+
+The pattern-dirty walk (dk_poll: 4 KB of the active pattern a UI tick, a pass in 1.05 s) runs only while the host wants
+the 0Bs: the host's 2E flags bit 3 set means none wanted (the Sidecar's touch view not fetching the pattern, no pattern
+write running: sidecar-firmware core/seq/seq.cpp, sim/protocol.py SEQ_MASK_NODIRTY), and then there is no walk at all.
+Bit 3 clear - wanted, or an older host that never sets it - the walk as before. Wanted again: a fresh pass (edits made
+meanwhile were never summed) and one 0B at once, so the host fetches the pattern as it is. sq_forget (a hello, the port
+down): wanted. The edit reports (2D 0A) do not depend on it. Why: on a CPU-starved Rytm (12 tracks playing, scene edit)
+the walk, 85 KB every 21 ticks, was 0026's largest UI-task cost. Tests: sq_emu.py dirty (not wanted: a trig placed, no
+0B, the done mask 0; wanted again: one 0B and the walk; the older host's runs before it: always on).

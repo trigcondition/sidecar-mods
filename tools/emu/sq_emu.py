@@ -729,7 +729,8 @@ def t_scale(e):
 
 def t_dirty(e):
     """2D 0B DIRTY <pattern>: none in 3 s of play with nothing edited (the pattern bytes stay put while playing); a trig
-    placed in GRID REC (BD, not a seq track): one 0B 00 within 1.3 s."""
+    placed in GRID REC (BD, not a seq track): one 0B 00 within 1.3 s. Dirty not wanted (2E flags bit 3): no walk, no 0B;
+    wanted again: one 0B and the walk."""
     r = e.run("dirty_play", 1000, [(300, "usb", mask2e(())), (350, "press", "PLAY"), (950, "press", "STOP")])
     check("dirty: no 0B while playing an unedited pattern", not reps(r, 0x0B), reps(r, 0x0B))
     ev = [(300, "usb", mask2e(())), (500, "press", "RECORD"), (520, "press", "T3"), (540, "press", "RECORD")]
@@ -737,6 +738,21 @@ def t_dirty(e):
     d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
     print(f"  0B: {[m.hex() for m in d]}")
     check("dirty: a placed trig: 0B 00 (pattern A01)", len(d) >= 1 and d[0][7] == 0, [m.hex() for m in d])
+    # dirty wanted (2E flags bit 3 = none wanted: the host's pattern view off, no pattern write): no walk, no 0B; an older
+    # host never sets it (the two runs above: always on). ed + 0x174: the walk's done mask (0: never walked since boot)
+    DONE = e.sym("ed") + 0x174
+    ev = [(300, "usb", mask2e((), 8)), (500, "press", "RECORD"), (520, "press", "T3"), (540, "press", "RECORD")]
+    r = e.run("dirty_off", 900, ev)
+    d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    walked = e.peek(r["snap"], DONE, 4)
+    check("dirty: not wanted (2E flags 8): a placed trig, no 0B, and no walk at all (done mask 0)",
+          not d and walked == b"\0\0\0\0", ([m.hex() for m in d], walked.hex()))
+    ev = [(300, "usb", mask2e((), 8)), (450, "usb", mask2e((), 0))]
+    r = e.run("dirty_on", 900, ev)
+    d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    walked = e.peek(r["snap"], DONE, 4)
+    check("dirty: wanted again: one 0B 00 (the host fetches the pattern as it is), the walk on (done mask set)",
+          len(d) == 1 and d[0][7] == 0 and walked != b"\0\0\0\0", ([m.hex() for m in d], walked.hex()))
 
 
 def t_fetch(e):

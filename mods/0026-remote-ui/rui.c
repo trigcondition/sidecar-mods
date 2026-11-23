@@ -1230,7 +1230,8 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
     break;
   }
   case 0x2e: {   /* 1032: <mask lo7> <mask hi5> <flags> [<clock lo7> <clock hi5> [<pin lo7> <pin hi5>]]: the seq tracks
-                    (taken by the UI task at its next tick); 1033: the pin mask (more tracks pinned: the host's poly ones) */
+                    (taken by the UI task at its next tick); 1033: the pin mask (more tracks pinned: the host's poly ones);
+                    flags bit 3: no 2D 0B DIRTY wanted (dk_tick: no pattern walk) */
     int32_t i;
     if ((n != 3 && n != 5 && n != 7) || b[1] > 0x1f || (n >= 5 && b[4] > 0x1f) || (n == 7 && b[6] > 0x1f)) {
       rx_bad++;
@@ -2102,6 +2103,21 @@ static void sc_poll(void) {
    instead of 4096 byte loads [measured: 0026's UI-task time per tick, the hardware report "the UI slow with the SEQ
    page playing"; design.md 1037b] */
 #define DK_CHUNK 1024u                 /* long words a tick */
+/* dirty wanted (the Sidecar's docs, protocol.py SEQ_MASK): the host's 2E flags bit 3 says no one there needs the 0B now
+   (its pattern view off, no pattern write running): then no walk at all (85 KB every 21 ticks was 0026's largest UI-task
+   cost on a CPU-starved Rytm, the scene-edit lag study). Bit 3 clear - wanted, or an older host that never sets it - the
+   walk as before. Wanted again: a fresh pass (edits made meanwhile were never summed) and one 0B, so the host fetches
+   the pattern as it is now. The edit reports (2D 0A) never depend on it. sq_forget (a hello, the port down): wanted. */
+static uint8_t dk_off;
+static void dk_poll(void);
+static void dk_want(uint32_t off) {
+  if (off == dk_off) return;
+  dk_off = (uint8_t)off;
+  if (!off) { ed.dk_pos = 0; ed.dk_init = 0; ed.dirty = 1; ed.dirty_tick = st.ticks - 4; }
+}
+static void dk_tick(void) {
+  if (!dk_off) dk_poll();
+}
 static void dk_poll(void) {
   uint32_t p = (uint32_t)SQ_PAT & 127, i, k, sum = 0, n, a = (uint32_t)SQ_PATD(p);
   uint32_t a0 = a & ~3u, nw = (((a + 85760u + 3u) & ~3u) - a0) >> 2;
@@ -2185,6 +2201,7 @@ static void sq_tick(void) {
       pin.mask = ((q[2] & 4) ? 0 : sq.mask) | (((uint32_t)q[5] | (uint32_t)q[6] << 7) & 0xfffu);   /* 1033 */
       if (!sq.on || (q[2] & 2)) { sq.owed = Q_ALL; sq.resyncs++; ed.sc_owed = 0x1fffu; ed.fill_owed = 1; }   /* 1033: + SCALE, FILL */
       sq.on = 1;
+      dk_want(q[2] >> 3 & 1);          /* flags bit 3: no dirty wanted (dk_tick) */
     }
   }
   if (!sq.on) { sq.mode = 0; return; }
@@ -2254,13 +2271,14 @@ static void sq_tick(void) {
     sq.pos_tick = st.ticks;
   }
   sc_poll();                           /* 1033: SCALE, the edits, dirty */
-  dk_poll();
+  dk_tick();
   ed_send();
 }
 
 /* the hello (and the port going down): the host must say again what it sequences */
 static void sq_forget(void) {
   sq.on = 0;
+  if (dk_off) dk_off = 0, ed.dk_pos = 0, ed.dk_init = 0;   /* (wanted, as for an older host: a fresh pass, no 0B owed) */
   sq.mask = 0;
   pin.mask = 0;                        /* 1033: every pinned voice closes (the transport hook's closing) */
   pin.silent = 0;
