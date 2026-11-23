@@ -2890,3 +2890,111 @@ to +300 ms (20..300 ms) against the SMPL WAVEFORM header and layout of an analog
 runs in the tick after the activation, before the first frame), so no change for B; the test stays (it fails on smp0).
 
 **Not done (later feature):** a Sidecar-drawn waveform page for the SAMPLER on the SMPL key (design B of the research).
+
+## big-ram: the large buffers outside elekloader's area (OS 1.74)
+
+Tags: [code] read in the 1.74 image or this tree; [doc] someone else's docs, not re-checked; [measured] rytm-emu,
+DTEMU_STRICT=1, this tree, or on hardware where it says so; [inferred] reasoned.
+
+**Why.** elekloader's area is 128 KB, and the Sidecar set's zero-initialised `.bss` is a large part of what fills it:
+the remote page's frame buffers, the source-list names, the param modulation, 0029's labels and lists. elekloader's boot
+copier copies and zeroes only its own area (core 0.1's `.boot`: the linker's `__run_*` / `__bss_*`), and its builder
+places no section but `.boot` / `.run` / `.fast` / `.bss` [code]. A buffer the mod addresses absolutely is never
+checked by elekloader, so a fixed DDR address works with core 0.1 and the web page unchanged; nothing zeroes it, so the
+mod does.
+
+**Where.** Free DDR on stock 1.74 (the registry's pool `ddr_mods`, its note the evidence): 0x47B48000-0x47BE0000 and
+0x47C00000-0x47FF0000 (the last 64 KB under 0x48000000 left to the stack). [code] No instruction operand of 1.74 names
+0x47B48000-0x47FFF000 in either alias; the highest buffer named is the DMA list at 0x4FB47440 (to 0x47B47480).
+[doc] Modwerk (one MKII, RAM-booted, 35 min) and elekloader's `big` area (its DDR canary, a power cycle included).
+[measured] canaries and a CPU watch over both ranges in rytm-emu: intact through a busy cold boot, a power off, a cold
+boot on the saved card and 60 s of Overbridge streaming. The registry's pool `ddr_mods`, 0x47C00000-0x47C40000 (256 KB,
+just above the area), holds the claims; the rest is unclaimed (the diagnostic image's canary).
+
+**Claims** (registry `[[ddr]]`: owner / name / addr / size, in the pool): each claim's first and last 8 B are sentinels (each
+word its own address ^ 0xC0DEF00D, the canary convention of 0003 and of the diagnostic below), the data at + 8.
+
+| claim | owner | addr | size | holds |
+|---|---|---|---|---|
+| rui_frame | 0026 | 0x47C00000 | 0x3200 | shadow, staging, comp, comp_in (1 KB each), txt_st, txt_sh, compose's tl |
+| rui_names | 0026 | 0x47C03200 | 0x1000 | ux: the source lists' names (3 x 128 x 10 B), the 48 queue |
+| rui_pmo | 0026 | 0x47C04200 | 0x2800 | pmo: the param modulation (the audio interrupt's) |
+| sfu_x | 0029 | 0x47C06A00 | 0x2000 | sfu_x: labels, TYPE lists, 0021's list knobs |
+
+The sizes leave room for the structs to grow; each stub refuses to assemble when its claim is smaller than its C struct
++ 16 (`.if RAM_X_SIZE < sizeof`).
+
+**Provenance.** The design and the code are this tree's own: fixed claims in a registry pool, set up and checked by
+each mod, with no linker or loader change. Other projects appear here only as cited facts about the Rytm (free ranges,
+their test outcomes); no code of theirs is used. The caps use 0003's canary convention (address ^ 0xC0DEF00D, this
+registry's cave canary since 2026-09); an earlier version of these claims, tested on the hardware below with the same
+addresses and sizes, used another cap word.
+
+**Tools.** layout.py: `ddr` claims fit a `ddr_mods` pool, do not overlap, are named, 16-aligned and at least 32 B; the
+pool names its OS (`os`) and lies outside the image and elekloader's area; a claim in another OS's pool is
+inactive (the scheme the caves use: a `[[pool]]` with its evidence in its note, claims in it, POOL_OF["ddr"]). build.py: each enabled mod gets `RAM_<NAME>` and `RAM_<NAME>_SIZE` as assembler symbols (defsym /
+`.set`, as its params), and the manifest records `ddr`. verify.py: the manifest's claims are the registry's,
+outside the area, inside this OS's DDR pool (read again from the registry), disjoint. ostarget.py passes a
+DDR pool through unmapped (it is not an image address).
+
+**Another OS (1.73).** 1.73 has no DDR pool yet (its image has not been scanned), so its build gives the mods no
+`RAM_` symbols. Each stub then keeps the claim as a block of its own `.bss` in elekloader's area (`.ifndef RAM_<NAME>`
+at its top: the struct + 16, as before plus the sentinels), set up and checked by the same code; `ddrdiag=1` refuses
+to assemble there. Adding 1.73 is a pool with `os = "1.73"`, its evidence in its note, and claims in it.
+
+**Zeroing and use.** In 0026's first three ticks (one claim a tick: all 27 KB in one call took the boot tick past
+rui_emu cost's 100 k instructions a UI call), before `rui_sysex` is published in 0022's mailbox, `ram_init` zeroes the
+claims and writes their sentinels, then sets `ram_ok` (a bit a claim); 0029's first `sfu_tick` does the same for sfu_x
+(`x_ok`) before tick_body publishes anything. Until then, and for good once damaged, nothing reads a claim:
+- 0026 (`ram_ok`, area .bss: 0 until the first tick): the audio interrupt's `pmo_pre` / `pmo_post` and trig_fire's
+  `pmo_vel` are skipped (stage A rebuilds the effective words every block: the sound is stock's); `pmo_cmd` refuses
+  5A 04..07; `draw_page` draws nothing from the frame (remote page, SRC view, splash); `enter` refuses; the host's
+  38 / 39 / 3D / 3E (frame) and 47 / 48 (names) are dropped; the source names read A005 / B005.
+- 0029 (`x_ok`): the FX set's wrappers pass 0021's records straight to stock's read / write / locks (no list steps);
+  our records (SFX1 / SFX2, SEND FX TYPE / ROUTE / P1..P4, BASE / WIDTH) read the stock word or 0 and refuse every
+  write and lock - never stock's own write of FX 38..41 (the stray byte in FX slot 0, fx_write_hi); the value texts
+  print the number; the host's messages are dropped; 0021's us_live still runs.
+
+**The check.** Every tick both mods compare their sentinels (16 B a claim). A changed one clears that claim's bit for
+the rest of the boot, keeps the first bad address and word, and owes a report: `55 01 00 <bad bits> <address 5x7>
+<word 5x7>` (19 B with F7; bits 1 rui_frame, 2 rui_names, 4 rui_pmo, 8 sfu_x), sent once and again with each hello.
+0026 also leaves the remote page with reason 4 (R_RAM: `30 <page> 0 4`) and shows **MOD RAM ERROR** over the stock
+screen for 5 s (again on TRK + YES). Limits: the sentinels catch a write over a claim's ends, not one in its middle
+that leaves them (the diagnostic image's canary covers the free DDR around); between the damage and the next tick
+(<= 50 ms) the claim is still used [measured: pmo_pre ran 60 more blocks]. pmo's guard sits in the two detours
+(pmo_lfo_det, pmo_vel_det: `and.l ram_ok`), not in the C functions (a C guard changed gcc's code for their hot path).
+
+**pm's worst case.** pm_emu's worst-case cost reads one block 9.4 us higher in one of its five cases (128 entries with
+96 route amounts: 103.6 us against its 100 us bound), every mean the same. Not the guard's cost [measured, pm_emu cost's
+route-amount run alone, the same events]: with the guard reading a constant (pmo running from boot, as before) 94.2;
+with the real guard and a delay loop only in ram_init's first step, 103.6 or 94.2 depending on the delay alone; the
+code before big-ram with such a delay, 103.6 too at most delays. So that case's worst block depends on the boot's
+phase (which block a burst of records lands in), and the earlier runs sampled a lucky one. The bound is raised to
+105 us (pm_emu `WORST_US`, about 15.7 % of a block); the other bounds stay (128 live: mean < 40 us, max < 100 us).
+Trimming pmo_routes_pre / _post back under 100 us is left for a later performance pass.
+
+**The host.** It needs nothing to keep working; an older host ignores 0x55. To see the reports, sidecar-firmware's
+host_link logs them (`55 01 00`: "rui: the Rytm's mod RAM is damaged: claims <bits>, at <address> (found <word>);
+<names> off until a reboot"; `55 01 01`: the diagnostic's line), and the 30's reason 4 reads "ram".
+
+**The diagnostic image** (`--param 0026-remote-ui:ddrdiag=1`, the same set otherwise): at the first tick, after the
+claims, every word of 0x47B48000-0x47BE0000 and 0x47C40000-0x47FF0000 (all of 1.74's free DDR but the mods' block) is
+filled with address ^ 0xC0DEF00D (4.3 MB; ~90 ms of the UI task once [measured, emulated]); each tick the next 512 B
+are compared (DG_STEP 128 words: a pass of both ranges in ~7.5 min; 8 KB a tick went through the D-cache and cost a
+CPU-starved UI task); a changed word counts (`dg.bad`, the first's address and word kept) and is written back, so later
+damage counts again. Every 10 s while the link is up: `55 01 01 <passes 5x7> <bad 5x7> <first address 5x7> <its word
+5x7> <ram_ok> <ram_bad>` (30 B). FUNC held shows `DDR <passes> BAD <n>` at the screen's top.
+
+**Hardware** (one MKII, OS 1.74, with a larger set of the Sidecar's mods than this tree's; the diagnostic then checked
+8 KB a tick): the diagnostic image ran ~97 min of heavy use (12 tracks playing, kit / project / sample loads, the
+Sidecar connected), a power cycle and 14 min more, and an OS .syx sent in normal mode (the Rytm ignores it outside its
+OS UPGRADE menu: no prompt, nothing written) and 37 passes more: 0 bad words. The real build then ran an hour, a power
+cycle and 10 min more: no MOD RAM ERROR, the pages worked, no audio glitch. Not done: a +Drive format. The pool's
+status is "verified".
+
+**Testing it** (a scratch project; the stock 1.74 `.syx` and a MIDI DIN sender ready, docs/FLASHING.md): flash the
+diagnostic image, hold FUNC (`DDR 0 BAD 0`, the passes counting up), use the Rytm for an hour or more (patterns, kits,
+projects, samples, sampling, Overbridge, SysEx dumps, the Sidecar's pages), power-cycle, check again; any nonzero BAD:
+note the first address (the host's log or the screen) and go back to the previous release. Then flash the real build
+and repeat: no MOD RAM ERROR, no "mod RAM is damaged" line in the host's log. tools/emu/ram_emu.py (suite `ram`):
+sealed, frame, pmo, names, sfux, diag.

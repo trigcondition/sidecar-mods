@@ -107,6 +107,12 @@ trig_fire (detour 0x4009afa0); a Rytm scene lock beats an override. Excludes 000
 [sources]
 stub = "stub.s"      # generated from rui.c by build.sh
 
+[params]
+# ddrdiag: 1 builds the DDR diagnostic image (design.md "big-ram"): at the first tick the free DDR outside the mods'
+# block (0x47B48000-0x47BE0000, 0x47C40000-0x47FF0000) is filled with address ^ 0xC0DEF00D and re-checked 8 KB a
+# tick, reported to the host (55 01 01) and shown with FUNC held. 0 (default): the release.
+ddrdiag = 0
+
 [elek]
 subscribe = [
   { event = "ev_tick", fn = "rui_tick", order = 70 },

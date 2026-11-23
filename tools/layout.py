@@ -8,7 +8,13 @@ from pathlib import Path
 # claim table -> the pattern of the pool names a claim may live in; each claim must fit
 # wholly in one. Every pool named cave, cave2, cave3, ... holds cave claims.
 POOL_OF = {"cave": r"cave\d*",
-           "ram": r"patch_ram"}
+           "ram": r"patch_ram",
+           "ddr": r"ddr_mods"}
+
+# elekloader's 128 KB DDR area (its Rytm profile's `ddr`, core 0.1): the linker's, never a pool's. build.py passes
+# the pinned elekloader's own value; this is the same, for a standalone run.
+ELEK_AREA = (0x47BE0000, 0x47C00000)
+IMAGE = (0x40000000, 0x40300000)   # the OS image's addresses (ostarget.py BASE .. + 3 MB): never a DDR pool's
 
 # A pool at status "candidate" has not been proven on hardware, so the only thing
 # allowed to claim it is the mod that does the proving. Without this the pools would
@@ -122,12 +128,17 @@ def load_excludes(root: Path) -> dict:
 
 
 def validate(reg: dict, enabled: set[str] | None = None, params: dict | None = None,
-             excludes: dict | None = None) -> list[str]:
+             excludes: dict | None = None, os_ver: str | None = None,
+             area: tuple | None = None) -> list[str]:
     """Return a list of human-readable problems; empty means the layout is sound.
 
     `params` maps owner -> that mod's [params]. Without it, gated claims are all treated
     as active, which makes two mutually exclusive claims on one region look like a
     collision - so build.py always passes it.
+
+    A pool with an `os` holds claims for that OS only: `os_ver` is the OS built for, and a claim whose pool is another
+    OS's is not active (the DDR pool `ddr_mods` is 1.74's). DDR claims (`[[ddr]]`) have rules of their own
+    (ddr_problems): their pool names its OS and lies outside the image and elekloader's `area` (default ELEK_AREA).
     """
     errors: list[str] = []
     excludes = excludes or {}
@@ -141,7 +152,15 @@ def validate(reg: dict, enabled: set[str] | None = None, params: dict | None = N
         return any(f"{y['owner']}:{y.get('gate')}" in excludes.get(x["owner"], ())
                    for x, y in ((a, b), (b, a)))
 
+    def home_os(claim):
+        """the `os` of the pool the claim lies in (None: a pool for every OS, or none holds it)"""
+        lo, hi = claim["addr"], claim["addr"] + claim["size"]
+        p = next((p for p in pools.values() if p["start"] <= lo and hi <= p["end"]), None)
+        return p.get("os") if p else None
+
     def active(claim):
+        if os_ver is not None and home_os(claim) not in (None, os_ver):
+            return False
         if not (enabled is None or claim["owner"] in enabled
                 or claim["owner"].startswith("reserved:")):
             return False
@@ -185,6 +204,8 @@ def validate(reg: dict, enabled: set[str] | None = None, params: dict | None = N
                         f"{table}: {a['owner']} (0x{a['addr']:08x}+0x{a['size']:x}) overlaps "
                         f"{b['owner']} (0x{b['addr']:08x}+0x{b['size']:x})"
                     )
+
+    errors += ddr_problems([c for c in reg.get("ddr", []) if active(c)], pools, os_ver, area)
 
     # A patch whose replacement equals what it expects changes nothing. That is always
     # either a copy-paste slip or a claim left behind after the value it targeted moved,
@@ -289,6 +310,47 @@ def validate(reg: dict, enabled: set[str] | None = None, params: dict | None = N
     return errors
 
 
+def ddr_problems(claims: list, pools: dict, os_ver, area) -> list[str]:
+    """The DDR claims' own rules (the overlaps and the pool fit are validate's, as for caves): a name, 16-byte aligned,
+    at least 32 B (two 8-byte sentinels and data); a DDR pool names the OS whose free DDR it is (its note holds the
+    evidence) and lies outside the image and outside elekloader's area."""
+    errors: list[str] = []
+    lo_a, hi_a = area or ELEK_AREA
+    for p in pools.values():
+        if not re.fullmatch(POOL_OF["ddr"], p["name"]):
+            continue
+        if not p.get("os"):
+            errors.append(f"pool {p['name']}: a DDR pool names its OS (`os`): the free DDR is that OS's")
+        if p["start"] < hi_a and lo_a < p["end"]:
+            errors.append(f"pool {p['name']} overlaps elekloader's area 0x{lo_a:08x}..0x{hi_a:08x}")
+        if p["start"] < IMAGE[1] and IMAGE[0] < p["end"]:
+            errors.append(f"pool {p['name']} overlaps the OS image 0x{IMAGE[0]:08x}..0x{IMAGE[1]:08x}")
+    names = {}
+    for c in claims:
+        lo = c["addr"]
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", c.get("name", "")):
+            errors.append(f"ddr claim by {c['owner']} at 0x{lo:08x}: needs a `name` (lower case, the RAM_<NAME> symbol)")
+        elif c["name"] in names:
+            errors.append(f"ddr: {c['owner']} and {names[c['name']]} both name a claim {c['name']!r}")
+        names.setdefault(c.get("name", ""), c["owner"])
+        if lo % 16 or c["size"] % 16 or c["size"] < 32:
+            errors.append(f"ddr claim {c.get('name')} by {c['owner']} (0x{lo:08x}+0x{c['size']:x}): addr and size "
+                          f"16-byte aligned, at least 32 B")
+    return errors
+
+
+def ddr_claims_for(reg: dict, os_ver: str) -> list:
+    """The registry's [[ddr]] claims whose pool is os_ver's (build.py's RAM_ symbols, verify.py's check)."""
+    pools = [p for p in reg.get("pool", []) if re.fullmatch(POOL_OF["ddr"], p["name"]) and p.get("os") == os_ver]
+    return [c for c in reg.get("ddr", [])
+            if any(p["start"] <= c["addr"] and c["addr"] + c["size"] <= p["end"] for p in pools)]
+
+
+def tree_os(root: Path) -> str:
+    with open(root / "re" / "symbols.toml", "rb") as fh:
+        return tomllib.load(fh)["meta"]["target"].removeprefix("OS")
+
+
 def load_params(root: Path) -> dict:
     """owner -> its mod.toml [params], so a standalone run gates claims the way a build does.
 
@@ -310,7 +372,8 @@ if __name__ == "__main__":
     mods = {f.parent.name for f in (root / "mods").glob("*/mod.toml")}
     enabled = {c["owner"] for t in reg.values() if isinstance(t, list) for c in t
                if isinstance(c, dict) and "owner" in c and c["owner"] in mods}
-    problems = validate(reg, enabled, load_params(root), load_excludes(root))
+    osv = tree_os(root)
+    problems = validate(reg, enabled, load_params(root), load_excludes(root), osv)
     if problems:
         for p in problems:
             print("ERROR:", p)

@@ -440,3 +440,11 @@ after the turn and dropped a host value then.
   (inside the stale window for any send between 330 and 380 ms) is taken, and the hold reads 0.
 - **Results:** it fails on sbw4 (the value is dropped; the hold is still 0x30f4ac77) and passes on sbw5 [measured].
 - **Build:** sbw5, .syx 6dc37d77d6eaf4e1b14c39cbd91b05ef347037659154d0b13a9b49d23ae2b244.
+
+## 12. big-ram: sfu_x outside elekloader's area (OS 1.74)
+
+sfu_x lives in the registry's DDR claim sfu_x (0x47C06A00, 8 KB, OS 1.74), zeroed and sealed at the first sfu_tick
+(`x_init`), its sentinels checked every tick; without a good claim (`x_ok` 0: before the first tick, or for good once
+damaged) the wrappers fall back as 0026's design.md "big-ram" says (0021's records stock's, ours read-only, never
+stock's write of FX 38..41) and a damage report `55 01 00 08 <address> <word>` goes to the host. On an OS without the
+claim (1.73) it is a block of 0029's own `.bss` in elekloader's area, as before. Emulator: tools/emu/ram_emu.py sfux.

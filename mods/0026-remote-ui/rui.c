@@ -140,18 +140,88 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 #define K_PAD0 0x90       /* the 12 pads 0x90..0x9b */
 #define K_PAD1 0x9b
 
-enum { R_USER, R_HOST, R_TIMEOUT, R_ESCAPE };
-enum { S_TIME = 1, S_HOST, S_IDLE, S_KEY, S_ENC, S_OPEN };   /* why the splash ended */
+enum { R_USER, R_HOST, R_TIMEOUT, R_ESCAPE, R_RAM };   /* R_RAM: big-ram, the frame's claim damaged */
+enum { S_TIME = 1, S_HOST, S_IDLE, S_KEY, S_ENC, S_OPEN, S_RAM };   /* why the splash ended */
 
-static uint8_t shadow[1024] __attribute__((aligned(4)));
-static uint8_t staging[1024] __attribute__((aligned(4)));
-static uint8_t comp[1024] __attribute__((aligned(4)));      /* UI task: the shadow with the text drawn over it */
-static uint8_t comp_in[1024] __attribute__((aligned(4)));   /* UI task: the shadow's copy, checked before comp takes it */
+/* ---- big-ram (design.md "big-ram"): the large zero-initialised buffers live outside elekloader's 128 KB area, in
+   DDR claims of the registry's ddr_mods pool (registry [[ddr]]; the pool is OS 1.74's): build.py defines RAM_<NAME> (the
+   claim's address) and RAM_<NAME>_SIZE as assembler symbols. Nothing copies or zeroes that RAM (the boot copier clears
+   only the area's .bss), so ram_init, in the first three ticks (a claim each) and before rui_sysex is published in
+   0022's mailbox, zeroes each claim and writes its caps: the two words at each end, each its own address ^ 0xC0DEF00D.
+   ram_ok has a bit a claim while
+   it is zeroed and its sentinels hold; the tick checks them (ram_check) and a changed one clears its bit for good this
+   boot (ram_bad): nothing reads that claim again - the remote page / SRC view / splash stop drawing (the page leaves
+   with reason 4, R_RAM), the source names go back to A005 / B005, the param modulation stops (the interrupt's pmo_pre /
+   pmo_post / pmo_vel return at once: stage A rebuilds the effective words every block, so the sound is stock's), the
+   host's 38 / 39 / 3D / 3E / 47 / 48 / 5A 04..07 are dropped. A 55 01 00 report goes to the host and the Rytm shows
+   "MOD RAM ERROR" for 5 s (and again on TRK + YES). Before the first tick ram_ok is 0 (it is the area's .bss): the
+   interrupt and the keys never read a claim that has not been zeroed. */
+extern uint8_t RAM_RUI_FRAME[], RAM_RUI_NAMES[], RAM_RUI_PMO[];   /* absolute (build.py, registry [[ddr]]) */
+#define RC_FRAME 1u
+#define RC_NAMES 2u
+#define RC_PMO   4u
+#define RAM_FONT 2                                   /* the message's font (FONT_CTX) */
+#define CAP_KEY 0xc0def00du                          /* a cap word: its own address ^ CAP_KEY (0003's canary convention) */
+#define ASYM(s) ({ uint32_t v_; __asm__("move.l #" #s ",%0" : "=d"(v_)); v_; })   /* an assembler symbol's value */
+volatile uint32_t ram_ok;                     /* RC_* bits: zeroed and intact */
+uint32_t ram_bad, ram_bad_at, ram_bad_word, ram_init_n, ram_checks, ram_rep_sent, ram_show_until, ram_drops;
+uint32_t ram_rep_owed, ram_step;   /* ram_step: the claims ram_init has zeroed so far */
+volatile uint32_t ram_test, ram_test_at;   /* (tests, --poke: ram_test ticks from now the word at ram_test_at is flipped) */
+/* A claim of n bytes at lo: its two first and two last words are caps, the data between. claim_open clears the whole
+   claim (end pointer, a word a step) and then writes the four caps; claim_cap_bad answers the first cap whose word is
+   not its own address ^ CAP_KEY (0: all four hold). */
+static void claim_caps(uint32_t lo, uint32_t n, uint32_t cap[4]) {
+  cap[0] = lo; cap[1] = lo + 4; cap[2] = lo + n - 8; cap[3] = lo + n - 4;
+}
+static void claim_open(uint32_t lo, uint32_t n) {
+  volatile uint32_t *w = (volatile uint32_t *)lo, *end = (volatile uint32_t *)(lo + n);
+  uint32_t cap[4];
+  int32_t i;
+  while (w < end) *w++ = 0;
+  claim_caps(lo, n, cap);
+  for (i = 0; i < 4; ++i) *(volatile uint32_t *)cap[i] = cap[i] ^ CAP_KEY;
+}
+static uint32_t claim_cap_bad(uint32_t lo, uint32_t n) {
+  uint32_t cap[4];
+  int32_t i;
+  claim_caps(lo, n, cap);
+  for (i = 0; i < 4; ++i)
+    if (*(const volatile uint32_t *)cap[i] != (cap[i] ^ CAP_KEY)) return cap[i];
+  return 0;
+}
 
 /* A text slot (3D): glass x, top y, font 0..16, flags (bits 0-1 align, bit 2 inverted), len, the characters. */
 struct txt { uint8_t x, y, font, flags, len, pad[3]; char s[TXTLEN + 4]; };   /* 44 B */
-static struct txt txt_st[NTXT] __attribute__((aligned(4)));    /* MIDI task: staging */
-static struct txt txt_sh[NTXT] __attribute__((aligned(4)));    /* committed with the shadow (same seqlock) */
+struct big {                                       /* claim rui_frame, at its + 8 */
+  uint8_t shadow[1024], staging[1024];
+  uint8_t comp[1024];                              /* UI task: the shadow with the text drawn over it */
+  uint8_t comp_in[1024];                           /* UI task: the shadow's copy, checked before comp takes it */
+  struct txt txt_st[NTXT];                         /* MIDI task: staging */
+  struct txt txt_sh[NTXT];                         /* committed with the shadow (same seqlock) */
+  struct txt tl[NTXT];                             /* compose's copy */
+};
+_Static_assert(__builtin_offsetof(struct big, staging) == 0x400 && __builtin_offsetof(struct big, comp_in) == 0xc00,
+               "the absolute symbols below");
+/* big-ram on an OS without this claim (no DDR pool for it in the registry, e.g. 1.73): build.py gives no RAM_RUI_FRAME, so the
+   claim is a block of elekloader's own .bss (zeroed by the boot copier; set up and checked the same way) */
+__asm__(".ifndef RAM_RUI_FRAME\n.pushsection .bss\n.balign 16\nrui_frame_bss: .space %c0\n.popsection\n"
+        ".set RAM_RUI_FRAME, rui_frame_bss\n.set RAM_RUI_FRAME_SIZE, %c0\n.set RAM_IN_AREA, 1\n.endif\n" :: "i"((sizeof(struct big) + 16 + 15) & ~15u));
+extern struct big rui_big;   /* at RAM_RUI_FRAME + 8 (the .set below): a named object, so gcc keeps its aliasing rules */
+#define BIG (&rui_big)
+#define shadow  (BIG->shadow)
+#define staging (BIG->staging)
+#define comp    (BIG->comp)
+#define comp_in (BIG->comp_in)
+#define txt_st  (BIG->txt_st)
+#define txt_sh  (BIG->txt_sh)
+#define FRAME_OK (ram_ok & RC_FRAME)
+#define NAMES_OK (ram_ok & RC_NAMES)
+#define PMO_OK   (ram_ok & RC_PMO)
+/* the moved buffers' addresses as absolute symbols, for the emulator suites (rui_emu.py peeks "shadow", pm_emu.py
+   "pmo", sv_emu.py "ux") */
+__asm__(".globl rui_big\n.set rui_big, RAM_RUI_FRAME+8\n.globl shadow\n.set shadow, RAM_RUI_FRAME+8\n.globl staging\n.set staging, RAM_RUI_FRAME+0x408\n"
+        ".globl comp\n.set comp, RAM_RUI_FRAME+0x808\n.globl comp_in\n.set comp_in, RAM_RUI_FRAME+0xc08\n"
+        ".globl ux\n.set ux, RAM_RUI_NAMES+8\n.globl pmo\n.set pmo, RAM_RUI_PMO+8\n");
 /* An encoder's local echo (3F): the slot it writes, the value, range, flags (bit 0 FUNC x 8, bit 1 shown -64..63),
    the prefix. Written by the MIDI task under gen (odd while writing). */
 struct bind { uint8_t slot, value, lo, hi, flags, plen; char pre[14]; };   /* 20 B */
@@ -315,7 +385,7 @@ static volatile uint8_t pg_req[4];
 #define NM_LISTS 3                     /* 0 GRANULAR SRC, 1 WAVETABLE TBL, 2 MULTISAMPLE INST */
 #define NM_LEN 10                      /* 9 characters kept of the 13 sent (0021's JN_NAME: what a knob shows) */
 #define WQ_N 8
-static struct {
+struct ux_t {                          /* claim rui_names, at its + 8 */
   uint32_t push;                       /* pushes reported at their press (their release goes too) */
   uint32_t pushes, nm_msgs, nm_bad, w_rx, w_done, w_refused, w_drop, w_sent;   /* diagnostics */
   uint8_t nm_total[NM_LISTS], pad;
@@ -328,7 +398,12 @@ static struct {
   uint8_t nm_bank[NM_LISTS], pad3;     /* the bank (0..7, A..H) whose names nm[l] holds (47's bank byte; 0 an old 47) */
   uint8_t wq_flags[WQ_N];              /* 48's fifth byte (bit 0: from the bank list) */
   uint32_t w_locked, w_full;           /* 48s that locked the held steps; refused for a full lock budget */
-} ux __attribute__((section(".bss"), aligned(4)));
+};
+/* big-ram on an OS without this claim (no DDR pool for it in the registry, e.g. 1.73): build.py gives no RAM_RUI_NAMES, so the
+   claim is a block of elekloader's own .bss (zeroed by the boot copier; set up and checked the same way) */
+__asm__(".ifndef RAM_RUI_NAMES\n.pushsection .bss\n.balign 16\nrui_names_bss: .space %c0\n.popsection\n"
+        ".set RAM_RUI_NAMES, rui_names_bss\n.set RAM_RUI_NAMES_SIZE, %c0\n.endif\n" :: "i"((sizeof(struct ux_t) + 16 + 15) & ~15u));
+extern struct ux_t ux;       /* at RAM_RUI_NAMES + 8 (the .set above) */
 /* 1036b: the Pi display (49): UP + T1..T5 asks for its page; the selected track, its machine and name, its P1..P8 with
    their labels, for the display's voice view (polled at the UI tick, sent on a change and after each hello) */
 static struct {
@@ -444,7 +519,7 @@ struct pmo_ent {                   /* off, ovr: 8.8 << 8; mix: 1 << 23 = 1.0; n_
   int32_t off, off_st, off_tg, ovr, ovr_st, ovr_tg, mix, mix_st, mix_tg;
   uint32_t g;                      /* 26 + 42 t + w */
 };
-static struct {
+struct pmo_t {                         /* claim rui_pmo, at its + 8 */
   uint32_t used, ring_drop, kit_drop, timeouts, full, refused, runs, recs, clears, t_max, t_sum, t_n, vel_n, scn_skips;
   volatile uint32_t rh, last_blk, stat_req, hello_n, lost_n, reload_n;   /* the MIDI / UI tasks write these */
   uint32_t rt, to_last, hello_s, lost_s, reload_s, kit, top, scn_blk, ran, t0, full_op;   /* the interrupt's */
@@ -465,7 +540,12 @@ static struct {
   uint32_t link_drop;              /* the interrupt's: records discarded at a hello / port drop (the old link's) */
   uint32_t rtab[13][2][2][4];      /* S-pre's route tables per track: [into 1..8 / 9..41][VM / AT][route] {amount, g} */
   uint8_t rany[13];                /* bit 0 / 1 VM / AT into 1..8, bit 2 / 3 into 9..41 */
-} pmo __attribute__((section(".bss"), aligned(4)));
+};
+/* big-ram on an OS without this claim (no DDR pool for it in the registry, e.g. 1.73): build.py gives no RAM_RUI_PMO, so the
+   claim is a block of elekloader's own .bss (zeroed by the boot copier; set up and checked the same way) */
+__asm__(".ifndef RAM_RUI_PMO\n.pushsection .bss\n.balign 16\nrui_pmo_bss: .space %c0\n.popsection\n"
+        ".set RAM_RUI_PMO, rui_pmo_bss\n.set RAM_RUI_PMO_SIZE, %c0\n.endif\n" :: "i"((sizeof(struct pmo_t) + 16 + 15) & ~15u));
+extern struct pmo_t pmo;     /* at RAM_RUI_PMO + 8 (the .set above) */
 /* the offsets pm_emu.py peeks (PMO_RH, PMO_RT, PMO_HELLO_N, PMO_SMASK, PMO_RING) */
 _Static_assert(__builtin_offsetof(__typeof__(pmo), rh) == 56 && __builtin_offsetof(__typeof__(pmo), rt) == 80 &&
                __builtin_offsetof(__typeof__(pmo), hello_n) == 68 && __builtin_offsetof(__typeof__(pmo), smask) == 512 &&
@@ -524,7 +604,8 @@ static void flush(void) {
     st.hellos++;
     qp.owe_n++; qp.scn_owe = 1;        /* 0.5.0: the knob's and the scene's reports again (qp_tick: live) */
     qp.hello = 1;
-    pmo.hello_n++;                     /* pm: a new link: the old one's modulation fades out */
+    if (PMO_OK) pmo.hello_n++;         /* pm: a new link: the old one's modulation fades out */
+    if (ram_bad) ram_rep_owed = 1;     /* big-ram: the damage report again for this link */
   }
   if (st.pend_open) {
     uint8_t m[10] = {0xf0, 0x7d, 0x52, 0x54, 0x30, 0x01, st.pend_page, st.pend_on, st.pend_reason, 0xf7};
@@ -1083,6 +1164,7 @@ static void led_restore(void);
 static void enter(void *ctrl, uint8_t reason, uint8_t page) {
   int32_t i;
   if (st.active) return;
+  if (!FRAME_OK) { ram_show_until = st.ticks + 60; *((volatile uint8_t *)ctrl + 0x20) = 1; return; }   /* big-ram */
   if (st.splash_on) { st.splash_on = 0; st.splash_why = S_OPEN; }
   st.active = 1;
   st.idle = 0;
@@ -1168,6 +1250,9 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
   int32_t n = len - 7;               /* bytes between <ver> and F7 */
   const uint8_t *b = d + 6;
   if (len < 7 || d[5] != 1 || d[len - 1] != 0xf7) { rx_bad++; return 1; }
+  /* big-ram: a damaged claim's messages are dropped (nothing writes it again) */
+  if (!FRAME_OK && (d[4] == 0x38 || d[4] == 0x39 || d[4] == 0x3d || d[4] == 0x3e)) { ram_drops++; st_valid = 0; return 1; }
+  if (!NAMES_OK && (d[4] == 0x47 || d[4] == 0x48)) { ram_drops++; return 1; }
   switch (d[4]) {
   case 0x38:
     if (n < 5 || b[1] > 15 || b[2] > 7 || b[3] < 1 || b[4] < 1 || b[1] + b[3] > 16 || b[2] + b[4] > 8 ||
@@ -2634,13 +2719,135 @@ __asm__(
     "pm_icon:\n"
     "  rts\n");
 
+/* ---- big-ram: the claims' set-up and their check (above, "big-ram"), the report to the host, the diagnostic -------
+ * host <- Rytm  55 01 00 <bad: RC_* bits> <address: 5 x 7 bits> <word found: 5 x 7 bits>     a claim damaged (once a
+ *               change, and again with each hello while any is): 19 B
+ *               55 01 01 <passes 5x7> <bad words 5x7> <first bad address 5x7> <its word 5x7> <ram_ok> <ram_bad>
+ *               the diagnostic image's DDR canary (ddrdiag=1), every 10 s while the link is up: 30 B with F7
+ * The diagnostic (P_DDRDIAG, mod.toml [params] ddrdiag): at the first tick, after the claims, every word of DG_R1 and DG_R2
+ * (1.74's free DDR, registry pool ddr_mods' note, without the mods' block 0x47C00000-0x47C40000) is filled with its address
+ * ^ 0xC0DEF00D; each tick DG_STEP words further on are compared (round robin over both ranges); a changed word counts
+ * (dg.bad; the first one's address and word kept) and is written back, so later damage counts again. FUNC held shows
+ * "DDR <passes> BAD <n>" on the Rytm's screen. */
+#define DG_R1_LO 0x47b48000u
+#define DG_R1_HI 0x47be0000u
+#define DG_R2_LO 0x47c40000u   /* the registry's ddr_mods pool ends there */
+#define DG_R2_HI 0x47ff0000u
+#define DG_STEP  128u          /* words a tick: 512 B, a pass of both ranges in ~7.5 min at 20 Hz (2048, 8 KB a tick,
+                                  went through the D-cache and cost a CPU-starved UI task) */
+#define DG_CAN(a) ((a) ^ 0xc0def00du)
+struct { uint32_t on, pos, passes, bad, first_at, first_val, words, fill_us, rep_t, reps; } dg __attribute__((aligned(4)));
+static void dg_fill(uint32_t lo, uint32_t hi) {
+  volatile uint32_t *p = (volatile uint32_t *)lo;
+  uint32_t a;
+  for (a = lo; a < hi; a += 4) *p++ = DG_CAN(a);
+}
+static void dg_init(void) {
+  uint32_t t0 = TIMER;
+  dg_fill(DG_R1_LO, DG_R1_HI);
+  dg_fill(DG_R2_LO, DG_R2_HI);
+  dg.fill_us = TIMER - t0;
+  dg.pos = DG_R1_LO;
+  dg.on = 1;
+}
+static void dg_tick(void) {
+  uint32_t n = DG_STEP, a = dg.pos;
+  while (n--) {
+    volatile uint32_t *p = (volatile uint32_t *)a;
+    uint32_t w = *p;
+    if (w != DG_CAN(a)) {
+      if (!dg.bad) { dg.first_at = a; dg.first_val = w; }
+      dg.bad++;
+      *p = DG_CAN(a);
+    }
+    a += 4;
+    if (a == DG_R1_HI) a = DG_R2_LO;
+    else if (a == DG_R2_HI) { a = DG_R1_LO; dg.passes++; }
+  }
+  dg.words += DG_STEP;
+  dg.pos = a;
+}
+static uint8_t *put35(uint8_t *m, uint32_t v) {   /* 32 bits as 5 x 7 */
+  m[0] = (uint8_t)(v >> 28 & 0x0f); m[1] = (uint8_t)(v >> 21 & 0x7f); m[2] = (uint8_t)(v >> 14 & 0x7f);
+  m[3] = (uint8_t)(v >> 7 & 0x7f); m[4] = (uint8_t)(v & 0x7f);
+  return m + 5;
+}
+static int32_t ram_init(void) {   /* 1: all claims ready */
+  /* each claim holds its struct and the 16 sentinel bytes: the assembler refuses a smaller registry claim */
+  __asm__ volatile(".if RAM_RUI_FRAME_SIZE < %c0\n.error \"registry ddr claim rui_frame is too small\"\n.endif\n"
+                   ".if RAM_RUI_NAMES_SIZE < %c1\n.error \"registry ddr claim rui_names is too small\"\n.endif\n"
+                   ".if RAM_RUI_PMO_SIZE < %c2\n.error \"registry ddr claim rui_pmo is too small\"\n.endif\n"
+                   /* the diagnostic fills 1.74's free DDR: only where the claims are in DDR */
+                   ".if P_DDRDIAG\n.ifdef RAM_IN_AREA\n.error \"ddrdiag=1 needs this OS's DDR claims (registry [[ddr]])\"\n.endif\n.endif\n"
+                   :: "i"(sizeof(struct big) + 16), "i"(sizeof(struct ux_t) + 16), "i"(sizeof(struct pmo_t) + 16));
+  /* one claim a tick (the first three ticks): zeroing all 27 KB in one call took the boot tick past rui_emu cost's
+     100 k instructions a UI call; rui_sysex is published only after the last (tick_body) */
+  if (ram_step == 0) {
+    claim_open((uint32_t)RAM_RUI_FRAME, ASYM(RAM_RUI_FRAME_SIZE));
+  } else if (ram_step == 1) {
+    claim_open((uint32_t)RAM_RUI_NAMES, ASYM(RAM_RUI_NAMES_SIZE));
+  } else {
+    claim_open((uint32_t)RAM_RUI_PMO, ASYM(RAM_RUI_PMO_SIZE));
+    ram_init_n++;
+    if (ASYM(P_DDRDIAG)) dg_init();
+    __asm__ volatile("" ::: "memory");   /* the zeros and sentinels before the bits that let the interrupt read them */
+    ram_ok = RC_FRAME | RC_NAMES | RC_PMO;
+    return 1;
+  }
+  ram_step++;
+  return 0;
+}
+static void ram_check(void *ctrl) {
+  uint32_t bad = 0, at = 0, a;
+  ram_checks++;
+  if (ram_test && !--ram_test && ram_test_at) *(volatile uint32_t *)ram_test_at ^= 0x00010000u;
+  if (FRAME_OK && (a = claim_cap_bad((uint32_t)RAM_RUI_FRAME, ASYM(RAM_RUI_FRAME_SIZE)))) bad |= RC_FRAME, at = a;
+  if (NAMES_OK && (a = claim_cap_bad((uint32_t)RAM_RUI_NAMES, ASYM(RAM_RUI_NAMES_SIZE)))) bad |= RC_NAMES, at = at ? at : a;
+  if (PMO_OK && (a = claim_cap_bad((uint32_t)RAM_RUI_PMO, ASYM(RAM_RUI_PMO_SIZE)))) bad |= RC_PMO, at = at ? at : a;
+  if (!bad) return;
+  ram_ok &= ~bad;                      /* for good this boot: nothing reads these claims again */
+  if (!ram_bad) { ram_bad_at = at; ram_bad_word = *(const volatile uint32_t *)at; }
+  ram_bad |= bad;
+  ram_rep_owed = 1;
+  ram_show_until = st.ticks + 100;     /* 5 s of MOD RAM ERROR */
+  if (bad & RC_FRAME) {
+    if (st.active) leave(ctrl, R_RAM);
+    splash_end(ctrl, S_RAM);
+  }
+  *((volatile uint8_t *)ctrl + 0x20) = 1;   /* the stock views redraw */
+}
+static void ram_tick(void) {
+  uint8_t m[30], *q;
+  if (dg.on) dg_tick();
+  if (!(PORT_STATE == 1 && st.hellos)) return;
+  if (ram_rep_owed) {
+    m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x55; m[5] = 0x01; m[6] = 0; m[7] = (uint8_t)ram_bad;
+    q = put35(put35(m + 8, ram_bad_at), ram_bad_word);
+    *q++ = 0xf7;
+    if (send(m, q - m)) { ram_rep_owed = 0; ram_rep_sent++; }
+    return;
+  }
+  if (dg.on && (int32_t)(st.ticks - dg.rep_t) >= 200) {
+    m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x55; m[5] = 0x01; m[6] = 1;
+    q = put35(put35(put35(put35(m + 7, dg.passes), dg.bad), dg.first_at), dg.first_val);
+    *q++ = (uint8_t)ram_ok; *q++ = (uint8_t)ram_bad; *q++ = 0xf7;
+    if (send(m, q - m)) { dg.rep_t = st.ticks; dg.reps++; }
+  }
+}
+
 /* ---- UI task ------------------------------------------------------------------------------------------ */
 static void tick_body(void *ctrl) {
   uint32_t r = rx;
   int32_t i;
   st.ticks++;
   st.t_tick = TIMER;
+  if (st.init) {
+    ram_check(ctrl);
+    ram_tick();
+    if (ram_bad && st.ticks == ram_show_until) *((volatile uint8_t *)ctrl + 0x20) = 1;   /* the message off again */
+  }
   if (!st.init) {
+    if (!ram_init()) return;        /* big-ram: the claims zeroed and sealed before rui_sysex is published (below) */
     MBOX[1] = (uint32_t)rui_sysex;
     MBOX[0] = 0x52554950u;          /* 'RUIP' */
     st.init = 1;
@@ -2663,7 +2870,7 @@ static void tick_body(void *ctrl) {
     }
     if (st.pend_hello && sv.on) { sv.pend29 = 1; sv.p_track = sv.track; sv.p_on = 1; sv.vals_all = 1; }   /* 1027 */
   } else {
-    if (st.port_ticks) pmo.lost_n++;   /* pm: the port dropped: the modulation fades out (once a drop) */
+    if (st.port_ticks && PMO_OK) pmo.lost_n++;   /* pm: the port dropped: the modulation fades out (once a drop) */
     st.port_ticks = 0;
     st.hello_n = 0;
     st.pend_hello = 0;
@@ -2782,14 +2989,14 @@ static void draw_txt(const struct txt *t, const char *str) {
    without its labels and values, as often as commits meet draws - an animated page (a playhead, a moving value) commits
    at up to 40 Hz [read; not reproduced in rytm-emu: torn 0 over thousands of frames, see the popup report]. */
 static int32_t compose(uint32_t c) {
-  static struct txt tl[NTXT];
+  struct txt *tl = BIG->tl;
   char eb[TXTLEN + 4];
   uint32_t s0, t0 = TIMER, dt;
   int32_t i, e;
   s0 = sh_seq;
   if (s0 & 1) return 0;
   copy32((uint32_t *)comp_in, (const volatile uint32_t *)shadow, 256);
-  copy32((uint32_t *)tl, (const volatile uint32_t *)txt_sh, sizeof tl / 4);
+  copy32((uint32_t *)tl, (const volatile uint32_t *)txt_sh, sizeof txt_sh / 4);
   if (sh_seq != s0) return 0;
   copy32((uint32_t *)comp, (const volatile uint32_t *)comp_in, 256);
   if (!st.bm[0]) BITMAP_CTOR(st.bm, 128, 64, comp, 0);
@@ -2842,6 +3049,7 @@ static void draw_page(void *bmp, void *ctrl) {
   uint32_t c;
   int32_t i;
   (void)ctrl;
+  if (!FRAME_OK) return;            /* big-ram: never from a claim not zeroed or damaged */
   if (!st.active && !st.splash_on && !sv.show) return;
   if (st.active && st.aside) return;   /* 1038: stock's SCALE menu on the glass */
   c = commits;
@@ -2939,7 +3147,7 @@ static int32_t key_body(void *brain, void *ev) {
     if (BIT(sq.down, code)) { CLR(sq.down, code); queue_key(code, 0); flush(); return 1; }   /* 1032: seq mode's */
     if (BIT(st.stock_down, code)) {   /* pressed before: stock's */
       CLR(st.stock_down, code);
-      if (code >= K_PUSH0 && code <= K_PUSH7 && (ux.push >> (code - K_PUSH0) & 1)) {   /* 1036: the SRC view's push */
+      if (code >= K_PUSH0 && code <= K_PUSH7 && NAMES_OK && (ux.push >> (code - K_PUSH0) & 1)) {   /* 1036: the SRC view's push */
         ux.push &= ~(1u << (code - K_PUSH0));
         queue_key(code, 0);
         flush();
@@ -3225,7 +3433,7 @@ static int32_t key_body(void *brain, void *ev) {
   }
   /* 1036, the SRC view: an encoder's push goes to the host (31 down / up) and to stock, as before (nothing caught):
      the host's source list (GRANULAR SRC, WAVETABLE TBL, MULTISAMPLE INST) stays open while P1's push is held */
-  if (!st.active && sv.on && code >= K_PUSH0 && code <= K_PUSH7) {
+  if (!st.active && sv.on && code >= K_PUSH0 && code <= K_PUSH7 && NAMES_OK) {
     ux.push |= 1u << (code - K_PUSH0);
     ux.pushes++;
     queue_key(code, 1);
@@ -3610,7 +3818,7 @@ int32_t cu_text(void *functor, int32_t value, void *str) {
       int32_t l = r == CU_DSPS_SMP || cu.p1m == CU_GR || cu.p1m == CU_CP ? 0 : cu.p1m == CU_WT ? 1 : cu.p1m == CU_MS ? 2 : -1,
               bk = value >> 5 & 7;   /* (1051: CHOP's SRC the SAMPLES list's, as GRANULAR's) */
       if (!v) return CU_PRINTF(str, cu_fmt_s, cu_off);
-      if (l >= 0 && ux.nm_bank[l] == bk && ux.nm[l][v][0])   /* (a bank's names: its rows that hold a file) */
+      if (l >= 0 && NAMES_OK && ux.nm_bank[l] == bk && ux.nm[l][v][0])   /* (a bank's names: its rows that hold a file) */
         return CU_PRINTF(str, cu_fmt_s, ux.nm[l][v]);
       return CU_PRINTF(str, cu_fmt_bk, 'A' + bk, v);
     }
@@ -3761,6 +3969,7 @@ typedef void (*setp_fn)(int32_t value, int32_t track, int32_t index);
 #define US_BANK    ((void *(*)(void))0x40194618u)
 #define US_COMMIT  ((void (*)(void *bank, int32_t track, int32_t record, int32_t value))0x4003355cu)
 static void wr_tick(void) {
+  if (!NAMES_OK) return;
   while (ux.wr_n) {   /* the replies first (in order) */
     if (!send3(0x48, ux.wr[0][0], ux.wr[0][1], ux.wr[0][2])) return;
     uint32_t i;
@@ -3977,6 +4186,7 @@ static int32_t pmo_cmd(const uint8_t *b, int32_t n) {
   int32_t i, k, cnt, sz;
   uint32_t h, op = b[0];
   struct pmo_rec r;
+  if (!PMO_OK) { ram_drops++; return 1; }   /* big-ram: no claim, no modulation (refused) */
   for (i = 0; i < n; ++i)
     if (b[i] > 0x7f) return 1;     /* (USB-MIDI does not enforce 7-bit SysEx data) */
   if (op == 7) {
@@ -4249,7 +4459,9 @@ int32_t pmo_vel(uint32_t t, int32_t vel) {
 /* the UI task, after the hello: 07's answer, the "full" notice (at most once a second) */
 static void pmo_tick(void) {
   uint8_t m[15];
-  uint32_t q = pmo.stat_req, x;
+  uint32_t q, x;
+  if (!PMO_OK) return;
+  q = pmo.stat_req;
   if (!qp.hello) return;
   m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x2d; m[5] = 0x01;
   if (q != pmo.stat_t) {
@@ -4278,12 +4490,22 @@ __asm__(
     "  .align 2\n"
     /* the audio interrupt's `jsr lfo_block` (0x40120fae, 6 B; its argument on the stack): S-pre, the LFO with its
        argument, S-post, back to its `addq.l #4,%sp` (0x40120fb4). d0 / d1 / a0 / a1 are a call's scratch there. */
+    /* big-ram: pmo_pre / pmo_post / pmo_vel run only while rui_pmo is good (ram_ok bit 4): checked here, not in C
+       (a guard in the functions changed gcc's code for their hot path: +9 us worst case, pm_emu cost) */
     "pmo_lfo_det:\n"
+    "  moveq #4,%d0\n"
+    "  and.l ram_ok,%d0\n"
+    "  beq.s 2f\n"
     "  jsr pmo_pre\n"
     "  move.l (%sp),-(%sp)\n"
     "  jsr 0x4009e790\n"
     "  addq.l #4,%sp\n"
     "  jsr pmo_post\n"
+    "  jmp 0x40120fb4\n"
+    "2:\n"
+    "  move.l (%sp),-(%sp)\n"
+    "  jsr 0x4009e790\n"
+    "  addq.l #4,%sp\n"
     "  jmp 0x40120fb4\n"
     "  .align 2\n"
     /* trig_fire where the velocity is final (0x4009afa0, 6 B: `movel %sp@(60),%d0; addal %a2,%a3`): d0 =
@@ -4292,6 +4514,9 @@ __asm__(
     "pmo_vel_det:\n"
     "  move.l 60(%sp),%d0\n"
     "  adda.l %a2,%a3\n"
+    "  moveq #4,%d1\n"
+    "  and.l ram_ok,%d1\n"
+    "  beq.s 3f\n"
     "  move.l %d0,-(%sp)\n"
     "  move.l 96(%sp),-(%sp)\n"
     "  jsr pmo_vel\n"
@@ -4303,6 +4528,7 @@ __asm__(
     "  lsl.l #8,%d1\n"
     "  move.l %d1,72(%sp)\n"
     "1:\n"
+    "3:\n"
     "  jmp 0x4009afa6\n");
 
 /* the MIDI task: one host command, answered by the UI task */
@@ -4414,9 +4640,45 @@ void rui_tick(void *ctrl) {
   if (dt > st.ui_max) st.ui_max = dt;
 }
 
+/* big-ram: MOD RAM ERROR over the stock screen for 5 s after a claim's damage (and on TRK + YES then); the
+   diagnostic image's DDR canary while FUNC is held. Drawn by the Rytm's own text routine into the canvas's pixels. */
+static const char ram_t_err[] = "MOD RAM ERROR";
+static const char ram_t_bad[] = " BAD ";
+static const char ram_t_ddr[] = "DDR ";
+static int32_t u10(char *o, uint32_t v) {   /* any 32-bit count, decimal */
+  char t[10];
+  int32_t n = 0, k = 0;
+  do t[n++] = (char)('0' + v % 10); while (v /= 10);
+  while (n) o[k++] = t[--n];
+  return k;
+}
+static void ram_draw(void *bmp) {
+  uint32_t *px = *(uint32_t **)((uint8_t *)bmp + 16);
+  uint32_t bm2[8];
+  char b[32];
+  const char *t = 0;
+  void *font;
+  int32_t n, h;
+  if (ram_bad && (int32_t)(ram_show_until - st.ticks) > 0) t = ram_t_err;
+  else if (dg.on && HELD(K_FUNC)) {
+    for (n = 0; ram_t_ddr[n]; ++n) b[n] = ram_t_ddr[n];
+    n += u10(b + n, dg.passes);
+    for (h = 0; ram_t_bad[h]; ++h) b[n++] = ram_t_bad[h];
+    n += u10(b + n, dg.bad);
+    b[n] = 0;
+    t = b;
+  }
+  if (!t || !px) return;
+  BITMAP_CTOR(bm2, 128, 64, px, 0);
+  font = TEXT_FONT(FONT_CTX(RAM_FONT));
+  h = *(const uint16_t *)((const uint8_t *)font + 6);
+  TEXT_DRAW(bm2, font, 64, 64 - h - 1, 1, 1, t, "%s", t);
+}
+
 void rui_draw(void *bmp, void *ctrl) {
   uint32_t t0 = TIMER, dt;
   draw_body(bmp, ctrl);
+  if (ram_bad || dg.on) ram_draw(bmp);
   dt = TIMER - t0;
   st.ui_sum += dt; st.ui_calls++;
   if (dt > st.ui_max) st.ui_max = dt;
@@ -5076,7 +5338,7 @@ void pj_activate(int32_t slot, uint32_t ret, uint32_t caller) {
 void kt_saved(int32_t index, uint32_t pre) {
   pj_push(KT_SAVE, index < 0 ? 0 : index > 127 ? 127 : index, (int32_t)(pre & 127u));
 }
-void kt_reloaded(uint32_t op) { pmo.reload_n++; pj_push((uint8_t)op, (int32_t)(ACTIVE_KIT & 127u), -1); }   /* pm: freed */
+void kt_reloaded(uint32_t op) { if (PMO_OK) pmo.reload_n++; pj_push((uint8_t)op, (int32_t)(ACTIVE_KIT & 127u), -1); }   /* pm: freed */
 /* 1052b: no host - the ring drained into LOST (one LOST at the next hello instead of stale events) */
 static void pj_drain(void) {   /* (a LOAD needs no host: the ACTIVE after the hello says where the Rytm is) */
   uint32_t w = pj.wr;

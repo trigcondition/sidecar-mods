@@ -159,6 +159,8 @@ def assemble(mod, claims, params=None):
     defs = []
     for k, v in sorted((params or {}).items()):
         defs += ["--defsym", f"P_{k.upper()}={int(v)}"]
+    for k, v in sorted(mod.get("_ram", {}).items()):   # its DDR claims (registry [[ddr]]): RAM_<NAME>, RAM_<NAME>_SIZE
+        defs += ["--defsym", f"{k}=0x{v:x}"]
     # 5475 is ColdFire V4e: ISA_B plus EMAC. The stock image uses both - mvz/mvs and
     # sats.l throughout, and mac/msac/movclr in the audio path - so this is the target
     # the firmware was built for. The earlier 5407 (ISA_A, the older MAC unit) happened
@@ -377,8 +379,31 @@ def elek_source(mod, dst):
     objdir = BUILD / "obj"
     objdir.mkdir(parents=True, exist_ok=True)
     defs = [x for k, v in sorted(mod["_params"].items()) for x in ("--defsym", f"P_{k.upper()}={int(v)}")]
+    defs += [x for k, v in sorted(mod.get("_ram", {}).items()) for x in ("--defsym", f"{k}=0x{v:x}")]
     run(["m68k-elf-as", "-mcpu=5475", "-I", BUILD, "-I", ROOT, *defs, "-o",
          objdir / f"{mod['id']}.elf", mod["_dir"] / mod["_sources"]["stub"]])
+
+
+def ddr_symbols(reg, mods, enabled):
+    """Each enabled mod's DDR claims for this OS (registry [[ddr]] in a pool whose `os` is this one): `RAM_<NAME>` (the
+    claim's address) and `RAM_<NAME>_SIZE` as assembler symbols in mod["_ram"] (defsym / .set, as its params), and the
+    manifest's list. A mod whose DDR claims are all in another OS's pool gets no RAM_ symbols: its stub then keeps each
+    claim as a block of its own .bss in elekloader's area (`.ifndef RAM_<NAME>`), as before the claims."""
+    out = []
+    ours = layout.ddr_claims_for(reg, OS["os"])
+    for mid in sorted(enabled):
+        mine = [c for c in reg.get("ddr", []) if c["owner"] == mid]
+        here = [c for c in ours if c["owner"] == mid]
+        if mine and not here:
+            print(f"note: {mid}: no DDR pool for OS {OS['os']} (registry [[pool]] os): its buffers stay in "
+                  f"elekloader's area")
+        ram = {}
+        for c in here:
+            ram[f"RAM_{c['name'].upper()}"] = c["addr"]
+            ram[f"RAM_{c['name'].upper()}_SIZE"] = c["size"]
+            out.append({"owner": mid, "name": c["name"], "addr": c["addr"], "size": c["size"]})
+        mods[mid]["_ram"] = ram
+    return out
 
 
 def read_version():
@@ -541,6 +566,7 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                 continue
             subscribe += mods[mid].get("_elek", {}).get("subscribe", [])
             prm = {f"P_{k.upper()}": int(v) for k, v in mods[mid]["_params"].items()}
+            prm.update(mods[mid].get("_ram", {}))   # its DDR claims' symbols (ddr_symbols)
             if bundle:
                 # several stubs in one mod: each gets its own params as .set lines, as
                 # elekloader's defsym would give every source all of them
@@ -784,11 +810,13 @@ def main():
             print(f"WARNING: {mid}: {mods[mid]['warning']}")
     problems = layout.validate(reg, enabled,
                                {m: d["_params"] for m, d in mods.items()},
-                               excludes)
+                               excludes, OS["os"])
     if problems:
         for p in problems:
             print("ERROR:", p)
         raise SystemExit(1)
+
+    ddr_claims = ddr_symbols(reg, mods, enabled)
 
     symmod.emit_inc(syms, BUILD / "symbols.inc")
 
@@ -1033,6 +1061,8 @@ def main():
         "detours": detours_applied,
         "patches": patches_applied,
         "params": {m: mods[m]["_params"] for m in sorted(enabled) if mods[m]["_params"]},
+        # the DDR claims the build gave its mods (registry [[ddr]], in this OS's DDR pool)
+        "ddr": ddr_claims,
         "enabled": sorted(enabled),
     }
     if elek:

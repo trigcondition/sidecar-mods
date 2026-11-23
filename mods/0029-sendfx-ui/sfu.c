@@ -193,11 +193,57 @@ struct sfu_x {
      BW_HOLD crossed that turn on the wire and is not taken (the host keeps the turn and its 2 s refresh says it) */
   uint32_t bw_hold[2];
 };
-struct sfu_x sfu_x;   /* .bss (zeroed by core-ar2's boot copier) */
+/* big-ram (0026's design.md "big-ram"): sfu_x lives in the registry's DDR claim sfu_x (build.py's RAM_SFU_X,
+   RAM_SFU_X_SIZE), outside elekloader's area, at the claim's + 8; its two first and two last words are caps (each its own
+   address ^ 0xC0DEF00D). Nothing zeroes it at boot: sfu_tick's first call does (x_init), before anything that reads X is published
+   (the value-text functors and the mailbox, at st.init, which needs that first tick too). x_ok: zeroed and intact.
+   Without it every entry falls back (x_ok is 0 before the first tick, and for good once a sentinel changed): the FX
+   set's wrappers pass 0021's records through to stock's as stock reads / writes them (no list steps), our records
+   (SFX1 / SFX2, SEND FX TYPE / ROUTE / P1..P4, BASE / WIDTH) read the stock word or 0 and refuse every write and lock -
+   never stock's own write of FX 38..41 (the stray byte in FX slot 0, fx_write_hi); the value texts print the number;
+   the host's messages are dropped; a damage report (55 01 00, bit 8) goes to the host. */
+extern uint8_t RAM_SFU_X[];
+/* big-ram on an OS without this claim (no DDR pool for it in the registry, e.g. 1.73): build.py gives no RAM_SFU_X, so the
+   claim is a block of elekloader's own .bss (zeroed by the boot copier; set up and checked the same way) */
+__asm__(".ifndef RAM_SFU_X\n.pushsection .bss\n.balign 16\nsfu_x_bss: .space %c0\n.popsection\n"
+        ".set RAM_SFU_X, sfu_x_bss\n.set RAM_SFU_X_SIZE, %c0\n.endif\n" :: "i"((sizeof(struct sfu_x) + 16 + 15) & ~15u));
+extern struct sfu_x sfu_x;   /* at RAM_SFU_X + 8 (the .set below): a named object, so gcc keeps its aliasing rules */
 #define X sfu_x
+__asm__(".globl sfu_x\n.set sfu_x, RAM_SFU_X+8\n");   /* (the emulator suites read it by its symbol) */
+#define XSYM(n) ({ uint32_t v_; __asm__("move.l #" #n ",%0" : "=d"(v_)); v_; })
+#define XCAP_KEY 0xc0def00du   /* a cap word: its own address ^ XCAP_KEY (0003's canary convention, as 0026's claims) */
+volatile uint32_t x_ok;
+uint32_t x_bad, x_bad_at, x_bad_word, x_rep_owed, x_rep_sent, x_drops;
+/* The claim's caps: its two first and two last words. x_cap_bad: the first whose word is not its own address ^
+   XCAP_KEY (0: all hold). x_init clears the claim (end pointer, a word a step), then writes the caps. */
+static void x_caps(uint32_t cap[4]) {
+  uint32_t lo = (uint32_t)RAM_SFU_X, n = XSYM(RAM_SFU_X_SIZE);
+  cap[0] = lo; cap[1] = lo + 4; cap[2] = lo + n - 8; cap[3] = lo + n - 4;
+}
+static uint32_t x_cap_bad(void) {
+  uint32_t cap[4];
+  int32_t i;
+  x_caps(cap);
+  for (i = 0; i < 4; ++i)
+    if (*(const volatile uint32_t *)cap[i] != (cap[i] ^ XCAP_KEY)) return cap[i];
+  return 0;
+}
+static void x_init(void) {
+  volatile uint32_t *w = (volatile uint32_t *)RAM_SFU_X, *end = (volatile uint32_t *)((uint32_t)RAM_SFU_X + XSYM(RAM_SFU_X_SIZE));
+  uint32_t cap[4];
+  int32_t i;
+  __asm__ volatile(".if RAM_SFU_X_SIZE < %c0\n.error \"registry ddr claim sfu_x is too small\"\n.endif\n"
+                   :: "i"(sizeof(struct sfu_x) + 16));
+  while (w < end) *w++ = 0;
+  x_caps(cap);
+  for (i = 0; i < 4; ++i) *(volatile uint32_t *)cap[i] = cap[i] ^ XCAP_KEY;
+  __asm__ volatile("" ::: "memory");
+  x_ok = 1;
+}
 #define TIMER (*(volatile uint32_t *)0xfc07000cu)   /* DTCN0, the OS's free-running count (0026's TIMER) */
 static void timed(uint32_t t0, int32_t mt) {
   uint32_t d = TIMER - t0;
+  if (!x_ok) return;
   if (mt) { X.mt_sum += d; X.mt_n++; if (d > X.mt_max) X.mt_max = d; }
   else { X.ui_sum += d; X.ui_n++; if (d > X.ui_max) X.ui_max = d; }
 }
@@ -281,6 +327,7 @@ static void sync(void *set) {
 int32_t sfu_xtext(void *functor, int32_t value, void *str);
 int32_t sfu_draw(void *functor, int32_t value, int32_t x, int32_t y, int32_t h, int32_t one);
 static int32_t xmode(int32_t r) {
+  if (!x_ok) return 0;   /* big-ram: no claim, no list steps (stock's knob) */
   uint32_t i = (uint32_t)(r - XR0), *d, *rec;
   if (i >= NXR || !st.init || XBOX[0] != 0x58535450u) return 0;
   if (X.xtick[i] != st.ticks + 1) {   /* asked once a UI tick: a list's length follows the host's 16 / 17 / 1B */
@@ -347,6 +394,7 @@ static int32_t xname(void *functor, int32_t value, void *str) {
    knobs print their number in the dial already and keep 0021's text. */
 int32_t sfu_xtext(void *functor, int32_t value, void *str) {
   int32_t r = (int32_t)(((uint32_t)functor - DESC_BASE - 20u) / 84u), i = r - XR0, k;
+  if (!x_ok) return STR_PRINTF(str, fmt_d, s_empty, value >> 8);   /* big-ram: 0021's own text was kept in X */
   if ((uint32_t)i < NXR && X.xtext[i] && (X.xm[i] == 1 || X.xm[i] == 2)) {
     k = value >> 8;
     if (k < 0) k = 0;
@@ -356,11 +404,14 @@ int32_t sfu_xtext(void *functor, int32_t value, void *str) {
   return xname(functor, value, str);
 }
 /* page_get_value's gate: our records, and 0021's while stepped (their locks through the set, not the raw word) */
-int32_t sfu_isext(int32_t id) { return BW(id) || xmode(id) != 0; }
+int32_t sfu_isext(int32_t id) { return x_ok && (BW(id) || xmode(id) != 0); }
 
 /* the wrapped vtable entries (ptr patches in the registry) */
+#define XFALL(id) (!x_ok && (OURS(id) || BW(id)))   /* big-ram: one of our records without the claim */
 int32_t sfu_s_read(void *set, int32_t id) {
-  int32_t r = S_READ(set, id);
+  int32_t r;
+  if (!x_ok) return S_READ(set, id);
+  r = S_READ(set, id);
   if (OURS(id)) return half_of(id - ID0, r);
   return xmode(id) ? x_knob(id, r) : r;
 }
@@ -369,6 +420,7 @@ static void see_fxset(void *set) {
 }
 int32_t sfu_f_read(void *set, int32_t id) {
   int32_t r;
+  if (!x_ok) return BW(id) ? 0 : F_READ(set, id);
   if (BW(id)) return X.bw[(id - BW0) >> 1][(id - BW0) & 1] << 8;
   r = F_READ(set, id);
   see_fxset(set);
@@ -377,6 +429,8 @@ int32_t sfu_f_read(void *set, int32_t id) {
   return to_knob(id - ID0, half_of(id - ID0, r));
 }
 int32_t sfu_s_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
+  if (XFALL(id)) { x_drops++; return 0; }
+  if (!x_ok) return S_WRITE(set, id, v, a, b);
   if (OURS(id)) { st.calls++; v = merge(id - ID0, S_READ(set, id), v); }
   else if (xmode(id)) v = x_keep(id, x_half(id, v), S_READ(set, id));
   return S_WRITE(set, id, v, a, b);
@@ -397,6 +451,10 @@ static void fx_write_hi(void *set, int32_t c, int32_t w) {
   pk[1] = (uint8_t)w;
 }
 int32_t sfu_f_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
+  if (!x_ok) {   /* big-ram: ours (FX 38..41 too) never through stock's write; the rest as stock */
+    if (XFALL(id)) { x_drops++; return 1; }
+    return F_WRITE(set, id, v, a, b);
+  }
   if (BW(id)) {   /* the host's: kept here and sent (sfu_tick), never into the kit */
     int32_t i = id - BW0;
     v >>= 8;
@@ -418,6 +476,8 @@ int32_t sfu_f_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
 }
 int32_t sfu_s_lget(void *set, int32_t id, int32_t step) {
   int32_t r;
+  if (XFALL(id)) return -1;
+  if (!x_ok) return S_LGET(set, id, step);
   if (OURS(id) && KITONLY(id - ID0)) return -1;
   r = S_LGET(set, id, step);
   if (r < 0) return r;
@@ -426,6 +486,7 @@ int32_t sfu_s_lget(void *set, int32_t id, int32_t step) {
 }
 int32_t sfu_f_lget(void *set, int32_t id, int32_t step) {
   int32_t r;
+  if (!x_ok) return XFALL(id) ? -1 : F_LGET(set, id, step);
   if (BW(id) || (OURS(id) && KITONLY(id - ID0))) return -1;
   r = F_LGET(set, id, step);
   if (!OURS(id) || r < 0) return r;
@@ -433,6 +494,8 @@ int32_t sfu_f_lget(void *set, int32_t id, int32_t step) {
   return to_knob(id - ID0, half_of(id - ID0, r));
 }
 int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
+  if (XFALL(id)) { x_drops++; return 0; }
+  if (!x_ok) return S_LSET(set, id, v, step);
   if (OURS(id)) {
     int32_t cur;
     if (KITONLY(id - ID0)) return 0;
@@ -447,6 +510,10 @@ int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
   return S_LSET(set, id, v, step);
 }
 int32_t sfu_f_lset(void *set, int32_t id, int32_t v, int32_t step) {
+  if (!x_ok) {
+    if (XFALL(id)) { x_drops++; return 0; }
+    return F_LSET(set, id, v, step);
+  }
   if (BW(id)) return 0;
   if (OURS(id)) {
     int32_t cur;
@@ -472,6 +539,7 @@ int32_t sfu_get(void **view, int32_t id, int32_t lock) {
 /* TYPE's value text: the name, !NAME when the Sidecar reported that id missing for that FX */
 int32_t sfu_type_text(void *functor, int32_t value, void *str);
 static int32_t type_text(int32_t fx, int32_t value, void *str) {
+  if (!x_ok) return STR_PRINTF(str, fmt_d, s_empty, value >> 8);   /* big-ram */
   int32_t i = tid(fx, X.cur[fx], value >> 8);   /* the knob's value is the list position */
   const char *n;
   if (i < 0) i = 0;
@@ -500,6 +568,7 @@ static const struct sfu_lab *lab_of(int32_t t) {
 /* P2..P5's value text: the zone's name (with show: and v - lo + base, a space when 7 characters allow it) for the
    TYPE's labels; a knob without zones, or a TYPE without labels, the plain dial's number. */
 static int32_t ptext(int32_t fx, int32_t j, void *functor, int32_t value, void *str) {
+  if (!x_ok) return STR_PRINTF(str, fmt_d, s_empty, value >> 8);   /* big-ram */
   const struct sfu_lab *e = lab_of(X.shown[fx]);
   int32_t v = value >> 8, k, hit = -1, n = X.kn[fx][j];
   if (v < 0) v = 0;
@@ -567,7 +636,9 @@ static void take_labels(const uint8_t *d, int32_t len) {
 static int32_t sysex_body(const uint8_t *d, int32_t len);
 int32_t sfu_sysex(const uint8_t *d, int32_t len) {
   uint32_t t0 = TIMER;
-  int32_t r = sysex_body(d, len);
+  int32_t r;
+  if (!x_ok) { x_drops++; return 1; }   /* big-ram: no claim: the host's messages are dropped */
+  r = sysex_body(d, len);
   timed(t0, 1);
   return r;
 }
@@ -772,6 +843,12 @@ int32_t sfu_draw(void *functor, int32_t value, int32_t x, int32_t y, int32_t h, 
   int32_t i = (int32_t)r - ID0;
   (void)one;
   b[0] = 0;
+  if (!x_ok) {   /* big-ram: the number */
+    STR_PRINTF(b, fmt_d, s_empty, value >> 8);
+    b[8] = 0;
+    TEXT_DRAW(x, TEXT_FONT(TEXT_CTX), y, h - 2, 1, 0, b, fmt_s, b);
+    return 0;
+  }
   if (r - XR0 < NXR) xname(DESC(r) + 5, value, b);
   else if (OURS(r) && i >= 2) {
     int32_t fx = FXOF(i);
@@ -788,8 +865,43 @@ int32_t sfu_draw(void *functor, int32_t value, int32_t x, int32_t y, int32_t h, 
 /* ev_tick (core-ar2, the UI loop, ~20 Hz): set the records and looks up once the boot built the
    descriptors; ask the host for the TYPE list every ~5 s until it answers. */
 static void tick_body(void *ctrl);
+static void x_tick(void *ctrl) {   /* big-ram: the sentinels, and the damage report */
+  uint32_t a;
+  if (x_ok && (a = x_cap_bad())) {
+    x_ok = 0;                    /* for good this boot */
+    x_bad = 8;                   /* 0026's RC_* bits go to 4; this claim is bit 3 */
+    x_bad_at = a; x_bad_word = *(const volatile uint32_t *)a;
+    x_rep_owed = 1;
+    *((volatile uint8_t *)ctrl + 0x20) = 1;   /* the views redraw (the numbers) */
+  }
+  if (x_rep_owed && PORT_STATE == 1 && MUTEX_TRY(MIDI_MUTEX)) {
+    uint8_t m[18] = {0xf0, 0x7d, 0x52, 0x54, 0x55, 0x01, 0x00, (uint8_t)x_bad};
+    int32_t i;
+    for (i = 0; i < 5; ++i) m[8 + i] = (uint8_t)(x_bad_at >> (28 - 7 * i) & (i ? 0x7f : 0x0f));
+    for (i = 0; i < 5; ++i) m[13 + i] = (uint8_t)(x_bad_word >> (28 - 7 * i) & (i ? 0x7f : 0x0f));
+    if (TX_LEVEL + 64 <= 4091 && usb_free(4)) {
+      uint8_t f[19];
+      for (i = 0; i < 18; ++i) f[i] = m[i];
+      f[18] = 0xf7;
+      MIDI_SEND(19, f);
+      x_rep_owed = 0; x_rep_sent++;
+    }
+    MUTEX_GIVE(MIDI_MUTEX);
+  }
+}
 void sfu_tick(void *ctrl) {
   uint32_t t0 = TIMER, d;
+  if (!st.ticks && !x_ok && !x_bad) {   /* big-ram: the first tick zeroes the claim and does nothing else (its cost */
+    x_init();                           /* apart from the set-up tick's); tick_body publishes on the next */
+    return;
+  }
+  x_tick(ctrl);
+  if (!x_ok) {   /* big-ram: no claim: 0029 idles; 0021's us_live (its own work) still runs, untimed */
+    st.ticks++;
+    if (st.init && XBOX[0] == 0x58535450u && XBOX[2] && ((int32_t (*)(void *))XBOX[2])(ctrl))
+      *((volatile uint8_t *)ctrl + 0x20) = 1;
+    return;
+  }
   tick_body(ctrl);
   timed(t0, 0);
   /* 0021's user slots (us_live), so the slot menu - which runs no value text, so no us_tick - takes a pushed 1D and
