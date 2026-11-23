@@ -147,7 +147,7 @@ enum { S_TIME = 1, S_HOST, S_IDLE, S_KEY, S_ENC, S_OPEN, S_RAM };   /* why the s
    DDR claims of the registry's ddr_mods pool (registry [[ddr]]; the pool is OS 1.74's): build.py defines RAM_<NAME> (the
    claim's address) and RAM_<NAME>_SIZE as assembler symbols. Nothing copies or zeroes that RAM (the boot copier clears
    only the area's .bss), so ram_init, in the first three ticks (a claim each) and before rui_sysex is published in
-   0022's mailbox, zeroes each claim and writes its sentinels: 8 B at each end, each word 'RAMS' ^ its address.
+   0022's mailbox, zeroes each claim and writes its caps: the two words at each end, each its own address ^ 0xC0DEF00D.
    ram_ok has a bit a claim while
    it is zeroed and its sentinels hold; the tick checks them (ram_check) and a changed one clears its bit for good this
    boot (ram_bad): nothing reads that claim again - the remote page / SRC view / splash stop drawing (the page leaves
@@ -161,28 +161,33 @@ extern uint8_t RAM_RUI_FRAME[], RAM_RUI_NAMES[], RAM_RUI_PMO[];   /* absolute (b
 #define RC_NAMES 2u
 #define RC_PMO   4u
 #define RAM_FONT 2                                   /* the message's font (FONT_CTX) */
-#define RAMS 0x52414d53u                             /* 'RAMS' ^ the sentinel's address */
+#define CAP_KEY 0xc0def00du                          /* a cap word: its own address ^ CAP_KEY (0003's canary convention) */
 #define ASYM(s) ({ uint32_t v_; __asm__("move.l #" #s ",%0" : "=d"(v_)); v_; })   /* an assembler symbol's value */
 volatile uint32_t ram_ok;                     /* RC_* bits: zeroed and intact */
 uint32_t ram_bad, ram_bad_at, ram_bad_word, ram_init_n, ram_checks, ram_rep_sent, ram_show_until, ram_drops;
 uint32_t ram_rep_owed, ram_step;   /* ram_step: the claims ram_init has zeroed so far */
 volatile uint32_t ram_test, ram_test_at;   /* (tests, --poke: ram_test ticks from now the word at ram_test_at is flipped) */
-static void ram_seal(uint32_t a, uint32_t n) {
-  volatile uint32_t *p = (volatile uint32_t *)a, *q = (volatile uint32_t *)(a + n - 8);
-  p[0] = RAMS ^ (uint32_t)&p[0]; p[1] = RAMS ^ (uint32_t)&p[1];
-  q[0] = RAMS ^ (uint32_t)&q[0]; q[1] = RAMS ^ (uint32_t)&q[1];
+/* A claim of n bytes at lo: its two first and two last words are caps, the data between. claim_open clears the whole
+   claim (end pointer, a word a step) and then writes the four caps; claim_cap_bad answers the first cap whose word is
+   not its own address ^ CAP_KEY (0: all four hold). */
+static void claim_caps(uint32_t lo, uint32_t n, uint32_t cap[4]) {
+  cap[0] = lo; cap[1] = lo + 4; cap[2] = lo + n - 8; cap[3] = lo + n - 4;
 }
-static uint32_t ram_broken(uint32_t a, uint32_t n) {   /* the first changed sentinel's address, 0 none */
-  const volatile uint32_t *p = (const volatile uint32_t *)a, *q = (const volatile uint32_t *)(a + n - 8);
-  if (p[0] != (RAMS ^ (uint32_t)&p[0])) return (uint32_t)&p[0];
-  if (p[1] != (RAMS ^ (uint32_t)&p[1])) return (uint32_t)&p[1];
-  if (q[0] != (RAMS ^ (uint32_t)&q[0])) return (uint32_t)&q[0];
-  if (q[1] != (RAMS ^ (uint32_t)&q[1])) return (uint32_t)&q[1];
+static void claim_open(uint32_t lo, uint32_t n) {
+  volatile uint32_t *w = (volatile uint32_t *)lo, *end = (volatile uint32_t *)(lo + n);
+  uint32_t cap[4];
+  int32_t i;
+  while (w < end) *w++ = 0;
+  claim_caps(lo, n, cap);
+  for (i = 0; i < 4; ++i) *(volatile uint32_t *)cap[i] = cap[i] ^ CAP_KEY;
+}
+static uint32_t claim_cap_bad(uint32_t lo, uint32_t n) {
+  uint32_t cap[4];
+  int32_t i;
+  claim_caps(lo, n, cap);
+  for (i = 0; i < 4; ++i)
+    if (*(const volatile uint32_t *)cap[i] != (cap[i] ^ CAP_KEY)) return cap[i];
   return 0;
-}
-static void ram_zero(uint32_t a, uint32_t n) {
-  volatile uint32_t *p = (volatile uint32_t *)a;
-  for (n >>= 2; n; --n) *p++ = 0;
 }
 
 /* A text slot (3D): glass x, top y, font 0..16, flags (bits 0-1 align, bit 2 inverted), len, the characters. */
@@ -2778,14 +2783,11 @@ static int32_t ram_init(void) {   /* 1: all claims ready */
   /* one claim a tick (the first three ticks): zeroing all 27 KB in one call took the boot tick past rui_emu cost's
      100 k instructions a UI call; rui_sysex is published only after the last (tick_body) */
   if (ram_step == 0) {
-    ram_zero((uint32_t)RAM_RUI_FRAME, ASYM(RAM_RUI_FRAME_SIZE));
-    ram_seal((uint32_t)RAM_RUI_FRAME, ASYM(RAM_RUI_FRAME_SIZE));
+    claim_open((uint32_t)RAM_RUI_FRAME, ASYM(RAM_RUI_FRAME_SIZE));
   } else if (ram_step == 1) {
-    ram_zero((uint32_t)RAM_RUI_NAMES, ASYM(RAM_RUI_NAMES_SIZE));
-    ram_seal((uint32_t)RAM_RUI_NAMES, ASYM(RAM_RUI_NAMES_SIZE));
+    claim_open((uint32_t)RAM_RUI_NAMES, ASYM(RAM_RUI_NAMES_SIZE));
   } else {
-    ram_zero((uint32_t)RAM_RUI_PMO, ASYM(RAM_RUI_PMO_SIZE));
-    ram_seal((uint32_t)RAM_RUI_PMO, ASYM(RAM_RUI_PMO_SIZE));
+    claim_open((uint32_t)RAM_RUI_PMO, ASYM(RAM_RUI_PMO_SIZE));
     ram_init_n++;
     if (ASYM(P_DDRDIAG)) dg_init();
     __asm__ volatile("" ::: "memory");   /* the zeros and sentinels before the bits that let the interrupt read them */
@@ -2799,9 +2801,9 @@ static void ram_check(void *ctrl) {
   uint32_t bad = 0, at = 0, a;
   ram_checks++;
   if (ram_test && !--ram_test && ram_test_at) *(volatile uint32_t *)ram_test_at ^= 0x00010000u;
-  if (FRAME_OK && (a = ram_broken((uint32_t)RAM_RUI_FRAME, ASYM(RAM_RUI_FRAME_SIZE)))) bad |= RC_FRAME, at = a;
-  if (NAMES_OK && (a = ram_broken((uint32_t)RAM_RUI_NAMES, ASYM(RAM_RUI_NAMES_SIZE)))) bad |= RC_NAMES, at = at ? at : a;
-  if (PMO_OK && (a = ram_broken((uint32_t)RAM_RUI_PMO, ASYM(RAM_RUI_PMO_SIZE)))) bad |= RC_PMO, at = at ? at : a;
+  if (FRAME_OK && (a = claim_cap_bad((uint32_t)RAM_RUI_FRAME, ASYM(RAM_RUI_FRAME_SIZE)))) bad |= RC_FRAME, at = a;
+  if (NAMES_OK && (a = claim_cap_bad((uint32_t)RAM_RUI_NAMES, ASYM(RAM_RUI_NAMES_SIZE)))) bad |= RC_NAMES, at = at ? at : a;
+  if (PMO_OK && (a = claim_cap_bad((uint32_t)RAM_RUI_PMO, ASYM(RAM_RUI_PMO_SIZE)))) bad |= RC_PMO, at = at ? at : a;
   if (!bad) return;
   ram_ok &= ~bad;                      /* for good this boot: nothing reads these claims again */
   if (!ram_bad) { ram_bad_at = at; ram_bad_word = *(const volatile uint32_t *)at; }

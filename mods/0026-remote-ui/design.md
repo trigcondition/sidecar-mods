@@ -2911,8 +2911,8 @@ mod does.
 boot on the saved card and 60 s of Overbridge streaming. The registry's pool `ddr_mods`, 0x47C00000-0x47C40000 (256 KB,
 just above the area), holds the claims; the rest is unclaimed (the diagnostic image's canary).
 
-**Claims** (registry `[[ddr]]`: owner / name / addr / size / os): each claim's first and last 8 B are sentinels (each
-word 'RAMS' ^ its address), the data at + 8.
+**Claims** (registry `[[ddr]]`: owner / name / addr / size, in the pool): each claim's first and last 8 B are sentinels (each
+word its own address ^ 0xC0DEF00D, the canary convention of 0003 and of the diagnostic below), the data at + 8.
 
 | claim | owner | addr | size | holds |
 |---|---|---|---|---|
@@ -2923,6 +2923,12 @@ word 'RAMS' ^ its address), the data at + 8.
 
 The sizes leave room for the structs to grow; each stub refuses to assemble when its claim is smaller than its C struct
 + 16 (`.if RAM_X_SIZE < sizeof`).
+
+**Provenance.** The design and the code are this tree's own: fixed claims in a registry pool, set up and checked by
+each mod, with no linker or loader change. Other projects appear here only as cited facts about the Rytm (free ranges,
+their test outcomes); no code of theirs is used. The caps use 0003's canary convention (address ^ 0xC0DEF00D, this
+registry's cave canary since 2026-09); an earlier version of these claims, tested on the hardware below with the same
+addresses and sizes, used another cap word.
 
 **Tools.** layout.py: `ddr` claims fit a `ddr_mods` pool, do not overlap, are named, 16-aligned and at least 32 B; the
 pool names its OS (`os`) and lies outside the image and elekloader's area; a claim in another OS's pool is

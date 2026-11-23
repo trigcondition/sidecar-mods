@@ -194,8 +194,8 @@ struct sfu_x {
   uint32_t bw_hold[2];
 };
 /* big-ram (0026's design.md "big-ram"): sfu_x lives in the registry's DDR claim sfu_x (build.py's RAM_SFU_X,
-   RAM_SFU_X_SIZE), outside elekloader's area, at the claim's + 8; its first and last 8 bytes are sentinels ('RAMS' ^
-   address). Nothing zeroes it at boot: sfu_tick's first call does (x_init), before anything that reads X is published
+   RAM_SFU_X_SIZE), outside elekloader's area, at the claim's + 8; its two first and two last words are caps (each its own
+   address ^ 0xC0DEF00D). Nothing zeroes it at boot: sfu_tick's first call does (x_init), before anything that reads X is published
    (the value-text functors and the mailbox, at st.init, which needs that first tick too). x_ok: zeroed and intact.
    Without it every entry falls back (x_ok is 0 before the first tick, and for good once a sentinel changed): the FX
    set's wrappers pass 0021's records through to stock's as stock reads / writes them (no list steps), our records
@@ -210,28 +210,33 @@ __asm__(".ifndef RAM_SFU_X\n.pushsection .bss\n.balign 16\nsfu_x_bss: .space %c0
 extern struct sfu_x sfu_x;   /* at RAM_SFU_X + 8 (the .set below): a named object, so gcc keeps its aliasing rules */
 #define X sfu_x
 __asm__(".globl sfu_x\n.set sfu_x, RAM_SFU_X+8\n");   /* (the emulator suites read it by its symbol) */
-#define XRAMS 0x52414d53u
 #define XSYM(n) ({ uint32_t v_; __asm__("move.l #" #n ",%0" : "=d"(v_)); v_; })
+#define XCAP_KEY 0xc0def00du   /* a cap word: its own address ^ XCAP_KEY (0003's canary convention, as 0026's claims) */
 volatile uint32_t x_ok;
 uint32_t x_bad, x_bad_at, x_bad_word, x_rep_owed, x_rep_sent, x_drops;
-static uint32_t x_broken(void) {
-  uint32_t a = (uint32_t)RAM_SFU_X, n = XSYM(RAM_SFU_X_SIZE);
-  const volatile uint32_t *p = (const volatile uint32_t *)a, *q = (const volatile uint32_t *)(a + n - 8);
-  if (p[0] != (XRAMS ^ (uint32_t)&p[0])) return (uint32_t)&p[0];
-  if (p[1] != (XRAMS ^ (uint32_t)&p[1])) return (uint32_t)&p[1];
-  if (q[0] != (XRAMS ^ (uint32_t)&q[0])) return (uint32_t)&q[0];
-  if (q[1] != (XRAMS ^ (uint32_t)&q[1])) return (uint32_t)&q[1];
+/* The claim's caps: its two first and two last words. x_cap_bad: the first whose word is not its own address ^
+   XCAP_KEY (0: all hold). x_init clears the claim (end pointer, a word a step), then writes the caps. */
+static void x_caps(uint32_t cap[4]) {
+  uint32_t lo = (uint32_t)RAM_SFU_X, n = XSYM(RAM_SFU_X_SIZE);
+  cap[0] = lo; cap[1] = lo + 4; cap[2] = lo + n - 8; cap[3] = lo + n - 4;
+}
+static uint32_t x_cap_bad(void) {
+  uint32_t cap[4];
+  int32_t i;
+  x_caps(cap);
+  for (i = 0; i < 4; ++i)
+    if (*(const volatile uint32_t *)cap[i] != (cap[i] ^ XCAP_KEY)) return cap[i];
   return 0;
 }
 static void x_init(void) {
-  uint32_t a = (uint32_t)RAM_SFU_X, n = XSYM(RAM_SFU_X_SIZE), k;
-  volatile uint32_t *p = (volatile uint32_t *)a, *q;
+  volatile uint32_t *w = (volatile uint32_t *)RAM_SFU_X, *end = (volatile uint32_t *)((uint32_t)RAM_SFU_X + XSYM(RAM_SFU_X_SIZE));
+  uint32_t cap[4];
+  int32_t i;
   __asm__ volatile(".if RAM_SFU_X_SIZE < %c0\n.error \"registry ddr claim sfu_x is too small\"\n.endif\n"
                    :: "i"(sizeof(struct sfu_x) + 16));
-  for (k = n >> 2; k; --k) *p++ = 0;
-  p = (volatile uint32_t *)a; q = (volatile uint32_t *)(a + n - 8);
-  p[0] = XRAMS ^ (uint32_t)&p[0]; p[1] = XRAMS ^ (uint32_t)&p[1];
-  q[0] = XRAMS ^ (uint32_t)&q[0]; q[1] = XRAMS ^ (uint32_t)&q[1];
+  while (w < end) *w++ = 0;
+  x_caps(cap);
+  for (i = 0; i < 4; ++i) *(volatile uint32_t *)cap[i] = cap[i] ^ XCAP_KEY;
   __asm__ volatile("" ::: "memory");
   x_ok = 1;
 }
@@ -862,7 +867,7 @@ int32_t sfu_draw(void *functor, int32_t value, int32_t x, int32_t y, int32_t h, 
 static void tick_body(void *ctrl);
 static void x_tick(void *ctrl) {   /* big-ram: the sentinels, and the damage report */
   uint32_t a;
-  if (x_ok && (a = x_broken())) {
+  if (x_ok && (a = x_cap_bad())) {
     x_ok = 0;                    /* for good this boot */
     x_bad = 8;                   /* 0026's RC_* bits go to 4; this claim is bit 3 */
     x_bad_at = a; x_bad_word = *(const volatile uint32_t *)a;

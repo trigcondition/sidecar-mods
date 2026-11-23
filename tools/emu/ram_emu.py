@@ -7,7 +7,7 @@ zeroed and sealed at the first tick, and a changed sentinel makes the mod stop u
 TAG: an OS 1.74 build of the Sidecar set with the DDR claims (registry [[ddr]]), whose base tools/emu/us_base.sh TAG
 made; RYTM_EMU, RYTM_TEENSY as rui_emu.py (its Emu and the host sim/remote_ui.py). A damage is a --poke of one
 sentinel word (the claim's first) before a run; DTEMU_STRICT=1 throughout.
-    sealed   the base: every claim's 4 sentinel words are 'RAMS' ^ address, ram_ok 7 (0026), x_ok 1 (0029), none bad
+    sealed   the base: every claim's 4 cap words are their own address ^ 0xC0DEF00D, ram_ok 7 (0026), x_ok 1 (0029), none bad
     frame    the remote page open (TRK + YES, the host streaming), then rui_frame's sentinel changed: the page leaves
              with reason 4 (R_RAM), ram_ok loses bit 1 only, the report (55 01 00) goes out, the host's 38 / 39 are
              dropped from then on, the screen is the stock one with MOD RAM ERROR (not the host's frame), TRK + YES
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rui_emu as R   # noqa: E402
 
 check = R.check
-RAMS = 0x52414D53
+CAP_KEY = 0xC0DEF00D   # a cap word: its own address ^ CAP_KEY (0026 / 0029's claim_open / x_init)
 CLAIMS = {}   # name -> (addr, size), from the manifest
 
 
@@ -69,8 +69,8 @@ def t_sealed(e):
         return
     for n, (a, z) in sorted(CLAIMS.items()):
         ws = [word(e, s, a), word(e, s, a + 4), word(e, s, a + z - 8), word(e, s, a + z - 4)]
-        want = [RAMS ^ a, RAMS ^ (a + 4), RAMS ^ (a + z - 8), RAMS ^ (a + z - 4)]
-        check(f"sealed: {n}'s four sentinel words are 'RAMS' ^ address", ws == want, [hex(x) for x in ws])
+        want = [x ^ CAP_KEY for x in (a, a + 4, a + z - 8, a + z - 4)]
+        check(f"sealed: {n}'s four cap words are their own address ^ 0xC0DEF00D", ws == want, [hex(x) for x in ws])
     f = flags(e, s)
     check("sealed: ram_ok 7, x_ok 1, nothing bad", f["ram_ok"] == 7 and f["x_ok"] == 1 and not f["ram_bad"]
           and not f["x_bad"], f)

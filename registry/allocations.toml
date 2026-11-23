@@ -148,7 +148,8 @@ note   = """
 DDR that OS 1.74 never uses, just above elekloader's area. Nothing copies or zeroes it: elekloader's boot copier
 clears only its own area (core 0.1's .boot: the linker's __run_* / __bss_*), so it holds noise at power-on and
 whatever the last run left after a soft reset. Each mod zeroes its own claim at its first ticks, before it publishes
-anything that reads it, keeps 8-byte sentinels at both ends (each word 'RAMS' ^ its address), checks them every tick,
+anything that reads it, keeps caps at both ends (the two first and two last words, each its own address ^ 0xC0DEF00D,
+0003's canary convention), checks them every tick,
 and stops using a claim whose sentinel changed (mods/0026-remote-ui/design.md "big-ram").
 
 Free on stock 1.74: 0x47B48000-0x47BE0000 and 0x47C00000-0x47FF0000. This pool is the first 256 KB of the second; the
