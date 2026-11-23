@@ -1998,12 +1998,21 @@ US2 static int32_t us_has_enum(const struct us_cache *c, int32_t k) {
 /* Every value text (UI task): the first time us_init; a complete 1A committed; write-backs applied; then
    at most one ask every 10 ticks - a slot's metadata when its generation is not the Teensy's (or no 1D
    came yet), each slot at most once in 200 ticks; a READY slot's missing enum lists. */
+#define US_SCAN_GAP 10
+/* The audio block of the last value text that did us_tick's commit / write-back / us_tick3 (perf/um-tick): a screen
+   update draws its value texts in a burst; within one audio block (0.67 ms) the state they read cannot have moved for
+   the user, so the burst does that work once. 0: never (the first value text does it). */
+USR static uint32_t us_lblk __attribute__((aligned(4)));
 US2 void us_tick(void) {
   int32_t s, k;
+  uint32_t now = *(volatile const uint32_t *)0x419ca2acu;   /* US_NOW (defined below) */
   if (!us.done) us_init();
-  if (us.st && us.st->got == 0xff) us_commit();
-  if (us.wb) us_writeback();
-  us_tick3();   /* page 2's records for the selected track, the user's slot choices, !NAME (.us6) */
+  if (now != us_lblk || !now) {
+    us_lblk = now;
+    if (us.st && us.st->got == 0xff) us_commit();
+    if (us.wb) us_writeback();
+    us_tick3();   /* page 2's records for the selected track, the user's slot choices, !NAME (.us6) */
+  }
   for (s = 0; s < US_SLOTS; ++s)
     if (us.wait[s]) --us.wait[s];
   if (us.gap) {
@@ -2021,10 +2030,10 @@ US2 void us_tick(void) {
       }
       return;
     }
-    if (!c || c->h.state != 1) continue;
+    /* (not when the cache's eight lists are taken: us_list_in would drop a ninth) */
+    if (!c || c->h.state != 1 || !us_has_enum(c, 0xff)) continue;
     for (k = 0; k < 16; ++k)
-      if (c->k[k].p && c->k[k].kind == 2 && c->k[k].ne && !us_has_enum(c, k) && us_has_enum(c, 0xff)) {
-        /* (not when the cache's eight lists are taken: us_list_in would drop a ninth) */
+      if (c->k[k].p && c->k[k].kind == 2 && c->k[k].ne && !us_has_enum(c, k)) {
         if (us_ask(s + 1, have, 1, k)) {
           us.wait[s] = 50;
           us.gap = 10;
@@ -2032,6 +2041,10 @@ US2 void us_tick(void) {
         return;
       }
   }
+  /* Nothing to ask: look again in US_SCAN_GAP ticks. This runs on every value text - several a screen refresh -
+     and the walk above cost the UI task enough to lag the knobs with every slot READY (perf/um-tick); an ask was at
+     most one in 10 ticks already. */
+  us.gap = US_SCAN_GAP;
 }
 
 /* ---- choosing a user slot (the user's decision, 2026-10-10): a track the user gives U1..U5 - the machine
