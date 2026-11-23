@@ -170,10 +170,13 @@ __attribute__((section(".exto"), noinline)) int usb_free(int n) {
 #if EXT_SLOTS
 /* The UI task's sends (2026-10-16, the hardware freeze after host brown-outs): never wait on USB, as 0026 / 0029.
    MIDI_LOCK pends while another task owns the mutex 0x42f67a28 and the sender spins while its ring is full; so the
-   port configured (0x413db254 == 1), the ring's room (+64 <= 4091), 4 free requests, then a try-lock (0x4000119c:
-   takes it only when free, never pends [code, 1.73]); 1: held (give it with MIDI_UNLOCK), 0: not now. */
+   port configured (0x413db254 == 1), no stock SysEx going out (SYSEX_STATE 0, as ext_try_send: the mutex alone let a
+   message land inside a stock dump [measured, rytm-emu 1.74, sq_emu fillqueue with the big-ram timing: a 0x19 ASK
+   12 bytes before a pattern dump's end, the dump's tail lost; why the mutex was free there: not traced]), the ring's room (+64 <= 4091), 4 free
+   requests, then a try-lock (0x4000119c: takes it only when free, never pends [code, 1.73]); 1: held (give it with
+   MIDI_UNLOCK), 0: not now. */
 __attribute__((section(".us2"), noinline)) int ext_ui_lock(void) {   /* .us2: cave12 is full */
-  if (*(volatile uint32_t *)0x413db254u != 1 || RING_FILL + 64 > 4091 || !usb_free(4)) return 0;
+  if (*(volatile uint32_t *)0x413db254u != 1 || SYSEX_STATE != 0 || RING_FILL + 64 > 4091 || !usb_free(4)) return 0;
   return ((int (*)(void *))0x4000119cu)((void *)0x42f67a28u);
 }
 #endif

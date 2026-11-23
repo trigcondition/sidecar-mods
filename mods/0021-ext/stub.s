@@ -1652,7 +1652,7 @@ us_kit_sound:
 us_untag:
 	move.l %d2,-(%sp)
 #APP
-| 2180 "ext.c" 1
+| 2183 "ext.c" 1
 	move.w %sr,%d2
 	move.l %d2,%d1
 	ori.l #0x0700,%d1
@@ -1687,7 +1687,7 @@ us_untag:
 	clr.b (%a0)
 .L225:
 #APP
-| 2188 "ext.c" 1
+| 2191 "ext.c" 1
 	move.w %d2,%sr
 | 0 "" 2
 #NO_APP
@@ -2517,6 +2517,8 @@ ext_ui_lock:
 .L401:
 	rts
 .L402:
+	tst.l 1094562372
+	jne .L404
 	move.l 1094562392,%d0
 	add.l #64,%d0
 	cmp.l #4091,%d0
@@ -3747,7 +3749,7 @@ us_defaults:
 	move.b 6(%a2),%d3
 .L619:
 #APP
-| 2209 "ext.c" 1
+| 2212 "ext.c" 1
 	move.w %sr,%d5
 	move.l %d5,%d1
 	ori.l #0x0700,%d1
@@ -3767,7 +3769,7 @@ us_defaults:
 	move.b %d1,1(%a6,%d0.l)
 .L620:
 #APP
-| 2214 "ext.c" 1
+| 2217 "ext.c" 1
 	move.w %d5,%sr
 | 0 "" 2
 #NO_APP
@@ -3791,7 +3793,7 @@ us_defaults:
 	cmp.l %a4,%a5
 	jne .L623
 #APP
-| 2243 "ext.c" 1
+| 2246 "ext.c" 1
 	move.w %sr,%d3
 	move.l %d3,%d1
 	ori.l #0x0700,%d1
@@ -3823,7 +3825,7 @@ us_defaults:
 	move.b %d6,1(%a0)
 .L624:
 #APP
-| 2251 "ext.c" 1
+| 2254 "ext.c" 1
 	move.w %d3,%sr
 | 0 "" 2
 #NO_APP
@@ -3851,7 +3853,7 @@ md_store.constprop.0:
 	addq.l #1,%d0
 	move.b %d0,md_wr
 #APP
-| 3019 "ext.c" 1
+| 3022 "ext.c" 1
 	move.w %sr,%d0
 	move.l %d0,%d1
 	ori.l #0x0700,%d1
@@ -3871,7 +3873,7 @@ md_store.constprop.0:
 	jne .L635
 	move.l %a2,%d1
 #APP
-| 3027 "ext.c" 1
+| 3030 "ext.c" 1
 	move.w %d1,%sr
 | 0 "" 2
 #NO_APP
@@ -3922,7 +3924,7 @@ md_store.constprop.0:
 	addq.l #1,%a0
 	move.b #77,(%a0)
 #APP
-| 3027 "ext.c" 1
+| 3030 "ext.c" 1
 	move.w %d1,%sr
 | 0 "" 2
 #NO_APP
@@ -3973,7 +3975,7 @@ md_store.constprop.0:
 	cmp.l %a2,%d0
 	jne .L643
 #APP
-| 3031 "ext.c" 1
+| 3034 "ext.c" 1
 	move.w %sr,%d0
 	move.l %d0,%d1
 	ori.l #0x0700,%d1
@@ -3995,7 +3997,7 @@ md_store.constprop.0:
 .L644:
 	move.l %a2,%d0
 #APP
-| 3033 "ext.c" 1
+| 3036 "ext.c" 1
 	move.w %d0,%sr
 | 0 "" 2
 #NO_APP
@@ -4139,7 +4141,7 @@ md_tick.constprop.0:
 	cmp.l %d0,%d7
 	jne .L668
 #APP
-| 3081 "ext.c" 1
+| 3084 "ext.c" 1
 	move.w %sr,%d7
 	move.l %d7,%d1
 	ori.l #0x0700,%d1
@@ -4171,7 +4173,7 @@ md_tick.constprop.0:
 	move.w %d0,(%a0,%d6.l*2)
 .L670:
 #APP
-| 3086 "ext.c" 1
+| 3089 "ext.c" 1
 	move.w %d7,%sr
 | 0 "" 2
 #NO_APP
@@ -4450,7 +4452,7 @@ dsp_descriptors2:
 	lea (16,%sp),%sp
 	move.l %d0,1076396832
 #APP
-| 850 "ext.c" 1
+| 853 "ext.c" 1
 	movel #P_DIAG,%d0
 | 0 "" 2
 #NO_APP
@@ -6648,7 +6650,7 @@ ext_steps:
 	cmp.l #444,%d1
 	jne .L1141
 #APP
-| 2666 "ext.c" 1
+| 2669 "ext.c" 1
 	movel #P_DIAG,%d0
 | 0 "" 2
 #NO_APP
@@ -9562,7 +9564,7 @@ dsp_descriptors2:
 	jsr (%a2)
 	lea (16,%sp),%sp
 #APP
-| 850 "ext.c" 1
+| 853 "ext.c" 1
 	movel #P_DIAG,%d0
 | 0 "" 2
 #NO_APP
