@@ -9,6 +9,7 @@ request.
 
 ## Before you start
 
+- **AI coding agents:** read [AGENTS.md](AGENTS.md) first. It has the build and test commands, the safety rules and the known traps.
 - **Find or open an issue first** for anything bigger than a small fix, and say you'd like to take it. Wait for a
   "go" (the `claimed` label and your name on the issue) before you build. The roadmap (trigcondition/sidecar-firmware#68, pinned; board: https://github.com/users/trigcondition/projects/3) shows what is
   planned and who is on it.
@@ -29,8 +30,8 @@ request.
 2. Create a branch for your change from `dev`: `git checkout -b 0026-fix-keys dev`.
 3. Make the change. For a new mod, follow "Adding a mod" in the README: symbols with an honest `status`, claims in
    `registry/allocations.toml`, `mods/NNNN-slug/{mod.toml,stub.s,design.md}`.
-4. Build and verify against your own stock OS 1.73 (`make setup`, then `make verify`, or the Sidecar build in the
-   README), and run the tests (below).
+4. Build and verify for OS 1.74 with your own stock OS file (`make setup`, then `tools/ostarget.py port 1.74` and the
+   build in `build/os/1.74`; see AGENTS.md), and run the tests (below).
 5. Push the branch to your fork and open a **pull request** against `dev`. Fill in the template.
 6. The `test` check must pass, and a code owner reviews and approves before the pull request is merged.
    `main` takes no direct pushes or force pushes.
