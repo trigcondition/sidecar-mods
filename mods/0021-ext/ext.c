@@ -8,6 +8,8 @@
  *                                  parameters it plays with (p-locks land on it)
  *   F0 7D 52 54 03 <voice> <P1..P16> F7                    P1..P16 changed
  *                                  (knob turns, LFO, parameter slides)
+ *   F0 7D 52 54 56 01 <voice> <m0 m1 m2> <changed Ps> F7   params-delta (slots=1): to a host
+ *                                  whose 1D says so, only the changed Ps after a mask
  *
  * P1..P8 are the SRC page (the sound's machine words 0..7), P9..P16 its second
  * page (press SRC again, or SMPL: the sound's sample words 8..15, so they are
@@ -136,6 +138,9 @@ struct ext_voice {
   uint8_t note, vel;
   uint8_t pend_trig, pend_params, hold;   /* hold: blocks until the next 0x03 */
   uint8_t gate;   /* the owner track's note is open (or its note-off pending) */
+#if EXT_SLOTS
+  uint8_t dgen, jump;   /* params-delta: the ext_dgen of its last full report; a value jumped since the last report */
+#endif
 };
 /* A parameter-only report (0x03) goes at most every REPORT_GAP blocks of the
    voice: the firmware glides a turned parameter toward its new value, and in
@@ -144,6 +149,21 @@ struct ext_voice {
    trigs with them). Trigs go at once and carry the current values. */
 #define REPORT_GAP 16
 __attribute__((section(".exts"))) struct ext_voice ext_state[8];
+#if EXT_SLOTS
+/* params-delta (2026-11-22): a host whose 1D says so (caps byte bit 0, us_slots_in) gets a parameter-only report as 56
+   PARAMS DELTA - the changed values only, after a mask - instead of the 41-byte 03, and at most every REPORT_GAP_D
+   blocks (32, ~21 ms), not 16: a modulated parameter (the track's LFO on a user machine's knob) made ~90 03s a second
+   of 41 bytes for one value, and each USB MIDI send is the costly part on the unit. A value that jumped (a whole step or
+   more between two blocks: a trigless lock, a fast square LFO) keeps 03's 16. Trigs (04), note-offs and the MIDI
+   machine's 43 / 44 are unchanged. ext_dgen moves when a host turns it on or asks for a resync (caps bit 1, a host that
+   started without the Rytm's last values): each voice's next parameter-only report is then a whole 03, the host's
+   baseline. The port going down turns it off (the next host has to say it again).
+     F0 7D 52 54 56 01 <vb> <m0 P1..P7> <m1 P8..P14> <m2 P15 P16> {<hi> <lo>} x n <tag hi> <tag lo> F7   13 + 2n bytes */
+#define REPORT_GAP_D 32
+#define DELTA_JUMP 128   /* a whole value (value << 7 | fraction) between two blocks */
+#define PORT_UP (*(volatile uint32_t *)0x413db254u == 1)
+__attribute__((section(".exts"))) volatile uint8_t ext_dcap, ext_dgen;
+#endif
 #define SGAIN(v) ((volatile int32_t *)(0x80007000u + 8u * (v)))
 #if EXT_SLOTS
 extern volatile uint8_t ext_smute;   /* voices whose sample layer (S) ext_mix_det zeroes before this block's mix */
@@ -473,12 +493,24 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
     x->note = (uint8_t)((pitch >> 16) & 0x7f);
     x->vel = VELOCITY(OWNER(voice)) & 0x7f;
   }
+#if EXT_SLOTS
+  if (!PORT_UP) ext_dcap = 0;   /* params-delta: the host that asked for it is gone */
+  /* a jump: pend_p is the last block's values while they move (and the sent ones when they do not) */
+  if (changed && ext_dcap)
+    for (i = 0; i < NP; ++i)
+      if ((uint32_t)(p[i] - x->pend_p[i] + DELTA_JUMP - 1) > 2u * DELTA_JUMP - 2) x->jump = 1;
+#endif
   if (changed || x->pend_trig) {
     for (i = 0; i < NP; ++i) x->pend_p[i] = p[i];
     x->pend_params = 1;
   }
   if (x->hold) --x->hold;
+#if EXT_SLOTS
+  /* params-delta: the hold runs from REPORT_GAP_D; a jump goes once REPORT_GAP blocks have passed, as an 03 would */
+  if (!x->pend_params || (!x->pend_trig && x->hold > (x->jump & ext_dcap ? REPORT_GAP_D - REPORT_GAP : 0))) return;
+#else
   if (!x->pend_params || (!x->pend_trig && x->hold)) return;
+#endif
 #if EXT_SLOTS
   {   /* md_store is rewriting this track's sound: no report, a trig's included, with half the words or the old tag */
     extern volatile uint8_t md_wr;
@@ -509,12 +541,40 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
 #endif
   uint8_t m[44];   /* the trig message is 43 bytes (41 and the sound tag) */
   int n = 0;
+#if EXT_SLOTS
+  uint32_t dm = 0;   /* params-delta: the changed values' mask; 0 an 03 */
+  int dn = 0;
+  if (ext_dcap && !x->pend_trig && !(vb & 0x80) && x->dgen == ext_dgen) {
+    for (i = 0; i < NP; ++i)
+      if (x->pend_p[i] != x->sent[i]) dm |= 1u << i, ++dn;
+    if (!dm) {   /* (back where it was: nothing to say) */
+      x->pend_params = 0;
+      x->jump = 0;
+      return;
+    }
+    if (dn > 13) dm = 0;   /* 14 or more: the 41-byte 03 is no longer */
+  }
+#endif
   m[n++] = 0xf0; m[n++] = 0x7d; m[n++] = 0x52; m[n++] = 0x54;
+#if EXT_SLOTS
+  if (dm) {
+    m[n++] = 0x56; m[n++] = 1; m[n++] = vb & 0x7f;
+    m[n++] = (uint8_t)(dm & 0x7f); m[n++] = (uint8_t)(dm >> 7 & 0x7f); m[n++] = (uint8_t)(dm >> 14);
+    for (i = 0; i < NP; ++i)
+      if (dm & 1u << i) {
+        m[n++] = (uint8_t)(x->pend_p[i] >> 7) & 0x7f;
+        m[n++] = (uint8_t)x->pend_p[i] & 0x7f;
+      }
+  } else
+#endif
   if (x->pend_trig) {
     m[n++] = vb & 0x80 ? 0x44 : 0x04; m[n++] = vb & 0x7f; m[n++] = x->note; m[n++] = x->vel;   /* 7o: bit 7, MIDI: 44 / 43 */
   } else {
     m[n++] = vb & 0x80 ? 0x43 : 0x03; m[n++] = vb & 0x7f;
   }
+#if EXT_SLOTS
+  if (!dm)
+#endif
   for (i = 0; i < NP; ++i) {
     m[n++] = (uint8_t)(x->pend_p[i] >> 7) & 0x7f;
     m[n++] = (uint8_t)x->pend_p[i] & 0x7f;
@@ -532,7 +592,13 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
     for (i = 0; i < NP; ++i) x->sent[i] = x->pend_p[i];
     x->pend_trig = 0;
     x->pend_params = 0;
+#if EXT_SLOTS
+    x->jump = 0;
+    x->dgen = ext_dgen;   /* every report but a 56 is whole: the host's baseline from here (a 43 / 44 too) */
+    x->hold = ext_dcap && !(vb & 0x80) ? REPORT_GAP_D : REPORT_GAP;   /* (the MIDI machine's 43s: 16, as before) */
+#else
     x->hold = REPORT_GAP;
+#endif
   }
 }
 
@@ -1837,6 +1903,13 @@ US2 static void us_knobs_in(const uint8_t *d, int32_t len) {   /* 1C: noted for 
 US2 static void us_slots_in(const uint8_t *d, int32_t len) {   /* 1D */
   int32_t s;
   if (len < 13) return;
+  /* params-delta: 16 bytes, <slot> <result> <caps> (slot 0: no answer): caps bit 0 the host reads 56, bit 1 resync
+     (each voice's next parameter-only report whole); shorter (an older host): 03s */
+  if (len >= 16 && (d[14] & 1)) {
+    if (!ext_dcap || (d[14] & 2)) ext_dgen++;
+    ext_dcap = 1;
+  } else
+    ext_dcap = 0;
   for (s = 0; s < US_SLOTS; ++s) us.tgen[s] = d[6 + s];
   us.tinst = d[11];
   us.seen = 1;
