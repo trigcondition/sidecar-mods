@@ -568,6 +568,38 @@ recorded for the session. What carries it is the static case above.
 # expect  = "..."
 # replace = "..."              # or from_symbol = "label" for a 4-byte address
 
+# ----------------------------------------------------------- the DDR pool's claims (OS 1.74: pool ddr_mods)
+# Each claim's first and last 8 bytes are its sentinels; the mod's data sits between (at addr + 8). Sizes: the C
+# struct + 16, rounded up, with room to grow; each stub refuses to assemble when its claim is smaller than its struct.
+
+[[ddr]]
+owner = "0026-remote-ui"
+name  = "rui_frame"
+addr  = 0x47c00000
+size  = 0x3200
+note  = "the remote page's frame: shadow, staging, comp, comp_in (1 KB each) and the text slots txt_st, txt_sh, compose's copy"
+
+[[ddr]]
+owner = "0026-remote-ui"
+name  = "rui_names"
+addr  = 0x47c03200
+size  = 0x1000
+note  = "ux: the source lists' names (3 x 128 x 10 B) and the host's parameter-write queue"
+
+[[ddr]]
+owner = "0026-remote-ui"
+name  = "rui_pmo"
+addr  = 0x47c04200
+size  = 0x2800
+note  = "pmo: the param modulation's entries, ring and route tables (the audio interrupt's; used only while the claim is good)"
+
+[[ddr]]
+owner = "0029-sendfx-ui"
+name  = "sfu_x"
+addr  = 0x47c06a00
+size  = 0x2000
+note  = "sfu_x: the send FX labels, the TYPE lists, 0021's list knobs' state"
+
 # ----------------------------------------------------------- 0000-shared
 
 [[cave]]
