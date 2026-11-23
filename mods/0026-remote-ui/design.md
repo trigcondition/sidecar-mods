@@ -2909,5 +2909,8 @@ write running: sidecar-firmware core/seq/seq.cpp, sim/protocol.py SEQ_MASK_NODIR
 Bit 3 clear - wanted, or an older host that never sets it - the walk as before. Wanted again: a fresh pass (edits made
 meanwhile were never summed) and one 0B at once, so the host fetches the pattern as it is. sq_forget (a hello, the port
 down): wanted. The edit reports (2D 0A) do not depend on it. Why: on a CPU-starved Rytm (12 tracks playing, scene edit)
-the walk, 85 KB every 21 ticks, was 0026's largest UI-task cost. Tests: sq_emu.py dirty (not wanted: a trig placed, no
+the walk, 85 KB every 21 ticks, was 0026's largest UI-task cost. The host's exact rule (sidecar-firmware
+docs/SEQUENCER.md, "When the host wants the DIRTYs"): wanted while its pattern mirror fetches (the touch view's PAT or
+VOICE page, a fetch asked for) or a pattern write runs (FILL's fills and undo: from the start to the end of the job,
+its arming, read, edit guard, the write's own two 0Bs and the verify); not wanted otherwise. Tests: sq_emu.py dirty (not wanted: a trig placed, no
 0B, the done mask 0; wanted again: one 0B and the walk; the older host's runs before it: always on).
