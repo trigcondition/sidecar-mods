@@ -1680,14 +1680,15 @@ def machine_switch(e, name, snap, start, walk, at_end=0.3):
 
 def t_smpswitch(e):
     """A ringing sample, BD's machine switched (the machine list): stock -> PLAITS, S zero in the block after the
-    switch (BD trigged 2M before it, read 0.3M = 2 blocks after); PLAITS -> stock, then SMP up again and a trig: the slot
+    switch (BD trigged 2M before it, read 0.5M = 3 blocks after: the audio-block hooks run once in a few blocks, so
+    the list's last preview can land a block later than the switch the first run found); PLAITS -> stock, then SMP up again and a trig: the slot
     plays (S not zero 2M after it: the mark cleared). (Measured, mv4: PLAITS' defaults set the sample words, SMP 0, so
     the second half sets SMP again and needs its own trig.)"""
     s0 = e.run("smps-pre", 240, SMPL_LOOP, save=True)
     st = e.clock + 240
     walk, t = walk_list(120, UI["downs"]["plaits"])
     walk = [(20, "press", "SRC")] + walk   # from the SMPL page the first SRC opens the SRC page (measured)
-    lv, mach, t1 = machine_switch(e, "smps-up", s0, st, walk)
+    lv, mach, t1 = machine_switch(e, "smps-up", s0, st, walk, at_end=0.5)
     print(f"    stock -> PLAITS: the machine byte {mach} at +{t1}M; S 2 blocks after: {lv if lv is None else hex(lv)}")
     ck("smpswitch: stock -> PLAITS: S zero in the blocks right after the switch", mach == 44 and lv == 0, (mach, lv))
     a1 = e.peek(os.path.join(e.tmp, "smps-up-at.snap"), SMP_ACTIVE, 1)[0]
