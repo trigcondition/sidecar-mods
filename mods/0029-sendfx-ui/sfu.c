@@ -414,8 +414,22 @@ int32_t sfu_f_read(void *set, int32_t id) {
   if (st.init) sync(set);
   return to_knob(id - ID0, half_of(id - ID0, r));
 }
+/* amp-halves: the Sound set's write (vtable +0x30, 0x400a9d7e) stores the word into the trig array of track set + 8
+   (0x400a9e58: jsr 0x4011f3fa(v, track, k), 0x8000e5b0 + 84 t + 2 k) [code]; a base turn of SFX1 / SFX2 keeps that row's
+   other half there (a step's one-half lock on it plays on), as fx_write_hi does for FX 38..41. The kit word gets both. */
+#define TRIG0 ((volatile uint16_t *)0x8000e5b0u)
 int32_t sfu_s_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
-  if (OURS(id)) { st.calls++; v = merge(id - ID0, S_READ(set, id), v); }
+  if (OURS(id)) {
+    uint32_t t = *(uint32_t *)((uint8_t *)set + 8);
+    st.calls++;
+    v = merge(id - ID0, S_READ(set, id), v);
+    if (t < 12) {
+      volatile uint16_t *w = TRIG0 + 42 * t;
+      int32_t keep = HALF(id - ID0) ? 0xff00 : 0x00ff, old = *w, r = S_WRITE(set, id, v, a, b);
+      if (*w == (uint16_t)v) *w = (uint16_t)((old & keep) | (v & ~keep));   /* (a trig since: its word stays) */
+      return r;
+    }
+  }
   else if (xmode(id)) v = x_keep(id, x_half(id, v), S_READ(set, id));
   return S_WRITE(set, id, v, a, b);
 }

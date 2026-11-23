@@ -498,8 +498,20 @@ lock, show and clear their own half, as SEND FX P1..P4 do since section 12; the 
   A / B pushed clears that knob's half only.
 - The FX set's lock get / set lost their non-38..41 branches (dead since TYPE / ROUTE return first), which pays for most
   of the above: 0029 +24 B of code, no state.
-- Base turns: unchanged (the stock write; 0025 design.md "amp-halves", "Not changed").
+- Base turns: the trig array row keeps a one-half lock's locked half (below).
 
-**Results** [measured as section 12's, with the base-turn follow-up of the next change on top]: `sfu_emu.py TAG amphalves`
-13 / 0 (12 checks here; the follow-up adds one) and `ampold` 5 / 0 (back-compat: a stock-saved project loads, plays and
-saves back byte for byte).
+**Base turn of the partner half.** The Sound set's write (vtable +0x30, 0x400a9d7e; 1.74 0x400a9dea) ends in
+`0x4011f3fa(v, track, k)` (0x400a9e58; 1.74 0x4011f466 / 0x400a9ec4) with track = set + 8: it stores v at
+`0x8000e5b0 + 84 t + 2 k`, the trig array row, and clears the same entry of 0x80005f10 [code]. So turning SFX2's base while
+step 5 plays a SFX1-only lock replaced the locked SFX1 in the row with the kit's until the next trig [measured: row `1824` -> `0c30`]. `sfu_s_write` now reads the row's word 0 before the stock write (track = set + 8, < 12) and afterwards,
+if the row still holds the word it just wrote, puts the other half back: `(old & keep) | (v & ~keep)`, keep the unturned
+half (as `fx_write_hi` for FX 38..41). If a trig rewrote the row in between, its word stays (the check); a trig landing
+inside the stock write before its store is overwritten by stock as before, and then gets the pre-trig half back until the
+next trig [inferred: a window of one stock write]. The kit word and the project copy take the whole word as before.
+Cost: +84 B (`sfu_s_write` 306 -> 390; a separate helper or one shared S_WRITE call came out larger: 148 / 402 B).
+
+**Results** [measured, rytm-emu 1.74, DTEMU_STRICT=1; the Makefile's release set on OS 1.74 with sections 12 and 13,
+against the same set without them]: `halves` 10 / 0, `amphalves` 13 / 0 (the base-turn check included: row `1824` ->
+`1830`, SFX1's lock kept), `ampold` 5 / 0. `suites.py TAG --full`: sfu 333 pass / 0 fail (235 / 0 without: the 98 new
+results are these three tests' checks and runs); every other suite passes and fails exactly as without the change.
+Code: 0025 1098 -> 1624 B, 0029 10126 -> 10808 B, no new state; elekloader RAM 13432 -> 12228 B spare.

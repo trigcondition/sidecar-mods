@@ -283,10 +283,9 @@ a hi-only step (coarse value, fine 0xff) loads as `hi << 8`, i.e. SFX2 locked to
 different on stock; but a stock save rewrites the hi-only step as both halves with SFX2 = 0 and drops the lo-only one, which
 is what a modded Rytm then loads back. A both-halves lock round-trips through stock unchanged.
 
-**Not changed:** turning SFX1 or SFX2's base while a step plays a one-half lock goes through the stock write, which stores
-the whole kit word in the trig array, so the locked half plays the kit's value until the track's next trig (stock does the
-same to a both-halves lock). The FX words do not (0029's `fx_write_hi` keeps the other half); for the sound words that would
-need the Sound set's trig array row (not traced) [inferred].
+**Base turns**: turning SFX1's or SFX2's base while a step plays a one-half lock keeps the locked half in the track's
+trig array row (the Sound set's write stores the whole kit word there [code: 0x400a9e58 -> 0x4011f3fa(v, set + 8, k),
+0x8000e5b0 + 84 t + 2 k]; 0029's `sfu_s_write` restores the other half after it, 0029 design.md section 13).
 
 **Cost**: 0025 +142 B of code (1482 -> 1624: `sfx_fine` 50, `lk_load` shared by both load paths, `sfx_rebuild_c` +32,
 `sfx_play_c` +8, the two existing stubs +6 each), no state.
