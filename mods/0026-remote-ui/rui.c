@@ -1974,10 +1974,11 @@ void sq_end(void) {
 #define PIN_ATKTAB    ((const uint32_t *)0x401ee76cu)   /* its ATK rates [code: 0x40109ae2] */
 void pin_frame(uint8_t *f);
 void pin_frame(uint8_t *f) {
-  uint32_t m = pin.mask, sil = pin.silent, now = 0, v, t0 = TIMER, dt;
+  uint32_t m = pin.mask, sil = pin.silent, now = 0, v, t0, dt;
   if ((uint32_t)f != 0x800063c0u) return;   /* the voices' frame only (other callers send test / calibration frames) */
   pin.calls++;
   if (!m && !pin.was && !pin.closing) return;
+  t0 = TIMER;                          /* perf (hook-throttle): DTCN0, a peripheral read, only when the frame is worked on */
   if (!pin.decay) {                    /* the amp consumer's own encodings [code: 0x40109ae2..0x40109b9c] */
     pin.decay = (PIN_DECTAB[40] & 0xfffffu) | 0xb0100000u;
     pin.attack = (PIN_ATKTAB[0] & 0xfffffu) | 0xb0000000u;

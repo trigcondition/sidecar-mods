@@ -2890,3 +2890,13 @@ to +300 ms (20..300 ms) against the SMPL WAVEFORM header and layout of an analog
 runs in the tick after the activation, before the first frame), so no change for B; the test stays (it fails on smp0).
 
 **Not done (later feature):** a Sidecar-drawn waveform page for the SAMPLER on the SMPL key (design B of the research).
+
+## hook-throttle: per-block cost
+
+The UI-lag study (12 tracks of 16ths, link up; mods/0025-sendfx-report/design.md "hook-throttle" for the method and the
+0025 change, which is the main one) measured each per-block / per-trig hook by reverting it to stock bytes. 0026's:
+pm's S-pre / S-post 0.12 M instructions a second (idle path already short; unchanged), `rui_render_in` (freeze probe,
+QUICK PERF) 0.08 M (unchanged), `pin_frame` 0.04 M, the UART8 writer 0.03 M, `sq_fire` / `sq_end` / `pmo_vel` < 0.01 M.
+Changed here, behaviour identical: `pin_frame` reads DTCN0 (a peripheral read, slow on the device) only once the frame
+is worked on, after the two early returns that every block of a Rytm without a pinned track takes; `pin`'s timing
+statistic covers the same work.

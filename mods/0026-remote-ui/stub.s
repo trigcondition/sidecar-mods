@@ -3275,7 +3275,7 @@ pj_push:
 	move.l 20(%sp),%d1
 	move.l 24(%sp),%a1
 #APP
-| 5031 "rui.c" 1
+| 5032 "rui.c" 1
 	tas pj+136
 	smi %d2
 | 0 "" 2
@@ -6664,22 +6664,23 @@ pin_frame:
 	lea (-72,%sp),%sp
 	movem.l #31996,(%sp)
 	move.l pin,%d0
-	move.l #-2147458112,%d7
+	move.l #-2147458112,%d5
 	move.l pin+4,%d4
-	move.l -66650100,%d5
 	move.l %d0,58(%sp)
 	move.l %d4,64(%sp)
-	move.l %d5,68(%sp)
-	cmp.l 76(%sp),%d7
+	cmp.l 76(%sp),%d5
 	jne .L1130
-	move.l pin+16,%d0
+	move.l pin+16,%d7
+	move.l %d7,%d0
+	or.l 58(%sp),%d0
 	move.l pin+12,%d1
 	addq.l #1,pin+32
-	move.l %d0,50(%sp)
-	or.l 58(%sp),%d0
+	move.l %d7,50(%sp)
 	or.l %d1,%d0
 	jeq .L1130
+	move.l -66650100,%d0
 	move.l pin+20,%a1
+	move.l %d0,68(%sp)
 	tst.l %a1
 	jne .L1132
 	move.l 1075766284,%d0

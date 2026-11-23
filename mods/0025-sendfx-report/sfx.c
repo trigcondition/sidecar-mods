@@ -63,6 +63,10 @@ static struct { uint8_t sh[24 + 12]; uint32_t pend, km; int32_t kit; uint8_t rr_
 #define next_t st.next_t
 
 static const uint8_t fxw[6] = {0, 29, 38, 39, 40, 41};
+/* perf (hook-throttle): the scanned words as last seen (tracks 0..11's sound index 0, then the FX track's fxw words) and
+   whether the last scan finished with every shadow current (sfx_block) */
+static uint16_t raw[12 + 6];
+static uint8_t clean;
 
 static int can_send(void) {
   const volatile uint32_t *h;
@@ -113,6 +117,25 @@ void sfx_block(void) {
     if (++rr_t > FX) rr_t = 0;
   }
   __asm__("moveq #P_MAXB,%0" : "=d"(maxb));
+  /* perf (hook-throttle): the words the scan reads, raw. When the last scan went through all 13 tracks with nothing
+     left to send (clean), no track is pending, every track reads the trig array (no kit change under way) and none of
+     these words moved since, the scan would find nothing: skip it. The trig loop and a knob write those words; the trig
+     loop runs earlier in this interrupt, a knob's UI task cannot preempt it, so they are stable across this call. */
+  {
+    const volatile uint16_t *a = trig_sound_array;
+    int same = clean && !st.pend && !st.km;
+    for (k = 0; k < FX; k++) {
+      uint16_t w = a[TW * k];
+      if (w != raw[k]) { raw[k] = w; same = 0; }
+    }
+    for (k = 0; k < 6; k++) {
+      uint16_t w = a[TW * FX + fxw[k]];
+      if (w != raw[FX + k]) { raw[FX + k] = w; same = 0; }
+    }
+    if (same)
+      return;
+  }
+  clean = 0;
   t = next_t;
   for (k = 0; k <= FX; k++, t = (t == FX ? 0 : t + 1)) {
     n = bytes(t, m + 7, kit);
@@ -132,6 +155,8 @@ void sfx_block(void) {
     st.pend &= ~(1u << t);
     sent++;
   }
+  if (k > FX && !st.km)
+    clean = 1;                                /* perf: a whole pass, nothing left: the next block may skip it */
   next_t = t;                                 /* round robin over refused sends */
 }
 
