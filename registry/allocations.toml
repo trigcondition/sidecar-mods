@@ -129,6 +129,55 @@ Rejected candidates from the same scan, for the record:
 - 0x402c7ab3 +305 and 0x40287a15 +262: inside mask and index tables, and too small.
 """
 
+# ---------------------------------------------------------------- the DDR pool (OS 1.74)
+#
+# A pool outside the image, in DDR, for the mods' large zero-initialised buffers. Its claims are `[[ddr]]` tables
+# (owner, name, addr, size): not image bytes, so build.py patches nothing there; it gives the claiming mod `RAM_<NAME>`
+# and `RAM_<NAME>_SIZE` as assembler symbols and records the claims in the manifest. layout.py and verify.py check the
+# claims as caves are checked (inside the pool, no overlaps), and that the pool names its OS (`os`: a claim is active
+# only on that OS) and lies outside the image and outside elekloader's 128 KB area (0x47BE0000-0x47C00000). On another
+# OS each stub keeps the same block in its own .bss in elekloader's area (`.ifndef RAM_<NAME>`), as before the claims.
+
+[[pool]]
+name   = "ddr_mods"
+start  = 0x47c00000
+end    = 0x47c40000          # exclusive; 256 KB
+os     = "1.74"
+status = "verified"
+note   = """
+DDR that OS 1.74 never uses, just above elekloader's area. Nothing copies or zeroes it: elekloader's boot copier
+clears only its own area (core 0.1's .boot: the linker's __run_* / __bss_*), so it holds noise at power-on and
+whatever the last run left after a soft reset. Each mod zeroes its own claim at its first ticks, before it publishes
+anything that reads it, keeps 8-byte sentinels at both ends (each word 'RAMS' ^ its address), checks them every tick,
+and stops using a claim whose sentinel changed (mods/0026-remote-ui/design.md "big-ram").
+
+Free on stock 1.74: 0x47B48000-0x47BE0000 and 0x47C00000-0x47FF0000. This pool is the first 256 KB of the second; the
+rest of both is unclaimed (the diagnostic image's canary). The top 64 KB under 0x48000000 is left out: the stack's
+(rytm-emu: never below 0x47FFFFCC), and margin.
+
+Evidence, static: no instruction operand of 1.74's MAIN OS names 0x47B48000-0x47FFF000 in either alias (0x47.. /
+0x4F..). The highest buffer named is the 16-word DMA list at 0x4FB47440 (to 0x47B47480), with the heap's bookkeeping
+below it (0x4F9372E0..); the boot stack runs down from 0x48000000.
+
+Evidence, others' hardware (not re-checked here): Modwerk's sdk/machines/analog-rytm-mkii/README.md "Memory and
+budgets" (one MKII, RAM-booted): fills of 0x47B48000-0x47BE0000 and 0x47C00000-0x47FF0000 intact over 35 min of play,
+kit / project / sample loads, Overbridge, SysEx dumps and a cancelled OS upload; not a flashed image, a power-off save,
+an OS upgrade or a +Drive format. elekloader's devices/analog_rytm_mk2.py (8068ff5 on): its 'big' area
+0x47938000-0x47FFF000; stock 1.74 never wrote 0x47938000-0x47BE0000 or 0x47C00000-0x47FFF000 (its DDR canary, a power
+cycle included).
+
+Evidence, emulated: rytm-emu, DTEMU_STRICT=1: canaries and a CPU watch over both ranges intact through a busy cold
+boot, a power off, a cold boot on the saved card and 60 s of Overbridge streaming.
+
+Hardware, one MKII on OS 1.74 (with a larger set of mods than this tree's; the diagnostic then checked 8 KB a tick):
+the diagnostic image (0026 ddrdiag=1) ran ~97 min of heavy use (12 tracks playing, kit / project / sample loads, the
+Sidecar connected), a power cycle and 14 min more, and an OS .syx sent in normal mode (ignored outside the OS UPGRADE
+menu) and 37 passes more: 0 changed words. The real build then ran an hour, a power cycle and 10 min more: no MOD RAM
+ERROR, no audio glitch. Not done: a +Drive format.
+
+1.73 has no DDR pool: its image has not been scanned for these ranges.
+"""
+
 # ------------------------------------------------- the ceiling, and what is above it
 #
 # The startup code names the image's boundary outright, so it is no longer a

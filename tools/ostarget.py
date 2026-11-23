@@ -299,6 +299,9 @@ def port_registry(text: str, m: Map, doc: dict, tr: Translator) -> str:
         if kind == "pool":
             name, st, en = _get(t, "name"), _get(t, "start"), _get(t, "end")
             p = pools.get(name)
+            if p is None and not (BASE <= st < BASE + 0x300000):
+                out.append(t)     # a DDR pool (registry ddr_mods): not an image address, the same on every OS
+                continue
             if p is None:
                 raise SystemExit(f"re/os/{target}.toml has no [pool.{name}]: run derive")
             t = _set(t, "start", hexs, lambda v: p["start"])

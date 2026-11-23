@@ -111,5 +111,60 @@ class HashedExpect(unittest.TestCase):
             layout.resolve_expect(r, self.IMAGE, self.BASE)
 
 
+POOL = dict(name="ddr_mods", start=0x47C00000, end=0x47C40000, status="verified", os="1.74")
+
+
+def ddr(owner, name, addr, size):
+    return dict(owner=owner, name=name, addr=addr, size=size)
+
+
+def dreg(claims, pool=POOL):
+    return {"pool": [pool], "ddr": list(claims)}
+
+
+class Ddr(unittest.TestCase):
+    """big-ram: DDR claims (registry [[ddr]]) in the ddr_mods pool, the pool an OS's and outside elekloader's area."""
+
+    def v(self, r, os_="1.74"):
+        return layout.validate(r, None, {}, {}, os_)
+
+    def test_good_claims(self):
+        self.assertEqual(self.v(dreg([ddr("a", "x", 0x47C00000, 0x100), ddr("b", "y", 0x47C00100, 0x100)])), [])
+
+    def test_two_claims_overlap(self):
+        errs = self.v(dreg([ddr("a", "x", 0x47C00000, 0x200), ddr("b", "y", 0x47C00100, 0x100)]))
+        self.assertTrue(any("overlaps" in e for e in errs), errs)
+
+    def test_outside_the_pool(self):
+        errs = self.v(dreg([ddr("a", "x", 0x47C40000, 0x100)]))
+        self.assertTrue(any("does not fit wholly inside any pool" in e for e in errs), errs)
+
+    def test_a_pool_in_elekloaders_area(self):
+        p = dict(POOL, start=0x47BF0000, end=0x47C10000)
+        errs = self.v(dreg([ddr("a", "x", 0x47BF0000, 0x100)], p))
+        self.assertTrue(any("elekloader's area" in e for e in errs), errs)
+
+    def test_a_pool_in_the_image(self):
+        p = dict(POOL, start=0x40100000, end=0x40110000)
+        errs = self.v(dreg([ddr("a", "x", 0x40100000, 0x100)], p))
+        self.assertTrue(any("the OS image" in e for e in errs), errs)
+
+    def test_a_pool_without_its_os(self):
+        p = {k: v for k, v in POOL.items() if k != "os"}
+        errs = self.v(dreg([ddr("a", "x", 0x47C00000, 0x100)], p))
+        self.assertTrue(any("names its OS" in e for e in errs), errs)
+
+    def test_another_os_s_claims_are_not_active(self):
+        r = dreg([ddr("a", "x", 0x47C00000, 0x200), ddr("b", "y", 0x47C00100, 0x100)])   # (would overlap)
+        self.assertEqual(self.v(r, os_="1.73"), [])
+        self.assertEqual(layout.ddr_claims_for(r, "1.73"), [])
+        self.assertEqual(len(layout.ddr_claims_for(r, "1.74")), 2)
+
+    def test_alignment_and_names(self):
+        errs = self.v(dreg([ddr("a", "x", 0x47C00004, 0x100), ddr("b", "x", 0x47C00200, 0x10)]))
+        self.assertTrue(any("16-byte aligned" in e for e in errs), errs)
+        self.assertTrue(any("both name a claim" in e for e in errs), errs)
+
+
 if __name__ == "__main__":
     unittest.main()

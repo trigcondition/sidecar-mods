@@ -110,6 +110,7 @@ def main():
         else:
             print(f"FAIL elekloader block: tail {tail_ok}, inside its area {area_ok} ({lay})")
             ok = False
+        ok = check_ddr(manifest, elek["area"]) and ok
         boot_site = ostarget.addr(0x400008c0)        # the OS entry's jsr to the VBR setup (1.73 and 1.74 alike)
         site = boot_site - base
         want = b"\x4e\xb9" + boot_lo.to_bytes(4, "big")
@@ -394,6 +395,39 @@ def main():
 
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def check_ddr(manifest, area):
+    """The DDR claims the build gave its mods (manifest "ddr", registry [[ddr]]): each outside elekloader's area
+    `area` and inside a DDR pool of this OS (registry [[pool]] with its `os`, read here again, not from the manifest),
+    none overlapping another; and the registry's active claims are exactly these."""
+    claims = manifest.get("ddr", [])
+    osv = ostarget.tree_os(ROOT)
+    reg = layout.load(ROOT / "registry" / "allocations.toml")
+    pools = [(p["start"], p["end"]) for p in reg.get("pool", [])
+             if re.fullmatch(layout.POOL_OF["ddr"], p["name"]) and p.get("os") == osv]
+    enabled = set(manifest.get("enabled", []))
+    want = sorted((c["owner"], c["name"], c["addr"], c["size"]) for c in layout.ddr_claims_for(reg, osv)
+                  if c["owner"] in enabled)
+    got = sorted((c["owner"], c["name"], c["addr"], c["size"]) for c in claims)
+    good = True
+    if want != got:
+        print(f"FAIL ddr claims: the manifest's {got} are not the registry's {want}")
+        good = False
+    for i, (own, nm, lo, n) in enumerate(got):
+        hi = lo + n
+        bad = []
+        if lo < area[1] and area[0] < hi:
+            bad.append(f"overlaps elekloader's area 0x{area[0]:08x}..0x{area[1]:08x}")
+        if not any(a <= lo and hi <= b for a, b in pools):
+            bad.append(f"outside OS {osv}'s DDR pool")
+        bad += [f"overlaps {o2}'s {n2}" for o2, n2, l2, s2 in got[i + 1:] if lo < l2 + s2 and l2 < hi]
+        if bad:
+            print(f"FAIL ddr claim {nm} ({own}) 0x{lo:08x}..0x{hi:08x}: " + "; ".join(bad))
+            good = False
+        else:
+            print(f"ok   ddr claim {nm} ({own}) 0x{lo:08x}..0x{hi:08x}: outside the area, in OS {osv}'s DDR pool")
+    return good
 
 
 if __name__ == "__main__":

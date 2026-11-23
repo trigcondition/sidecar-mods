@@ -112,7 +112,8 @@ class MapTest(unittest.TestCase):
                    if "expect_sha256" in c
                    and ostarget.expect_key(c["addr"], c["expect_len"], c["expect_sha256"]) not in exp]
         self.assertEqual(missing, [])
-        pools = {p["name"] for p in reg.get("pool", [])}
+        # (a DDR pool is not an image address: the port passes it through unmapped)
+        pools = {p["name"] for p in reg.get("pool", []) if ostarget.BASE <= p["start"] < ostarget.BASE + 0x300000}
         self.assertEqual(pools - set(self.doc.get("pool", {})), set())
 
     def test_data_entries_agree(self):
