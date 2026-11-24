@@ -2106,14 +2106,20 @@ static void sc_poll(void) {
 /* dirty wanted (the Sidecar's docs, protocol.py SEQ_MASK): the host's 2E flags bit 3 says no one there needs the 0B now
    (its pattern view off, no pattern write running): then no walk at all (85 KB every 21 ticks was 0026's largest UI-task
    cost on a CPU-starved Rytm, the scene-edit lag study). Bit 3 clear - wanted, or an older host that never sets it - the
-   walk as before. Wanted again: a fresh pass (edits made meanwhile were never summed) and one 0B, so the host fetches
-   the pattern as it is now. The edit reports (2D 0A) never depend on it. sq_forget (a hello, the port down): wanted. */
-static uint8_t dk_off;
+   walk as before. Wanted again: a fresh pass (edits made meanwhile were never summed), and one 0B when that first pass
+   has summed every chunk (dk_arm), not before: an edit without its own 0A (a p-lock, a parameter) in a chunk the pass
+   has not reached yet would raise no 0B at all, so a host that read the pattern at once could write over it (review of
+   the Sidecar's #67). While armed every other 0B (an edit report's, a pattern switch's) waits and goes as that one, so
+   the first 0B the host sees after turning them on is the pass's. The host reads after it; every later edit is in a
+   summed chunk and raises one. The edit reports (2D 0A) never depend on it. sq_forget (a hello, the port down):
+   wanted, no 0B owed. */
+static uint8_t dk_off, dk_arm;
 static void dk_poll(void);
 static void dk_want(uint32_t off) {
   if (off == dk_off) return;
   dk_off = (uint8_t)off;
-  if (!off) { ed.dk_pos = 0; ed.dk_init = 0; ed.dirty = 1; ed.dirty_tick = st.ticks - 4; }
+  dk_arm = !off;                       /* wanted again: the 0B at the first pass's end (dk_poll); off: nothing held */
+  if (!off) { ed.dk_pos = 0; ed.dk_init = 0; }
 }
 static void dk_tick(void) {
   if (!dk_off) dk_poll();
@@ -2131,6 +2137,7 @@ static void dk_poll(void) {
   ed.dk_sum[k] = sum;
   ed.dk_init |= 1u << k;
   ed.dk_pos = k + 1 >= (nw + DK_CHUNK - 1) / DK_CHUNK ? 0 : k + 1;
+  if (dk_arm && !ed.dk_pos) { dk_arm = 0; ed.dirty = 1; ed.dirty_tick = st.ticks - 4; }   /* a whole pass summed: 0B now */
 }
 
 /* the UI tick's 1033 sends, after 1032's (seq mode, pattern first): SCALE, the edits, dirty; 0 when the sender is busy */
@@ -2157,7 +2164,7 @@ static int32_t ed_send(void) {
     if (!sq_send2(0x0c, a, 1)) return 0;
     ed.fill_owed = 0;
   }
-  if (ed.dirty && st.ticks - ed.dirty_tick >= 4) {
+  if (ed.dirty && !dk_arm && st.ticks - ed.dirty_tick >= 4) {   /* (armed: every 0B waits for the pass's end, one 0B) */
     a[0] = (uint8_t)((uint32_t)SQ_PAT & 0x7f);
     if (!sq_send2(0x0b, a, 1)) return 0;
     ed.dirty = 0;
@@ -2279,6 +2286,7 @@ static void sq_tick(void) {
 static void sq_forget(void) {
   sq.on = 0;
   if (dk_off) dk_off = 0, ed.dk_pos = 0, ed.dk_init = 0;   /* (wanted, as for an older host: a fresh pass, no 0B owed) */
+  dk_arm = 0;
   sq.mask = 0;
   pin.mask = 0;                        /* 1033: every pinned voice closes (the transport hook's closing) */
   pin.silent = 0;
