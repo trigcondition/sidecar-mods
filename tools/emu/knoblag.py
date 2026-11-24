@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Knob latency under load: the table in the performance PRs (sidecar-firmware#67 / #25), rerunnable.
 
-    RYTM_EMU=... RYTM_TEENSY=... .venv/bin/python tools/emu/knoblag.py CAND BASE [IPS]
+    RYTM_EMU=... RYTM_TEENSY=... .venv/bin/python tools/emu/knoblag.py CAND BASE [IPS] [--detents N] [--gap MS]
     e.g. (in build/os/1.74)    tools/emu/knoblag.py fix0 base0 122
 
 CAND and BASE are build tags whose emulator bases tools/emu/us_base.sh made (rytm-emu fw/AR173_us_<tag>.syx and
@@ -16,7 +16,10 @@ emulator's normal 200 nothing lags; the scaled budget shows how close an image i
   1. GRID REC, a trig on every step of all 12 tracks (16ths), GRID REC off -> a snapshot (made once per image, kept in
      build/knoblag/snaps).
   2. AMP page; with scene edit: SCNE, FUNC + SD (scene 2), PLAY, SD held 5.5 s; without: PLAY only.
-  3. While it plays, knobs E (DELAY send) and F (REVERB send) turn, 25 ms apart in turn, 100 detents each.
+  3. While it plays, knobs E (DELAY send) and F (REVERB send) turn, N detents each (--detents, default 50), a detent
+     every GAP ms on each knob (--gap, default 100), the two knobs half a gap apart: all inside the 5.5 s hold. (The
+     PRs' first table used 100 detents every 50 ms; analog-emu's sidecar-upstream branch dispatches at most ~30
+     detents a second, so that rate loses detents on every image there, stock included.)
   4. Latency of each detent: from its injection to the OS's encoder dispatch (a --count on it); the mean and the max.
      Also: CPU busy (executed / all instructions), the detents dispatched, key latency for three page presses.
 Outputs: a table per mode, and the verdict of the gate the PRs used:
@@ -48,6 +51,7 @@ EMU = os.path.abspath(os.environ.get("RYTM_EMU", os.path.join(ROOT, "..", "rytm-
 TEENSY = os.environ.get("RYTM_TEENSY", "")
 WORK = os.path.join(ROOT, "build", "knoblag")
 IPS = 122.0
+DETENTS, GAP = 50, 100
 RENDER, EVTICK, KEYD, ENCD = 0x400a2b16, 0x400a2bee, 0x400a47cc, 0x400a4816   # the engine render, the UI event tick,
 TRIGS = 0x407dd8e3                     # the key and the encoder dispatch; the pattern's trig bits (917 B a track)
 PADS = ["BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"]
@@ -189,7 +193,7 @@ def scene(tag, linked, noscene):
     """One run: the scenario above on tag's programmed snapshot -> its numbers."""
     clock = program(tag)
     i = img(tag)
-    name = f"{tag}-i{IPS:g}" + ("-noscene" if noscene else "")
+    name = f"{tag}-i{IPS:g}-d{DETENTS}g{GAP}" + ("-noscene" if noscene else "")
     os.makedirs(os.path.join(WORK, "runs"), exist_ok=True)
     ev = [(1000, "press", "AMP", 40)]
     if not noscene:
@@ -198,9 +202,9 @@ def scene(tag, linked, noscene):
     if not noscene:
         ev += [(4000, "press", "SD", 5500)]
     turns = []
-    for k in range(100):
-        turns += [4100 + 50 * k, 4125 + 50 * k]
-    ev += [(4100, "turn", "4:+1", 100, 50), (4125, "turn", "5:-1", 100, 50)]
+    for k in range(DETENTS):
+        turns += [4100 + GAP * k, 4100 + GAP // 2 + GAP * k]
+    ev += [(4100, "turn", "4:+1", DETENTS, GAP), (4100 + GAP // 2, "turn", "5:-1", DETENTS, GAP)]
     presses = [(9800, 60), (10100, 60), (10400, 60)]
     ev += [(t, "press", k, 60) for (t, _), k in zip(presses, ["FLTR", "AMP", "LFO"])]
     h, link = None, []
@@ -250,11 +254,21 @@ def scene(tag, linked, noscene):
 
 
 def main():
-    global IPS
-    if len(sys.argv) < 3:
+    global IPS, DETENTS, GAP
+    a = sys.argv[1:]
+    for opt in ("--detents", "--gap"):
+        if opt in a:
+            i = a.index(opt)
+            v = int(a[i + 1])
+            del a[i:i + 2]
+            if opt == "--detents":
+                DETENTS = v
+            else:
+                GAP = v
+    if len(a) < 2:
         sys.exit(__doc__)
-    cand, base = sys.argv[1:3]
-    IPS = float(sys.argv[3]) if len(sys.argv) > 3 else 122.0
+    cand, base = a[:2]
+    IPS = float(a[2]) if len(a) > 2 else 122.0
     if not TEENSY:
         sys.exit("set RYTM_TEENSY to a sidecar-firmware checkout (core lib built)")
     stock_base()
@@ -278,7 +292,7 @@ def main():
         if c["max"] > 2 * b["max"] + 20:
             bad.append(f"{mode}: max {c['max']} ms > 2x {base} {b['max']} + 20")
     json.dump({f"{t}{'-noscene' if n else ''}": r for (t, n), r in res.items()},
-              open(os.path.join(WORK, "runs", f"knoblag-{cand}-vs-{base}-i{IPS:g}.json"), "w"), indent=1)
+              open(os.path.join(WORK, "runs", f"knoblag-{cand}-vs-{base}-i{IPS:g}-d{DETENTS}g{GAP}.json"), "w"), indent=1)
     print(f"\n| image | scene edit, mean / max ms | no scene edit, mean / max ms |\n|---|---|---|")
     for tag in ("stock", base, cand):
         a, b = res[(tag, False)], res[(tag, True)]

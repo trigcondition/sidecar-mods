@@ -66,7 +66,8 @@ tools/emu/suites.py TAG rled sq                   # named suites
 
 Not a suite (it needs the Sidecar's core as the host, and takes minutes): a measurement with a verdict, for changes to
 the audio interrupt's hooks, the UI tick or the link traffic, where the suites pass and the unit still lags. It plays
-12 tracks of 16ths and turns two knobs (200 detents, 25 ms apart), with and without scene edit, on stock, a baseline
+12 tracks of 16ths and turns two knobs (50 detents each, one every 100 ms a knob: `--detents`, `--gap`), with and
+without scene edit, on stock, a baseline
 and a candidate, with the emulator held to a budget of IPS M instructions per emulated second, and prints the mean /
 max latency from a detent to the OS's encoder dispatch, the CPU busy share and the key latency.
 
@@ -82,9 +83,10 @@ export RYTM_TEENSY=...   # sidecar-firmware of the builds' version: make -C core
 - The 12-track snapshot of each image is made once (`build/knoblag/snaps/`); runs and the JSON go to
   `build/knoblag/runs/`. All of it is firmware-derived and git-ignored: never commit or attach it.
 - The verdict (exit 1): a lost detent; CAND's mean > BASE's + 10 ms or > 2x stock's; CAND's max > 2x BASE's + 20 ms.
-- The budget: pick one where stock keeps every detent but is close to the edge (the emulator's own speed and cache
-  model move that point: with analog-emu's I/D-cache model, 122 M is past it, see the performance PR). At the
-  emulator's normal 200 M nothing lags.
+- The budget: 122 M puts stock close to the edge (a scene-edit mean of ~50 ms on analog-emu's sidecar-upstream
+  branch). At the emulator's normal 200 M nothing lags. That branch's panel takes about 30 detents a second at most,
+  so a faster turn rate (the performance PRs' first table: 100 detents every 50 ms) loses detents on every image,
+  stock included, and measures the panel instead of the Rytm.
 
 ## The area and `--count`
 
