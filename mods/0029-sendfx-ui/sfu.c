@@ -111,7 +111,8 @@ static const char s_base[] = "BASE", s_wid[] = "WID";
 /* page descriptors {name, ids[8]} for page ids 12, 13, 14 (page_info answers them) */
 static const char n_amp2[] = "AMPLITUDE 2", n_fx1[] = "SEND FX 1", n_fx2[] = "SEND FX 2";
 struct page { const char *name; uint32_t id[8]; };
-const struct page sfu_pages[3] = {
+/* (sendfx-pages: written at run time - the title "SEND FX 1 2/3" and page 3's empty knobs E..H) */
+struct page sfu_pages[3] = {
   {n_amp2, {ID0 + 0, ID0 + 1, 0, 0, 0, 0, 0, 0}},
   {n_fx1, {ID0 + 2, ID0 + 3, ID0 + 4, ID0 + 5, ID0 + 6, ID0 + 7, BW0 + 0, BW0 + 1}},
   {n_fx2, {ID0 + 8, ID0 + 9, ID0 + 10, ID0 + 11, ID0 + 12, ID0 + 13, BW0 + 2, BW0 + 3}},
@@ -141,6 +142,7 @@ struct sfu_state sfu_st = {
    TYPEs with labels since SPACE: a host past rui1049's hello caps bit 1 sends up to 16). The emulator tests' offsets of
    the fields after lab[] follow NLT (tools/emu/sfu_emu.py DL, us_emu.py). */
 #define NLT 16
+#define LNG 16                  /* 51's full names: 16 characters (rytm-teensy core/fx/knob_labels.h kLongChars) */
 #define NZ 12
 #define XR0 334                 /* 0021's records: the user slots 334..373, JUNO / FM 374..389, DIGIDRUM 390.., */
 #define NXR 127                 /* PLAITS 408.., DSP SAMPLE / DAISYSP 416..453, page 2 457..460 */
@@ -192,9 +194,45 @@ struct sfu_x {
   /* sfx-basewidth review (appended): TIMER | 1 when FX k's last turn was sent (0 never); a host value for it within
      BW_HOLD crossed that turn on the wire and is not taken (the host keeps the turn and its 2 s refresh says it) */
   uint32_t bw_hold[2];
+  /* sfx-full-names (appended, issue #14): 51 SENDFX FULL NAMES. lng[k]: lab[k]'s TYPE's full names of P2..P5 (NUL first
+     byte: none, the record keeps "Send FX n"); written by the MIDI task beside lab[k] (hidden while written: lab[k].idp1
+     is 0, or lng_ok bit k clear). lname[fx][j]: P2..P5's record long names now (UI task, relabel). */
+  char lng[NLT][4][LNG + 1];
+  uint16_t lng_ok;
+  char lname[2][4][LNG + 1];
+  uint32_t lng_rx, lng_drop;
 };
 struct sfu_x sfu_x;   /* .bss (zeroed by core-ar2's boot copier) */
 #define X sfu_x
+/* sendfx-pages (issue #15): a user effect's P5..P16 on SEND FX pages 2 (A..H = P5..P12) and 3 (A..D = P13..P16), held by
+   the Sidecar as BASE / WIDTH are (22 ver 3 both ways), never in the kit, no locks. No parameter record is free (the 1.74
+   table's 469 records: 0..27 all used or CC-mapped, design.md section 13), so the FX's own 8 records on its page (TYPE P1
+   P2..P5 BASE WID) switch to the page's knobs while a page past 1 shows: the FX set's wrappers answer them from pv[][]
+   first. SRC (FX 1) / SMPL (FX 2) held + DOWN / UP steps the page (no cycling); the page stays when the page is left. A
+   struct of its own (not appended to sfu_x), so the emulator tests read it by its symbol. */
+#define NPX 12
+struct sfu_p {
+  char xsh[NLT][NPX][5];          /* lab[k]'s TYPE's P5..P16 short / full names (51 first p 5..16; MIDI task, as lng) */
+  char xlng[NLT][NPX][LNG + 1];
+  uint8_t np[NLT];                /* the highest P the 51s named for lab[k] (0 none): the page count follows it */
+  uint8_t pg[2], npg[2], nx[2];   /* FX k's page (0 = TYPE..WID), its pages (1..3) and its P5.. count (0..12) */
+  uint8_t pv[2][NPX];             /* P5..P16 as the host last sent them or a knob last set them */
+  uint16_t pv_tx[2];              /* bit j: FX k's P(5 + j) turned, not sent yet (UI task) */
+  volatile uint8_t pv_rx;         /* a host value taken (MIDI task): the views redraw */
+  uint8_t ontop;                  /* 1 / 2: SEND FX 1 / 2 is the screen (the tick, from the view list), 0 neither */
+  uint8_t kdef, kused, kheld, keat, fdown, pad;   /* SRC / SMPL's press held back (its code); an arrow paged meanwhile;
+                                     bit k: SRC / SMPL down; bit 0 / 1: UP / DOWN's press taken; FUNC down */
+  uint32_t pv_hold[2];            /* TIMER | 1 at FX k's last send (BW_HOLD's crossing rule) */
+  uint32_t pv_sent, pv_got, steps, replays, defers, retitles;   /* counters (tests) */
+  void *fxview;                   /* the page view the SEND FX knobs were last read through (sfu_get) */
+  uint32_t fxvt;                  /* its vtable then */
+  uint32_t kev[8];                /* the held-back press (its replay through stock's key handler) */
+  char pl_s[2][8][5], pl_l[2][8][LNG + 1];   /* FX k's paged records' short / long names now */
+  char ttl[2][16];                /* the page's title: "SEND FX 1 2/3" (an effect with pages), else n_fx1 / n_fx2 */
+  void *ctrl;                     /* the UI controller the tick was last given (its view list: top_page) */
+};
+struct sfu_p sfu_p;
+#define PG sfu_p
 #define TIMER (*(volatile uint32_t *)0xfc07000cu)   /* DTCN0, the OS's free-running count (0026's TIMER) */
 static void timed(uint32_t t0, int32_t mt) {
   uint32_t d = TIMER - t0;
@@ -273,8 +311,8 @@ static void sync(void *set) {
     X.shown_gen = X.gen;
     relabel();
   }
-  REC(ID0 + 2)[3] = (uint32_t)((tcount(0, t0) - 1) << 8);
-  REC(ID0 + 8)[3] = (uint32_t)((tcount(1, t1) - 1) << 8);
+  if (!PG.pg[0]) REC(ID0 + 2)[3] = (uint32_t)((tcount(0, t0) - 1) << 8);   /* (paged: knob A is P5's dial) */
+  if (!PG.pg[1]) REC(ID0 + 8)[3] = (uint32_t)((tcount(1, t1) - 1) << 8);
 }
 
 /* ---- 0021's list knobs: the same enum look, the step through ext_steps (mode << 8 | N) ---- */
@@ -355,6 +393,20 @@ int32_t sfu_xtext(void *functor, int32_t value, void *str) {
   }
   return xname(functor, value, str);
 }
+/* sendfx-pages: record id's knob on its FX's page (0..7: TYPE P1 P2..P5 BASE WID) and that FX, -1 none of them */
+static int32_t slot_of(int32_t id, int32_t *k) {
+  if (OURS(id) && id - ID0 >= 2) { *k = FXOF(id - ID0); return (id - ID0 - 2) % 6; }
+  if (BW(id)) { *k = (id - BW0) >> 1; return 6 + ((id - BW0) & 1); }
+  return -1;
+}
+/* the P5.. index (0..11) record id shows now: -1 not paged (its own knob), -2 paged and empty (past the effect's last) */
+static int32_t pq(int32_t id, int32_t *k) {
+  int32_t s = slot_of(id, k), q;
+  if (s < 0 || !PG.pg[*k]) return -1;
+  q = 8 * (PG.pg[*k] - 1) + s;
+  return q < PG.nx[*k] ? q : -2;
+}
+
 /* page_get_value's gate: our records, and 0021's while stepped (their locks through the set, not the raw word) */
 int32_t sfu_isext(int32_t id) { return BW(id) || xmode(id) != 0; }
 
@@ -368,7 +420,8 @@ static void see_fxset(void *set) {
   if (set != X.fxset) { if (X.fxset) X.fxset_changes++; X.fxset = set; }
 }
 int32_t sfu_f_read(void *set, int32_t id) {
-  int32_t r;
+  int32_t r, k, q = pq(id, &k);
+  if (q != -1) return q >= 0 ? PG.pv[k][q] << 8 : 0;   /* sendfx-pages: the Sidecar's P5..P16 */
   if (BW(id)) return X.bw[(id - BW0) >> 1][(id - BW0) & 1] << 8;
   r = F_READ(set, id);
   see_fxset(set);
@@ -397,6 +450,14 @@ static void fx_write_hi(void *set, int32_t c, int32_t w) {
   pk[1] = (uint8_t)w;
 }
 int32_t sfu_f_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
+  int32_t pk, q = pq(id, &pk);
+  if (q != -1) {   /* sendfx-pages: the host's, as BASE / WIDTH: kept here and sent (sfu_tick), never into the kit */
+    v >>= 8;
+    if (v < 0) v = 0;
+    if (v > 127) v = 127;
+    if (q >= 0 && PG.pv[pk][q] != v) { PG.pv[pk][q] = (uint8_t)v; PG.pv_tx[pk] |= (uint16_t)(1u << q); }
+    return 1;
+  }
   if (BW(id)) {   /* the host's: kept here and sent (sfu_tick), never into the kit */
     int32_t i = id - BW0;
     v >>= 8;
@@ -425,7 +486,8 @@ int32_t sfu_s_lget(void *set, int32_t id, int32_t step) {
   return xmode(id) ? x_knob(id, r) : r;
 }
 int32_t sfu_f_lget(void *set, int32_t id, int32_t step) {
-  int32_t r;
+  int32_t r, k;
+  if (pq(id, &k) != -1) return -1;   /* sendfx-pages: no locks on P5..P16 */
   if (BW(id) || (OURS(id) && KITONLY(id - ID0))) return -1;
   r = F_LGET(set, id, step);
   if (!OURS(id) || r < 0) return r;
@@ -447,6 +509,8 @@ int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
   return S_LSET(set, id, v, step);
 }
 int32_t sfu_f_lset(void *set, int32_t id, int32_t v, int32_t step) {
+  int32_t k;
+  if (pq(id, &k) != -1) return 0;
   if (BW(id)) return 0;
   if (OURS(id)) {
     int32_t cur;
@@ -463,7 +527,8 @@ int32_t sfu_f_lset(void *set, int32_t id, int32_t v, int32_t step) {
 int32_t sfu_get(void **view, int32_t id, int32_t lock) {
   void **set = ((void **(*)(void *, int32_t))((uint32_t *)*view)[160 / 4])(view, -1);
   uint32_t *vt = (uint32_t *)*set;
-  int32_t v = -1;
+  int32_t v = -1, k;
+  if (slot_of(id, &k) >= 0) { PG.fxview = view; PG.fxvt = *(uint32_t *)view; }   /* sendfx-pages: the SEND FX page's view */
   if (lock >= 0) v = ((lg_fn)vt[0x3c / 4])(set, id, lock);
   if (v < 0) v = ((rd_fn)vt[0x28 / 4])(set, id);
   return v;
@@ -535,6 +600,8 @@ static void take_labels(const uint8_t *d, int32_t len) {
     if (!X.lab[k].idp1) e = &X.lab[k];
   if (!e) { X.lab_drop++; return; }     /* the table is full: that TYPE keeps P2..P5 generic */
   e->idp1 = 0;                          /* not seen while written */
+  X.lng_ok &= (uint16_t)~(1u << (e - X.lab));   /* a new 24: its 51 follows (an older Sidecar sends none) */
+  PG.np[e - X.lab] = 0;                         /* (sendfx-pages: and the 51s say how many P it has) */
   for (j = 0; j < 4; ++j) {
     for (k = 0; k < 4; ++k) {
       uint8_t c = d[7 + 4 * j + k];
@@ -563,6 +630,47 @@ static void take_labels(const uint8_t *d, int32_t len) {
   X.gen++;
 }
 
+/* 51 SENDFX FULL NAMES: F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7 (MIDI task), sent
+   by the host right after the TYPE's 24. P2..P5 are the effect's P1..P4 (first p 1); P5..P16 (sendfx-pages, first p 5, 9,
+   13) are pages 2 / 3's, short names too, and the highest P named is the page count's. The TYPE's 24 must have come first
+   (its entry holds the names). */
+static void take_names(const uint8_t *d, int32_t len) {
+  int32_t k, j, c, id = d[6], p0 = d[7], n = d[8];
+  struct sfu_lab *e = 0;
+  if (len < 10 || id > 127 || p0 < 1 || n < 1 || n > 4 || len < 9 + 20 * n + 1) { X.lng_drop++; return; }
+  for (k = 0; k < NLT && !e; ++k)
+    if (X.lab[k].idp1 == id + 1) e = &X.lab[k];
+  if (!e) { X.lng_drop++; return; }
+  k = e - X.lab;
+  X.lng_ok &= (uint16_t)~(1u << k);   /* not seen while written */
+  for (j = 0; j < n; ++j) {
+    int32_t q = p0 - 1 + j;           /* the effect's P(q + 1) = the Rytm's P(q + 2) */
+    const uint8_t *src = d + 9 + 20 * j + 4;
+    char *L;
+    if (q > 15) break;
+    L = q < 4 ? X.lng[k][q] : PG.xlng[k][q - 4];
+    for (c = 0; c < LNG; ++c) {
+      uint8_t ch = src[c];
+      if (ch < 0x20 || ch > 0x7e) break;
+      L[c] = (char)ch;
+    }
+    while (c > 0 && L[c - 1] == ' ') --c;
+    L[c] = 0;
+    if (q >= 4) {                     /* sendfx-pages: P5..P16's short name too (the 24 has P2..P5's only) */
+      for (c = 0; c < 4; ++c) {
+        uint8_t ch = src[c - 4];
+        if (ch < 0x20 || ch > 0x7e) break;
+        PG.xsh[k][q - 4][c] = (char)ch;
+      }
+      PG.xsh[k][q - 4][c] = 0;
+    }
+    if (q + 1 > PG.np[k]) PG.np[k] = (uint8_t)(q + 1);
+  }
+  X.lng_ok |= (uint16_t)(1u << k);
+  X.lng_rx++;
+  X.gen++;
+}
+
 /* 21 NAMES / 22 STATE from the host (0022's router, through the mailbox) */
 static int32_t sysex_body(const uint8_t *d, int32_t len);
 int32_t sfu_sysex(const uint8_t *d, int32_t len) {
@@ -572,6 +680,19 @@ int32_t sfu_sysex(const uint8_t *d, int32_t len) {
   return r;
 }
 static int32_t sysex_body(const uint8_t *d, int32_t len) {
+  /* sendfx-pages: 22 ver 3 <fx> <first p 5..16> <n 1..12> <values>: the host's P5..P16 of FX d[6] (a turn not sent yet, or
+     sent within BW_HOLD, wins: as BASE / WIDTH) */
+  if (len >= 11 && d[4] == 0x22 && d[5] == 3 && d[6] < 2 && d[7] >= 5 && d[8] >= 1 && d[7] + d[8] <= 17 && len >= 10 + d[8]) {
+    int32_t k = d[6], j, ch = 0;
+    if (!PG.pv_tx[k] && !(PG.pv_hold[k] && TIMER - PG.pv_hold[k] < BW_HOLD))
+      for (j = 0; j < d[8]; ++j) {
+        uint8_t v = d[9 + j] & 0x7f;
+        if (PG.pv[k][d[7] - 5 + j] != v) PG.pv[k][d[7] - 5 + j] = v, ch = 1;
+      }
+    if (ch) PG.pv_rx = 1;
+    PG.pv_got++;
+    return 1;
+  }
   if (len >= 10 && d[4] == 0x22 && d[5] == 2 && d[6] < 2) {   /* sfx-basewidth: the host's BASE / WIDTH of FX d[6] */
     /* (a turn not sent yet wins: the host takes it next; one sent just now too: this value crossed it) */
     if (!(X.bw_tx >> d[6] & 1) && !(X.bw_hold[d[6]] && TIMER - X.bw_hold[d[6]] < BW_HOLD) &&
@@ -612,6 +733,8 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
     st.asked = 2;
   } else if (d[4] == 0x24) {
     take_labels(d, len);
+  } else if (d[4] == 0x51) {
+    take_names(d, len);
   } else if (d[4] == 0x22 && len >= 9 && d[6] < 2) {
     uint8_t id = d[7];
     st.miss_id[d[6]] = d[8] == 3 ? id : 0xff;
@@ -736,17 +859,90 @@ static int32_t is_offon(const struct sfu_lab *e, int32_t j) {
     }
   return m == 2;
 }
+/* sendfx-pages: FX k's records back to TYPE P1 P2..P5 BASE WID (page 1); relabel() then gives P2..P5 their TYPE's
+   labels, steps and looks, sync() TYPE's range */
+static void restore_recs(int32_t k) {
+  int32_t s, i;
+  for (s = 0; s < 6; ++s) {
+    i = 2 + 6 * k + s;
+    set_rec(i);
+    DESC(ID0 + i)[8] = s == 0 ? (uint32_t)(k ? sfu_type2_text : sfu_type1_text) : s == 1 ? (uint32_t)sfu_route_text
+                                                                                       : (uint32_t)ptexts[k][s - 2];
+  }
+  set_look(2 + 6 * k, 1, 2);   /* TYPE: the text enum (its range: sync) */
+  set_look(3 + 6 * k, 3, 2);   /* P1 ROUTE: PRE / POST */
+  set_bw_rec(2 * k);
+  set_bw_rec(2 * k + 1);
+  for (s = 0; s < 8; ++s) sfu_pages[1 + k].id[s] = s < 6 ? (uint32_t)(ID0 + 2 + 6 * k + s) : (uint32_t)(BW0 + 2 * k + s - 6);
+}
+/* sendfx-pages: FX k's 8 records as page PG.pg[k]'s knobs (>= 1): P(5 + 8 (pg - 1) + s), plain dials 0..127, the 51's
+   names (the upper left: the full name, else "Send FX n"); a knob past the effect's last is empty (id 0: the stock page
+   draws and turns nothing there, as REVERB's gaps) */
+static void apply_page(int32_t k) {
+  const struct sfu_lab *e = lab_of(X.cur[k]);
+  int32_t s, c, ei = e ? e - X.lab : -1, named = ei >= 0 && (X.lng_ok >> ei & 1);
+  for (s = 0; s < 8; ++s) {
+    int32_t id = s < 6 ? ID0 + 2 + 6 * k + s : BW0 + 2 * k + s - 6, q = 8 * (PG.pg[k] - 1) + s;
+    uint32_t *r = REC(id);
+    char *S = PG.pl_s[k][s], *L = PG.pl_l[k][s];
+    S[0] = L[0] = 0;
+    if (named && q < PG.nx[k]) {
+      for (c = 0; c < 4 && PG.xsh[ei][q][c]; ++c) S[c] = PG.xsh[ei][q][c];
+      S[c] = 0;
+      for (c = 0; c < LNG && PG.xlng[ei][q][c]; ++c) L[c] = PG.xlng[ei][q][c];
+      L[c] = 0;
+    }
+    if (q < PG.nx[k] && !S[0]) { S[0] = 'P'; S[1] = (char)('0' + (q + 5) / 10); S[2] = (char)('0' + (q + 5) % 10); S[3] = 0; }
+    r[12] = (uint32_t)S;
+    r[10] = (uint32_t)(L[0] ? L : k ? l_fx2 : l_fx1);
+    r[3] = 0x7f00u;
+    r[4] = 0;
+    if (s < 6) {
+      set_look(id - ID0, 0, 0);
+      DESC(id)[8] = (uint32_t)X.dial;
+    }
+    sfu_pages[1 + k].id[s] = q < PG.nx[k] ? (uint32_t)id : 0;
+  }
+}
+/* FX k's page count from its TYPE's 51s (the highest P named past P4), and its title */
+static void page_count(int32_t k) {
+  const struct sfu_lab *e = lab_of(X.cur[k]);
+  int32_t ei = e ? e - X.lab : -1, np = ei >= 0 && (X.lng_ok >> ei & 1) ? PG.np[ei] : 0;
+  char *t = PG.ttl[k];
+  PG.nx[k] = (uint8_t)(np > 4 ? np - 4 : 0);
+  PG.npg[k] = (uint8_t)(PG.nx[k] > 8 ? 3 : PG.nx[k] ? 2 : 1);
+  if (PG.pg[k] >= PG.npg[k]) { PG.pg[k] = 0; restore_recs(k); }   /* another TYPE (a kit change) with fewer pages */
+  if (PG.npg[k] > 1) {   /* "SEND FX 1 2/3" */
+    const char *n = k ? n_fx2 : n_fx1;
+    int32_t c;
+    for (c = 0; n[c]; ++c) t[c] = n[c];
+    t[c++] = ' ';
+    t[c++] = (char)('1' + PG.pg[k]);
+    t[c++] = '/';
+    t[c++] = (char)('0' + PG.npg[k]);
+    t[c] = 0;
+    sfu_pages[1 + k].name = t;
+  } else
+    sfu_pages[1 + k].name = k ? n_fx2 : n_fx1;
+}
 /* P2..P5's labels, steps and looks for FX k's TYPE: the 24's, else P2..P5 and dials */
 static void relabel(void) {
   int32_t k, j, c, z;
+  for (k = 0; k < 2; ++k) page_count(k);   /* (sendfx-pages: a paged FX's P2..P5 records are its page's knobs) */
   for (k = 0; k < 2; ++k) {
     const struct sfu_lab *e = lab_of(X.cur[k]);
     for (j = 0; j < 4; ++j) {
       char *b = X.lbl[k][j];
       int32_t n = 0, step = 0;
+      char *L = X.lname[k][j];
+      L[0] = 0;
       if (e) {
+        int32_t ei = e - X.lab;
         for (c = 0; c < 4 && e->lab[j][c]; ++c) b[c] = e->lab[j][c];
         b[c] = 0;
+        if (X.lng_ok >> ei & 1)
+          for (c = 0; c <= LNG; ++c)
+            if (!(L[c] = X.lng[ei][j][c])) break;
         for (z = 0; z < e->nz && z < NZ; ++z)
           if ((e->z[z].kf & 3) == j) {
             step |= e->z[z].kf & 8;
@@ -755,11 +951,16 @@ static void relabel(void) {
       } else {
         b[0] = 'P'; b[1] = (char)('2' + j); b[2] = 0;
       }
+      L[LNG] = 0;
       if (!step || n < 2) n = 0;   /* no step bit (an older Sidecar): continuous */
       X.kn[k][j] = (uint8_t)n;
+      if (PG.pg[k]) continue;      /* sendfx-pages: the record is page 2 / 3's knob now (apply_page below) */
+      /* the upper left while turning: the effect's full name, else "Send FX n" (an older Sidecar, a built-in without) */
+      REC(ID0 + 4 + 6 * k + j)[10] = (uint32_t)(L[0] ? L : k ? l_fx2 : l_fx1);
       set_look(4 + 6 * k + j, n ? (n == 2 && is_offon(e, j) ? 2 : 1) : 0, n);
     }
     X.shown[k] = X.cur[k];
+    if (PG.pg[k]) apply_page(k);
   }
   X.relabels++;
 }
@@ -783,6 +984,122 @@ int32_t sfu_draw(void *functor, int32_t value, int32_t x, int32_t y, int32_t h, 
   TEXT_DRAW(x, TEXT_FONT(TEXT_CTX), y, h - 2, 1, 0, b[0] ? b : s_wide, fmt_s, b);   /* measured on itself: centred */
   timed(t0, 0);
   return 0;
+}
+
+/* ---- sendfx-pages: the keys (ev_key, before 0026's) */
+#define K_SRC  0x31
+#define K_SMPL 0x32
+#define K_UP   0x42
+#define K_DOWN 0x43
+#define K_FUNC 0x80
+#define STOCK_KEY ((int32_t (*)(void *, void *))0x400a02cau)   /* stock's key handler (0026's STOCK_KEY) */
+#define VT_SAMPLELED 0x40234cfcu                               /* SamplerLedView: stacked after the page (0026) */
+static const uint32_t padviews[4] = {0x401e290cu, 0x401e10e4u, 0x401e2dacu, 0x401e2414u};   /* the pad modes' (0026) */
+typedef const char *(*title_fn)(void *view);
+typedef void (*sfc_fn)(void *s, const char *c, void *alloc);
+typedef void (*uit_fn)(void *ui, void *s);
+typedef void (*sdt_fn)(void *s);
+#define STR_FROM_C ((sfc_fn)0x401bcd4cu)
+#define UI_TITLE   ((uit_fn)0x40035fe8u)
+#define STR_DTOR   ((sdt_fn)0x401bb29cu)
+#define INVALIDATE ((void (*)(void *))0x40078514u)
+/* 1 / 2: SEND FX 1 / 2 is the screen - the view the SEND FX knobs were read through is in the view list (ctrl + 28) before
+   SamplerLedView, nothing but a pad mode's view after that (a menu, a popup, the machine list: covered; as 0026's sv_page
+   walks it), and its knob A is TYPE's record (DELAY / REVERB's is not). [measured, rytm-emu 1.74: MainScreenView
+   TransportView PatternGridView KeyboardView FxPageView PatternSelectionView HelpBubbleView QuickPerformanceView
+   SamplerLedView on SEND FX 1; another FxPageView object on REVERB; one GlobalMenu-class view alone in GLOBAL] */
+static int32_t top_page(void *ctrl) {
+  const uint8_t *c = (const uint8_t *)ctrl;
+  const uint32_t *n = *(const uint32_t *const *)(c + 28);
+  int32_t k, j, led = 0, found = 0;
+  if (!PG.fxview) return 0;
+  for (k = 0; k < 16 && n && (const uint8_t *)n != c + 20; ++k) {
+    const uint32_t *v = (const uint32_t *)n[2];
+    if (!v) return 0;
+    if (led) {
+      for (j = 0; j < 4 && padviews[j] != v[0]; ++j) {}
+      if (j == 4) return 0;
+    } else if (v[0] == VT_SAMPLELED) led = 1;
+    else if (v == (const uint32_t *)PG.fxview && v[0] == PG.fxvt) found = 1;
+    n = (const uint32_t *)n[0];
+  }
+  if (!led || !found) return 0;
+  j = ((int32_t (*)(void *, int32_t))((const uint32_t *)PG.fxvt)[0x9c / 4])(PG.fxview, 0);
+  return j == ID0 + 2 ? 1 : j == ID0 + 8 ? 2 : 0;
+}
+/* the page's title again (sfu_title's push, as page_view_activate does: page_info(selected).name, now PG.ttl) */
+static void retitle(void *view) {
+  uint32_t s = 0;
+  char alloc;
+  const char *t = ((title_fn)((const uint32_t *)*(void **)view)[0x4c / 4])(view);
+  STR_FROM_C(&s, t, &alloc);
+  UI_TITLE(*(void **)((uint8_t *)view + 108), &s);
+  STR_DTOR(&s);
+  PG.retitles++;
+}
+static void page_set(int32_t k, int32_t p) {
+  if (p < 0) p = 0;
+  if (p > PG.npg[k] - 1) p = PG.npg[k] - 1;
+  if (p == PG.pg[k]) return;
+  PG.pg[k] = (uint8_t)p;
+  if (!p) restore_recs(k);
+  relabel();   /* (pages: apply_page; page 1: P2..P5's labels and looks again) and the title */
+  if (X.fxset) sync(X.fxset);
+  PG.steps++;
+}
+/* SRC (SEND FX 1) / SMPL (SEND FX 2) held + DOWN / UP: the next / previous page of an effect with P5.., no cycling. On
+   its SEND FX page such a key's press is held back (stock would leave the page at once: its page cycle), and given to
+   stock at its release when no arrow paged meanwhile (the page key then cycles on its release there); an effect without
+   pages, FUNC held, or any other page: stock's at once, as before. 0 stock's (and 0026's), 1 taken. */
+static int32_t key_body(void *brain, void *ev) {
+  uint32_t code = *(uint32_t *)((uint8_t *)ev + 12) & 0xff;
+  uint32_t down = *(uint32_t *)((uint8_t *)ev + 16) & 1;
+  int32_t k = code == K_SRC ? 0 : code == K_SMPL ? 1 : -1, a, f;
+  if (!st.init) return 0;
+  if (code == K_FUNC) { PG.fdown = (uint8_t)down; return 0; }
+  if (k >= 0) {
+    if (down) {
+      if (PG.kheld >> k & 1) return PG.kdef == code;   /* a repeat: where its press went */
+      PG.kheld |= (uint8_t)(1u << k);
+      if (!PG.fdown && !PG.kdef && PG.ontop == k + 1 && PG.npg[k] > 1) {
+        int32_t i;
+        for (i = 0; i < 8; ++i) PG.kev[i] = ((const uint32_t *)ev)[i];
+        PG.kdef = (uint8_t)code;
+        PG.kused = 0;
+        PG.defers++;
+        return 1;
+      }
+      return 0;
+    }
+    PG.kheld &= (uint8_t)~(1u << k);
+    if (PG.kdef != code) return 0;
+    PG.kdef = 0;
+    if (PG.kused) return 1;   /* it paged: neither its press nor its release is stock's */
+    PG.kev[4] |= 1;           /* its press now, then this release: stock's page cycle */
+    STOCK_KEY(brain, PG.kev);
+    PG.replays++;
+    return 0;
+  }
+  if (code != K_UP && code != K_DOWN) return 0;
+  a = code == K_UP ? 1 : 2;
+  if (!down) {
+    if (!(PG.keat & a)) return 0;
+    PG.keat &= (uint8_t)~a;
+    return 1;
+  }
+  f = PG.kheld & 1 ? 0 : PG.kheld & 2 ? 1 : -1;
+  if (f < 0 || PG.ontop != f + 1 || PG.npg[f] < 2 || PG.fdown) return PG.keat & a ? 1 : 0;
+  page_set(f, PG.pg[f] + (code == K_DOWN ? 1 : -1));
+  PG.keat |= (uint8_t)a;
+  if (PG.kdef == (f ? K_SMPL : K_SRC)) PG.kused = 1;
+  if (PG.fxview) { INVALIDATE(PG.fxview); retitle(PG.fxview); }
+  return 1;
+}
+int32_t sfu_key(void *brain, void *ev) {
+  uint32_t t0 = TIMER;
+  int32_t r = key_body(brain, ev);
+  timed(t0, 0);
+  return r;
 }
 
 /* ev_tick (core-ar2, the UI loop, ~20 Hz): set the records and looks up once the boot built the
@@ -859,6 +1176,26 @@ static void tick_body(void *ctrl) {
     relabel();
     *((volatile uint8_t *)ctrl + 0x20) = 1;
   }
+  /* sendfx-pages: which SEND FX page is the screen (the key handler pages it); a host value redraws; a turn goes to the
+     host (22 ver 3, all of the FX's P5..), when USB lets */
+  PG.ctrl = ctrl;
+  PG.ontop = (uint8_t)top_page(ctrl);
+  if (PG.pv_rx) { PG.pv_rx = 0; *((volatile uint8_t *)ctrl + 0x20) = 1; }
+  for (g = 0; g < 2; ++g)
+    if (PG.pv_hold[g] && TIMER - PG.pv_hold[g] >= BW_HOLD) PG.pv_hold[g] = 0;
+  for (g = 0; g < 2; ++g)
+    if (PG.pv_tx[g] && PG.nx[g]) {
+      uint8_t m[10 + NPX];
+      int32_t j, n = PG.nx[g];
+      m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x22; m[5] = 0x03; m[6] = (uint8_t)g; m[7] = 5;
+      m[8] = (uint8_t)n;
+      for (j = 0; j < n; ++j) m[9 + j] = PG.pv[g][j];
+      m[9 + n] = 0xf7;
+      if (!try_send(m, 10 + n)) break;
+      PG.pv_tx[g] = 0;
+      PG.pv_hold[g] = TIMER | 1u;
+      PG.pv_sent++;
+    } else PG.pv_tx[g] = 0;
   /* sfx-basewidth: a host value redraws the page; a turn goes to the host (22 ver 2), the latest per FX, when USB lets */
   if (X.bw_rx) { X.bw_rx = 0; *((volatile uint8_t *)ctrl + 0x20) = 1; }
   for (g = 0; g < 2; ++g)   /* an expired hold cleared, so DTCN0's wrap (32.5 s) cannot bring it back */
