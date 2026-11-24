@@ -212,3 +212,13 @@ Measured (rytm-emu 1.74, 12 tracks playing, USB host attached, on an image with 
 116.95 M instructions a second, and with 0026's `pin_frame` change (0026 design.md "hook-throttle") the scene-edit knob
 latency at the 122 M budget fell from 521 ms to 37 ms (stock with Overbridge: 32 ms). The reports the host gets are the same (162 0x20s in the same run).
 About +150 B of code, 20 B of state.
+
+**The check itself** (review on analog-emu's sidecar-upstream, 2026-11-24): with the scan skipped on ~98 % of blocks
+(17,247 calls, 255 scans in an 11.5 s scene-edit run), the skip test was most of the reporter's cost: the 18 words read
+in two loops, each zero-extended, compared and stored, about 250 instructions a block. `moved()` now compares them
+unrolled against a zero-extended shadow (`raw` as 32-bit words), first difference out: three instructions a word,
+about 60 a block. Same words, same order of the decision, same scan when it runs; `raw` is refreshed from the words
+whenever the scan runs (it was updated word by word before; the end state is the same). Measured (knoblag, 122 M, link
+up, 50 detents every 100 ms): scene edit 68.7 / 116 -> 64.0 / 107 ms, without 56.8 / 101 -> 53.0 / 96 ms, CPU busy
+-0.21 %; with gaps that don't divide the 50 ms UI tick (45 every 113 ms) 60.2 -> 54.9 and 49.0 -> 45.3 ms (stock 46.0 /
+40.9). +272 B of area code (unrolled), +36 B of state.
