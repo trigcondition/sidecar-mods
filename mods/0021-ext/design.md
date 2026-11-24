@@ -1203,18 +1203,25 @@ MIDI send costs far more than the ~3.3 k instructions the emulator shows. With d
   the values that differ from `sent[]`, in P order, as 03's bytes; the tag as 03's. One value: 15 B (03: 41). 14 or
   more changed, the voice's first parameter-only report after `ext_dgen` moved, and the MIDI machine (43): the whole
   03 / 43 as before. Every report but a 56 is whole and sets `x->dgen` (04 / 44 included).
-- **Timing:** with `ext_dcap` the hold after any report is `REPORT_GAP_D` = 32 blocks (~21 ms), not 16 (the MIDI
-  machine's: 16, its 43s unchanged). A value that
-  jumped (`DELTA_JUMP`: a whole step, 128 in 14 bits, or more between two blocks, against `pend_p`: a trigless lock, a
-  fast square LFO) keeps 03's 16 (`x->jump`). Trigs (04: `pend_trig` passes the hold as before), note-offs (0x11,
+- **Timing:** 03's own: the hold after any report is `REPORT_GAP` = 16 blocks (~11 ms), with or without `ext_dcap`
+  (review of trigcondition/sidecar-firmware#67: a first version held a 56 for 32 blocks, which was not
+  behaviour-preserving for slowly moving values). Trigs (04: `pend_trig` passes the hold as before), note-offs (0x11,
   `ext_gate`) and the arpeggiator's 45 are unchanged. A value that moved and stopped is still reported once at the end:
   `pend_params` stays set until a report goes, and `pend_p` is then the last block's values (unchanged logic).
+- **Refresh:** a voice whose last report was a 56 (`x->dlast`) sends a whole 03 in its slot of every `DREFRESH` = 2048
+  blocks (~1.37 s; the slot is `(US_NOW + 256 v) & 2047 == 0`, staggered by voice), changed or not: `x->dgen` is set
+  behind `ext_dgen` so the report is whole, and `pend_params` so it goes. A 56 the host lost (a USB drop) is then
+  wrong there for 1.4 s at most, not until the next trig. A voice that only ever sends whole reports (03 / 04 / 43) never
+  refreshes. Cost: one load and a compare per voice per block while `dlast` is set; at most one 41-byte 03 a voice
+  every 1.37 s.
 - **The host** (Sidecar core/host_link.cpp) keeps each voice's last 16 values from its 03 / 04 / 43 / 44 / 56 and plays a
   56 as the 03 they make; a 56 with no values to apply it to is dropped and its next 1D carries RESYNC.
 - **Cost:** +420 B of elekloader RAM.
 - **Measured** (rytm-emu 1.74, a project with an LFO on a user machine's P1, held to 122 M instructions a second, 5.5 s
   of scene edit): Rytm -> host 03 90/s, 3,690 B/s -> 56 47/s, 704 B/s; every message 119.5/s, 4,257 B/s -> 78.0/s,
-  1,295 B/s. The LFO's steps reach the host every ~21 ms instead of ~11 ms: the values it gets are a subset of the 03s',
+  1,295 B/s (with the first version's 32-block hold; at 16 blocks the 56s go as often as the 03s did, ~90/s, 15 B
+  each instead of 41: see the PR for the measurement at the final rate). The values the host gets are the 03s' values,
   in order, the last the same.
-- Tests: `tools/emu/pd_emu.py TAG all` (suite `pd`): no 1D / a 13-byte 1D -> 03s only; caps -> 04 then 56s, fewer, the
-  same end; resync -> one whole 03; a 13-byte 1D again -> 03s.
+- Tests: `tools/emu/pd_emu.py TAG all` (suite `pd`): no 1D / a 13-byte 1D -> 03s only; caps -> 04 then 56s at 03's
+  rate, the same end; resync -> one whole 03; the refresh -> a whole 03 within 1.4 s after the last 56, with no value
+  moving; a 13-byte 1D again -> 03s.

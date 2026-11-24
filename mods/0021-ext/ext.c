@@ -139,7 +139,7 @@ struct ext_voice {
   uint8_t pend_trig, pend_params, hold;   /* hold: blocks until the next 0x03 */
   uint8_t gate;   /* the owner track's note is open (or its note-off pending) */
 #if EXT_SLOTS
-  uint8_t dgen, jump;   /* params-delta: the ext_dgen of its last full report; a value jumped since the last report */
+  uint8_t dgen, dlast;   /* params-delta: the ext_dgen of its last full report; the last report was a 56 */
 #endif
 };
 /* A parameter-only report (0x03) goes at most every REPORT_GAP blocks of the
@@ -151,16 +151,16 @@ struct ext_voice {
 __attribute__((section(".exts"))) struct ext_voice ext_state[8];
 #if EXT_SLOTS
 /* params-delta (2026-11-22): a host whose 1D says so (caps byte bit 0, us_slots_in) gets a parameter-only report as 56
-   PARAMS DELTA - the changed values only, after a mask - instead of the 41-byte 03, and at most every REPORT_GAP_D
-   blocks (32, ~21 ms), not 16: a modulated parameter (the track's LFO on a user machine's knob) made ~90 03s a second
-   of 41 bytes for one value, and each USB MIDI send is the costly part on the unit. A value that jumped (a whole step or
-   more between two blocks: a trigless lock, a fast square LFO) keeps 03's 16. Trigs (04), note-offs and the MIDI
-   machine's 43 / 44 are unchanged. ext_dgen moves when a host turns it on or asks for a resync (caps bit 1, a host that
-   started without the Rytm's last values): each voice's next parameter-only report is then a whole 03, the host's
-   baseline. The port going down turns it off (the next host has to say it again).
+   PARAMS DELTA - the changed values only, after a mask - instead of the 41-byte 03, at 03's own rate (at most every
+   REPORT_GAP = 16 blocks a voice, review of #67: the same timing as before for slowly moving values). A modulated
+   parameter (the track's LFO on a user machine's knob) made ~90 03s a second of 41 bytes for one value; a 56 of one
+   value is 15. Trigs (04), note-offs and the MIDI machine's 43 / 44 are unchanged. ext_dgen moves when a host turns it
+   on or asks for a resync (caps bit 1, a host that started without the Rytm's last values): each voice's next
+   parameter-only report is then a whole 03, the host's baseline. A voice whose last report was a 56 sends a whole 03
+   again in its slot of every DREFRESH blocks (2048, ~1.37 s, the slots staggered by voice), changed or not, so a 56 the
+   host lost is not stale until the next trig. The port going down turns it off (the next host has to say it again).
      F0 7D 52 54 56 01 <vb> <m0 P1..P7> <m1 P8..P14> <m2 P15 P16> {<hi> <lo>} x n <tag hi> <tag lo> F7   13 + 2n bytes */
-#define REPORT_GAP_D 32
-#define DELTA_JUMP 128   /* a whole value (value << 7 | fraction) between two blocks */
+#define DREFRESH 2048u   /* blocks: a voice's whole 03 after a 56, ~1.37 s */
 #define PORT_UP (*(volatile uint32_t *)0x413db254u == 1)
 __attribute__((section(".exts"))) volatile uint8_t ext_dcap, ext_dgen;
 #endif
@@ -495,22 +495,18 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
   }
 #if EXT_SLOTS
   if (!PORT_UP) ext_dcap = 0;   /* params-delta: the host that asked for it is gone */
-  /* a jump: pend_p is the last block's values while they move (and the sent ones when they do not) */
-  if (changed && ext_dcap)
-    for (i = 0; i < NP; ++i)
-      if ((uint32_t)(p[i] - x->pend_p[i] + DELTA_JUMP - 1) > 2u * DELTA_JUMP - 2) x->jump = 1;
+  /* the refresh: a voice whose last report was a 56, in its slot of every DREFRESH blocks: a whole 03, changed or not */
+  if (x->dlast && ext_dcap && ((*(volatile const uint32_t *)0x419ca2acu + 256u * (voice & 7)) & (DREFRESH - 1)) == 0) {
+    x->dgen = (uint8_t)(ext_dgen - 1);
+    x->pend_params = 1;
+  }
 #endif
   if (changed || x->pend_trig) {
     for (i = 0; i < NP; ++i) x->pend_p[i] = p[i];
     x->pend_params = 1;
   }
   if (x->hold) --x->hold;
-#if EXT_SLOTS
-  /* params-delta: the hold runs from REPORT_GAP_D; a jump goes once REPORT_GAP blocks have passed, as an 03 would */
-  if (!x->pend_params || (!x->pend_trig && x->hold > (x->jump & ext_dcap ? REPORT_GAP_D - REPORT_GAP : 0))) return;
-#else
   if (!x->pend_params || (!x->pend_trig && x->hold)) return;
-#endif
 #if EXT_SLOTS
   {   /* md_store is rewriting this track's sound: no report, a trig's included, with half the words or the old tag */
     extern volatile uint8_t md_wr;
@@ -549,7 +545,6 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
       if (x->pend_p[i] != x->sent[i]) dm |= 1u << i, ++dn;
     if (!dm) {   /* (back where it was: nothing to say) */
       x->pend_params = 0;
-      x->jump = 0;
       return;
     }
     if (dn > 13) dm = 0;   /* 14 or more: the 41-byte 03 is no longer */
@@ -593,12 +588,10 @@ __attribute__((noinline)) void ext_render_body(int32_t voice, uint8_t *frame, co
     x->pend_trig = 0;
     x->pend_params = 0;
 #if EXT_SLOTS
-    x->jump = 0;
-    x->dgen = ext_dgen;   /* every report but a 56 is whole: the host's baseline from here (a 43 / 44 too) */
-    x->hold = ext_dcap && !(vb & 0x80) ? REPORT_GAP_D : REPORT_GAP;   /* (the MIDI machine's 43s: 16, as before) */
-#else
-    x->hold = REPORT_GAP;
+    x->dlast = dm ? 1 : 0;   /* a 56: a whole 03 owed at the voice's next refresh slot */
+    x->dgen = ext_dgen;      /* every report but a 56 is whole: the host's baseline from here (a 43 / 44 too) */
 #endif
+    x->hold = REPORT_GAP;
   }
 }
 

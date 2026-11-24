@@ -9,8 +9,11 @@ TAG: a slots=1 build whose base tools/emu/us_base.sh TAG made. RYTM_TEENSY: a Si
 has params_delta (decode_params_delta, apply_params_delta, slots(caps=)).
     old      no 1D (an older host, or none): BD on PLAITS, trigged once, knob B turned: 03s only, no 56
     short    a 13-byte 1D (an older host's): the same, 03s only
-    delta    a 1D with HOST_CAPS_DELTA, the same trig and turns: the 04, then 56s only (15 bytes, one value); fewer
-             reports than "old"; the values rebuilt from them end where "old"'s last 03 ends, P2's a subsequence
+    delta    a 1D with HOST_CAPS_DELTA, the same trig and turns: the 04, then 56s (15 bytes, one value), and at most
+             two whole 03s (the refresh, each after a 56); as many reports as "old" (03's rate, 16 blocks), fewer
+             bytes; the values rebuilt from them end where "old"'s last 03 ends, P2's the same values
+    refresh  caps 1, a trig and turns, then 2.2 s with nothing moving: after the last 56 exactly one whole 03 (the
+             refresh, within 1.37 s) and nothing more
     modes    caps 1, turns, caps 1 | RESYNC, turns, a 13-byte 1D, turns: 04 56.. 03 56.. 03 03..; every 56 applies
 """
 import os
@@ -62,7 +65,7 @@ def rebuild(reps):
     return out
 
 
-def run(e, name, d1=None, tail=()):
+def run(e, name, d1=None, tail=(), idle=0):
     ev = [(50, "usb", d1)] if d1 else []
     sel, t = select_plaits()
     tv, t = turns(t + 30)
@@ -71,7 +74,7 @@ def run(e, name, d1=None, tail=()):
         ev.append((t, "usb", x))
         tv, t = turns(t + 20)
         ev += tv
-    e.run(name, t + 100, ev)
+    e.run(name, t + 100 + idle, ev)
     return reports(e.sent)
 
 
@@ -98,15 +101,16 @@ def t_delta(e):
     r = run(e, "pd-delta", P.slots([1] * 5, 1, caps=P.HOST_CAPS_DELTA))
     kinds = [k for k, _ in r]
     par = [k for k in kinds if k != "04"]
-    U.check("delta: the trig whole (04, the host's values), then 56s only", kinds[:1] == ["04"] and bool(par) and
-            all(k == "56" for k in par), " ".join(kinds))
+    U.check("delta: the trig whole (04, the host's values), then 56s; a whole 03 only as a refresh after a 56 (at most 2)",
+            kinds[:1] == ["04"] and bool(par) and par[0] == "56" and all(k in ("56", "03") for k in par) and
+            par.count("03") <= 2, " ".join(kinds))
     sizes = [len(m) for k, m in r if k == "56"]
     U.check("delta: each 56 13 + 2n bytes, n 1..13", all(15 <= s <= 39 and s % 2 for s in sizes), str(sorted(set(sizes))))
     old = [k for k, _ in e.pd_old if k != "04"]
-    U.check("delta: fewer parameter reports than with 03s (32 blocks, not 16)", len(par) < len(old),
-            f"{len(par)} vs {len(old)}")
     b_old = sum(len(m) for k, m in e.pd_old if k != "04")
     b_new = sum(len(m) for k, m in r if k != "04")
+    U.check("delta: 03's rate (16 blocks): as many parameter reports as with 03s (within 2), fewer bytes",
+            abs(len(par) - len(old)) <= 2 and b_new < b_old, f"{len(par)} vs {len(old)}, {b_new} B vs {b_old} B")
     print(f"  reports: 03 mode {len(old)} ({b_old} B), delta mode {len(par)} ({b_new} B)")
     rb = rebuild(r)
     ro = rebuild(e.pd_old)
@@ -115,8 +119,20 @@ def t_delta(e):
             f"{rb[-1][1] if rb else None} vs {ro[-1][1] if ro else None}")
     p2 = [v[1] for _, v in rb if v]
     p2o = [v[1] for _, v in ro if v]
-    U.check("delta: P2's values in order, a subsequence of the 03s' (coarser, never another value), the last the same",
+    U.check("delta: P2's values in order, the 03s' values (never another value), the last the same",
             set(p2) <= set(p2o) and p2 == sorted(p2) and p2[-1:] == p2o[-1:], f"{p2[:8]}.. vs {p2o[:8]}..")
+
+
+def t_refresh(e):
+    """after the last 56: one whole 03 within 1.37 s, nothing moving"""
+    r = run(e, "pd-refresh", P.slots([1] * 5, 1, caps=P.HOST_CAPS_DELTA), idle=440)   # 2.2 s after the turns
+    kinds = [k for k, _ in r]
+    last56 = max((i for i, k in enumerate(kinds) if k == "56"), default=-1)
+    U.check("refresh: after the last 56, exactly one whole 03 (the refresh) and nothing more",
+            last56 >= 0 and kinds[last56 + 1:] == ["03"], " ".join(kinds))
+    rb = rebuild(r)
+    U.check("refresh: the refresh 03 carries the values the 56s left", len(rb) >= 2 and rb[-1][1] == rb[last56][1],
+            f"{rb[-1][1] if rb else None}")
 
 
 def t_modes(e):
@@ -125,11 +141,11 @@ def t_modes(e):
             tail=[P.slots([1] * 5, 1, caps=P.HOST_CAPS_DELTA | P.HOST_CAPS_RESYNC), P.slots([1] * 5, 1)])
     s = "".join({"03": "f", "56": "d"}.get(k, "") for k, _ in r)
     U.check("modes: the trig, 56s; a resync: one whole 03, then 56s; an older host's 1D: 03s only",
-            re.fullmatch(r"d+fd+f+", s) is not None, s)
+            re.fullmatch(r"d+(?:f+d+)+f+", s) is not None, s)   # (a refresh 03 may fall inside a 56 run)
     U.check("modes: every 56 applies", all(v is not None for _, v in rebuild(r)))
 
 
-TESTS = {"old": t_old, "short": t_short, "delta": t_delta, "modes": t_modes}
+TESTS = {"old": t_old, "short": t_short, "delta": t_delta, "refresh": t_refresh, "modes": t_modes}
 
 
 def main():
