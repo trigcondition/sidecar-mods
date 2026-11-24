@@ -1216,7 +1216,7 @@ MIDI send costs far more than the ~3.3 k instructions the emulator shows. With d
   every 1.37 s.
 - **The host** (Sidecar core/host_link.cpp) keeps each voice's last 16 values from its 03 / 04 / 43 / 44 / 56 and plays a
   56 as the 03 they make; a 56 with no values to apply it to is dropped and its next 1D carries RESYNC.
-- **Cost:** +420 B of elekloader RAM.
+- **Cost:** about 420 B of elekloader RAM for this change (measured on its first version); the whole performance series costs 704 B with `tools/build_rui.sh`'s set (13,388 -> 12,684 B spare on 0.5.1.1).
 - **Measured** (rytm-emu 1.74, a project with an LFO on a user machine's P1, held to 122 M instructions a second, 5.5 s
   of scene edit): Rytm -> host 03 90/s, 3,690 B/s -> 56 47/s, 704 B/s; every message 119.5/s, 4,257 B/s -> 78.0/s,
   1,295 B/s (with the first version's 32-block hold; at 16 blocks the 56s go as often as the 03s did, ~90/s, 15 B
