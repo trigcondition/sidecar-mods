@@ -169,7 +169,7 @@ def t_swap(e):
 
 def t_fm(e):
     """6-OP FM's SMPL page: E..H labelled CHD INV SPR VOI (group 6OP), A..D stock's; knob E stepped (a list of 16): six
-    steps (24 counts of +5: 4 entries, as stock's own list knob for the same turn) store 4; the page's PNG."""
+    steps (24 counts of +5: an enum knob steps every fourth, us_emu t_enum) store 6 (MAJ7); the page's PNG."""
     f = PC.fm(e)
     ev = [(300, "press", "SMPL"), (1500, "turn", "4:5", 24, 40)]
     r = e.run("cu_fm", 3500, ev, snap=f, usb=False)
@@ -178,11 +178,7 @@ def t_fm(e):
     check("fm: SMPL E..H records' short names CHD INV SPR VOI", got == P2_LABELS[4:], got)
     check("fm: their group is 6OP", label(e, s, P2[4], 0x2c) == "6OP", label(e, s, P2[4], 0x2c))
     k = kit16(e, s)
-    # 24 turns of +5 give 4 entries, as stock's own list knob: stock 1.74, BD's FLTR TYPE (7 entries), the same 24 x +5:
-    # 0 -> 4 [measured]; here every turn is dispatched (ENCD 24 of 24 at 40 / 100 / 200 ms apart, P13 = 4 each time).
-    # The check said 6 (a step every fourth count) from an older profile no current image shows.
-    check("fm: knob E turned 24 x +5: sound word 21 (P13) = 4 entries, as stock's list knob (a list knob, the value the index)",
-          k[12] == 4 and k[12] != 0, k)
+    check("fm: knob E turned 6 steps: sound word 21 (P13) = 6 (MAJ7: a list knob, the value the index)", k[12] == 6, k)
     rng = u32(e, s, rec(P2[4]) + 12)
     check("fm: CHD's range 0..15 (0029's stepped list, 16 entries)", rng == 15 << 8, hex(rng))
     print(f"  look at build/emu/{e.tag}/pc_cu_fm.png: SAMPLE page, E..H CHD INV SPR VOI, E reads MAJ7 (or its step number)")

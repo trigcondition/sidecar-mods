@@ -336,17 +336,7 @@ def t_mode(e):
           ([0, 1] in [a for _, a in reps(r, 6)]), reps(r))
     check("mode: 31 T1 down / up, T5, PAGE down / up, FUNC down / up",
           k == [(0x00, 1), (0x00, 0), (0x04, 1), (0x04, 0), (0x84, 1), (0x84, 0), (0x80, 1), (0x80, 0)], k)
-    # the turns may come as one 32 or several: on current builds the three +2 turns are dispatched apart (measured on
-    # every build alike, either dtboot; the cu fm turn: every injected turn dispatched at 40 / 100 / 200 ms)
-    # - any split, all on encoder A, +6 in all, all between T1's down and its up
-    seq_ = [("k", (m[6] << 7) | m[7], m[8]) if m[4] == 0x31 else ("e", m[6], m[7] - 64)
-            for m in r["msgs"] if m[4] in (0x31, 0x32) and len(m) == 10]
-    d0 = seq_.index(("k", 0x00, 1)) if ("k", 0x00, 1) in seq_ else -1
-    u0 = seq_.index(("k", 0x00, 0)) if ("k", 0x00, 0) in seq_ else -1
-    es = [x for x in seq_ if x[0] == "e"]
-    check("mode: 32 encoder A +6 while T1 is held (any split)", d0 >= 0 and u0 > d0 and bool(es) and
-          all(x[1] == 0 for x in es) and sum(x[2] for x in es) == 6 and
-          all(d0 < i < u0 for i, x in enumerate(seq_) if x[0] == "e"), encs(r))
+    check("mode: 32 encoder A +6 while T1 is held", encs(r) == [(0, 6)], encs(r))
     lv = e.leds(r["snap"])
     check("mode: T1..T8 red 0x0F, T9..T16 white 0x6F (the host's 34)",
           all(lv[i] == [0x0F] * 4 for i in range(8)) and all(lv[i] == [0x6F] * 4 for i in range(8, 16)),
