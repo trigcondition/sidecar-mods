@@ -729,7 +729,8 @@ def t_scale(e):
 
 def t_dirty(e):
     """2D 0B DIRTY <pattern>: none in 3 s of play with nothing edited (the pattern bytes stay put while playing); a trig
-    placed in GRID REC (BD, not a seq track): one 0B 00 within 1.3 s."""
+    placed in GRID REC (BD, not a seq track): one 0B 00 within 1.3 s. Dirty not wanted (2E flags bit 3): no walk, no 0B;
+    wanted again: the walk, and one 0B only when its first pass is done (none in the first 0.5 s)."""
     r = e.run("dirty_play", 1000, [(300, "usb", mask2e(())), (350, "press", "PLAY"), (950, "press", "STOP")])
     check("dirty: no 0B while playing an unedited pattern", not reps(r, 0x0B), reps(r, 0x0B))
     ev = [(300, "usb", mask2e(())), (500, "press", "RECORD"), (520, "press", "T3"), (540, "press", "RECORD")]
@@ -737,6 +738,39 @@ def t_dirty(e):
     d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
     print(f"  0B: {[m.hex() for m in d]}")
     check("dirty: a placed trig: 0B 00 (pattern A01)", len(d) >= 1 and d[0][7] == 0, [m.hex() for m in d])
+    # dirty wanted (2E flags bit 3 = none wanted: the host's pattern view off, no pattern write): no walk, no 0B; an older
+    # host never sets it (the two runs above: always on). ed + 0x174: the walk's done mask (0: never walked since boot)
+    DONE = e.syms["rytm-0026-remote-ui:ed"] + 0x174
+    ev = [(300, "usb", mask2e((), 8)), (500, "press", "RECORD"), (520, "press", "T3"), (540, "press", "RECORD")]
+    r = e.run("dirty_off", 900, ev)
+    d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    ed_ = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0A]
+    walked = e.peek(r["snap"], DONE, 4)
+    # (the trig placed in GRID REC is also an edit report, 2D 0A 0D: its own 0B goes as before - the edit reports and
+    # their dirty flag do not depend on the walk)
+    check("dirty: not wanted (2E flags 8): no walk at all (done mask 0); a placed trig's 0B only with its edit report",
+          walked == b"\0\0\0\0" and len(d) <= len(ed_) and (not d or ed_), ([m.hex() for m in d + ed_], walked.hex()))
+    r = e.run("dirty_off_idle", 900, [(300, "usb", mask2e((), 8)), (350, "press", "PLAY"), (850, "press", "STOP")])
+    d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    check("dirty: not wanted, playing: no 0B, no walk", not d and e.peek(r["snap"], DONE, 4) == b"\0\0\0\0",
+          [m.hex() for m in d])
+    # wanted again: the walk restarts, and its 0B goes when that first pass has summed every chunk (~1.05 s, 210 M), not
+    # at once: an edit in a chunk the pass has not reached would raise none (review of the Sidecar's #67)
+    # a trig placed during that pass (its 2D 0A goes; its 0B waits): still no early 0B - the host's first 0B after
+    # turning them on must be the pass's end
+    ev = [(300, "usb", mask2e((), 8)), (450, "usb", mask2e((), 0)),
+          (470, "press", "RECORD"), (490, "press", "T3"), (510, "press", "RECORD")]
+    r = e.run("dirty_on_early", 550, ev)
+    d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    ed_ = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0A]
+    check("dirty: wanted again: no 0B in the first 0.5 s (the fresh pass not done), a trig placed meanwhile reported (0A)",
+          not d and bool(ed_), ([m.hex() for m in d], len(ed_)))
+    r = e.run("dirty_on", 900, ev)
+    d = [m for m in r["msgs"] if m[4] == 0x2D and m[6] == 0x0B]
+    walked = e.peek(r["snap"], DONE, 4)
+    # the pass's 0B; a second one when the trig landed in a chunk the first pass had already summed (the next pass sees it)
+    check("dirty: wanted again: the 0B 00 after the first full pass (the host reads then), at most one more, the walk on",
+          1 <= len(d) <= 2 and all(m[7] == 0 for m in d) and walked != b"\0\0\0\0", ([m.hex() for m in d], walked.hex()))
 
 
 def t_fetch(e):

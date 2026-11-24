@@ -63,6 +63,22 @@ static struct { uint8_t sh[24 + 12]; uint32_t pend, km; int32_t kit; uint8_t rr_
 #define next_t st.next_t
 
 static const uint8_t fxw[6] = {0, 29, 38, 39, 40, 41};
+/* perf (hook-throttle): the scanned words as last seen (tracks 0..11's sound index 0, then the FX track's fxw words) and
+   whether the last scan finished with every shadow current (sfx_block) */
+static uint32_t raw[12 + 6];                 /* (zero-extended: one compare a word) */
+static uint8_t clean;
+
+/* perf: whether any of the 18 scanned words differs from raw. Unrolled, first difference exits: three instructions a
+   word on the path taken every block while nothing moves. */
+static int moved(const volatile uint16_t *a) {
+#define W(i, o) if ((uint32_t)a[o] != raw[i]) return 1;
+  W(0, 0) W(1, TW) W(2, 2 * TW) W(3, 3 * TW) W(4, 4 * TW) W(5, 5 * TW) W(6, 6 * TW) W(7, 7 * TW) W(8, 8 * TW)
+  W(9, 9 * TW) W(10, 10 * TW) W(11, 11 * TW)
+  W(12, FX * TW + 0) W(13, FX * TW + 29) W(14, FX * TW + 38) W(15, FX * TW + 39) W(16, FX * TW + 40)
+  W(17, FX * TW + 41)
+#undef W
+  return 0;
+}
 
 static int can_send(void) {
   const volatile uint32_t *h;
@@ -113,6 +129,20 @@ void sfx_block(void) {
     if (++rr_t > FX) rr_t = 0;
   }
   __asm__("moveq #P_MAXB,%0" : "=d"(maxb));
+  /* perf (hook-throttle): the words the scan reads, raw. When the last scan went through all 13 tracks with nothing
+     left to send (clean), no track is pending, every track reads the trig array (no kit change under way) and none of
+     these words moved since, the scan would find nothing: skip it. The trig loop and a knob write those words; the trig
+     loop runs earlier in this interrupt, a knob's UI task cannot preempt it, so they are stable across this call. */
+  {
+    const volatile uint16_t *a = trig_sound_array;
+    if (clean && !st.pend && !st.km && !moved(a))
+      return;
+    for (k = 0; k < FX; k++)                  /* the scan runs: raw follows the words */
+      raw[k] = a[TW * k];
+    for (k = 0; k < 6; k++)
+      raw[FX + k] = a[TW * FX + fxw[k]];
+  }
+  clean = 0;
   t = next_t;
   for (k = 0; k <= FX; k++, t = (t == FX ? 0 : t + 1)) {
     n = bytes(t, m + 7, kit);
@@ -132,6 +162,8 @@ void sfx_block(void) {
     st.pend &= ~(1u << t);
     sent++;
   }
+  if (k > FX && !st.km)
+    clean = 1;                                /* perf: a whole pass, nothing left: the next block may skip it */
   next_t = t;                                 /* round robin over refused sends */
 }
 

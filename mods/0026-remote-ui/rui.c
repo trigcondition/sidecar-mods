@@ -1230,7 +1230,8 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
     break;
   }
   case 0x2e: {   /* 1032: <mask lo7> <mask hi5> <flags> [<clock lo7> <clock hi5> [<pin lo7> <pin hi5>]]: the seq tracks
-                    (taken by the UI task at its next tick); 1033: the pin mask (more tracks pinned: the host's poly ones) */
+                    (taken by the UI task at its next tick); 1033: the pin mask (more tracks pinned: the host's poly ones);
+                    flags bit 3: no 2D 0B DIRTY wanted (dk_tick: no pattern walk) */
     int32_t i;
     if ((n != 3 && n != 5 && n != 7) || b[1] > 0x1f || (n >= 5 && b[4] > 0x1f) || (n == 7 && b[6] > 0x1f)) {
       rx_bad++;
@@ -1974,10 +1975,11 @@ void sq_end(void) {
 #define PIN_ATKTAB    ((const uint32_t *)0x401ee76cu)   /* its ATK rates [code: 0x40109ae2] */
 void pin_frame(uint8_t *f);
 void pin_frame(uint8_t *f) {
-  uint32_t m = pin.mask, sil = pin.silent, now = 0, v, t0 = TIMER, dt;
+  uint32_t m = pin.mask, sil = pin.silent, now = 0, v, t0, dt;
   if ((uint32_t)f != 0x800063c0u) return;   /* the voices' frame only (other callers send test / calibration frames) */
   pin.calls++;
   if (!m && !pin.was && !pin.closing) return;
+  t0 = TIMER;                          /* perf (hook-throttle): DTCN0, a peripheral read, only when the frame is worked on */
   if (!pin.decay) {                    /* the amp consumer's own encodings [code: 0x40109ae2..0x40109b9c] */
     pin.decay = (PIN_DECTAB[40] & 0xfffffu) | 0xb0100000u;
     pin.attack = (PIN_ATKTAB[0] & 0xfffffu) | 0xb0000000u;
@@ -2101,6 +2103,27 @@ static void sc_poll(void) {
    instead of 4096 byte loads [measured: 0026's UI-task time per tick, the hardware report "the UI slow with the SEQ
    page playing"; design.md 1037b] */
 #define DK_CHUNK 1024u                 /* long words a tick */
+/* dirty wanted (the Sidecar's docs, protocol.py SEQ_MASK): the host's 2E flags bit 3 says no one there needs the 0B now
+   (its pattern view off, no pattern write running): then no walk at all (85 KB every 21 ticks was 0026's largest UI-task
+   cost on a CPU-starved Rytm, the scene-edit lag study). Bit 3 clear - wanted, or an older host that never sets it - the
+   walk as before. Wanted again: a fresh pass (edits made meanwhile were never summed), and one 0B when that first pass
+   has summed every chunk (dk_arm), not before: an edit without its own 0A (a p-lock, a parameter) in a chunk the pass
+   has not reached yet would raise no 0B at all, so a host that read the pattern at once could write over it (review of
+   the Sidecar's #67). While armed every other 0B (an edit report's, a pattern switch's) waits and goes as that one, so
+   the first 0B the host sees after turning them on is the pass's. The host reads after it; every later edit is in a
+   summed chunk and raises one. The edit reports (2D 0A) never depend on it. sq_forget (a hello, the port down):
+   wanted, no 0B owed. */
+static uint8_t dk_off, dk_arm;
+static void dk_poll(void);
+static void dk_want(uint32_t off) {
+  if (off == dk_off) return;
+  dk_off = (uint8_t)off;
+  dk_arm = !off;                       /* wanted again: the 0B at the first pass's end (dk_poll); off: nothing held */
+  if (!off) { ed.dk_pos = 0; ed.dk_init = 0; }
+}
+static void dk_tick(void) {
+  if (!dk_off) dk_poll();
+}
 static void dk_poll(void) {
   uint32_t p = (uint32_t)SQ_PAT & 127, i, k, sum = 0, n, a = (uint32_t)SQ_PATD(p);
   uint32_t a0 = a & ~3u, nw = (((a + 85760u + 3u) & ~3u) - a0) >> 2;
@@ -2114,6 +2137,7 @@ static void dk_poll(void) {
   ed.dk_sum[k] = sum;
   ed.dk_init |= 1u << k;
   ed.dk_pos = k + 1 >= (nw + DK_CHUNK - 1) / DK_CHUNK ? 0 : k + 1;
+  if (dk_arm && !ed.dk_pos) { dk_arm = 0; ed.dirty = 1; ed.dirty_tick = st.ticks - 4; }   /* a whole pass summed: 0B now */
 }
 
 /* the UI tick's 1033 sends, after 1032's (seq mode, pattern first): SCALE, the edits, dirty; 0 when the sender is busy */
@@ -2140,7 +2164,7 @@ static int32_t ed_send(void) {
     if (!sq_send2(0x0c, a, 1)) return 0;
     ed.fill_owed = 0;
   }
-  if (ed.dirty && st.ticks - ed.dirty_tick >= 4) {
+  if (ed.dirty && !dk_arm && st.ticks - ed.dirty_tick >= 4) {   /* (armed: every 0B waits for the pass's end, one 0B) */
     a[0] = (uint8_t)((uint32_t)SQ_PAT & 0x7f);
     if (!sq_send2(0x0b, a, 1)) return 0;
     ed.dirty = 0;
@@ -2184,6 +2208,7 @@ static void sq_tick(void) {
       pin.mask = ((q[2] & 4) ? 0 : sq.mask) | (((uint32_t)q[5] | (uint32_t)q[6] << 7) & 0xfffu);   /* 1033 */
       if (!sq.on || (q[2] & 2)) { sq.owed = Q_ALL; sq.resyncs++; ed.sc_owed = 0x1fffu; ed.fill_owed = 1; }   /* 1033: + SCALE, FILL */
       sq.on = 1;
+      dk_want(q[2] >> 3 & 1);          /* flags bit 3: no dirty wanted (dk_tick) */
     }
   }
   if (!sq.on) { sq.mode = 0; return; }
@@ -2253,13 +2278,15 @@ static void sq_tick(void) {
     sq.pos_tick = st.ticks;
   }
   sc_poll();                           /* 1033: SCALE, the edits, dirty */
-  dk_poll();
+  dk_tick();
   ed_send();
 }
 
 /* the hello (and the port going down): the host must say again what it sequences */
 static void sq_forget(void) {
   sq.on = 0;
+  if (dk_off) dk_off = 0, ed.dk_pos = 0, ed.dk_init = 0;   /* (wanted, as for an older host: a fresh pass, no 0B owed) */
+  dk_arm = 0;
   sq.mask = 0;
   pin.mask = 0;                        /* 1033: every pinned voice closes (the transport hook's closing) */
   pin.silent = 0;

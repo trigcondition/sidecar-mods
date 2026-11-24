@@ -1182,3 +1182,46 @@ and words 14/15 at 0x4010edc6, 1.74). In smpall no word differs from ss0. In smp
 words between ss0 and ss1/ss2: probably timing (the build changes how many instructions the interrupt runs), not
 proven. smpref compares words 0..7 (the 8 voice columns) only; smpall checks words 0..7 and reports a difference in any word (none). (An earlier
 note here said no CPU touches words 8..15: that `--watch-read` probe could not see SRAM reads, so it proved nothing.)
+
+## params-delta: 56 PARAMS DELTA, the changed values only
+
+On a Rytm, a track's LFO on a user machine's knob made the Rytm UI lag: ext_render sent a
+41-byte 03 for the voice every 16 blocks (~90 a second), all 16 values for the one that moved, and on the unit each USB
+MIDI send costs far more than the ~3.3 k instructions the emulator shows. With depth 0 the UI was snappy. So, with
+`slots=1` only (slots=0 is byte for byte as before):
+
+- **The host says it reads 56** in its 1D SLOTS: 16 bytes, `1D 01 <g1..g5> <inst> <slot> <result> <caps> F7` (slot 0,
+  result 0 when it answers nothing; an older 0021 reads that as an answer naming no slot). `us_slots_in`: caps bit 0
+  (`HOST_CAPS_DELTA`) sets `ext_dcap`; a shorter 1D (an older host) clears it; bit 1 (`HOST_CAPS_RESYNC`, a host that
+  started without the Rytm's last values) and every 0 -> 1 move `ext_dgen`. The port going down (0x413db254 != 1,
+  checked in ext_render) clears `ext_dcap`: the next host says it again.
+- **The report** (ext_render, `dm`): with `ext_dcap`, a parameter-only report of a voice whose last report was whole since
+  `ext_dgen` last moved (`x->dgen`) is
+
+      F0 7D 52 54 56 01 <vb> <m0 P1..P7> <m1 P8..P14> <m2 P15 P16> {<hi> <lo>} x n <tag hi> <tag lo> F7   13 + 2n B
+
+  the values that differ from `sent[]`, in P order, as 03's bytes; the tag as 03's. One value: 15 B (03: 41). 14 or
+  more changed, the voice's first parameter-only report after `ext_dgen` moved, and the MIDI machine (43): the whole
+  03 / 43 as before. Every report but a 56 is whole and sets `x->dgen` (04 / 44 included).
+- **Timing:** 03's own: the hold after any report is `REPORT_GAP` = 16 blocks (~11 ms), with or without `ext_dcap`
+  (review of trigcondition/sidecar-firmware#67: a first version held a 56 for 32 blocks, which was not
+  behaviour-preserving for slowly moving values). Trigs (04: `pend_trig` passes the hold as before), note-offs (0x11,
+  `ext_gate`) and the arpeggiator's 45 are unchanged. A value that moved and stopped is still reported once at the end:
+  `pend_params` stays set until a report goes, and `pend_p` is then the last block's values (unchanged logic).
+- **Refresh:** a voice whose last report was a 56 (`x->dlast`) sends a whole 03 in its slot of every `DREFRESH` = 2048
+  blocks (~1.37 s; the slot is `(US_NOW + 256 v) & 2047 == 0`, staggered by voice), changed or not: `x->dgen` is set
+  behind `ext_dgen` so the report is whole, and `pend_params` so it goes. A 56 the host lost (a USB drop) is then
+  wrong there for 1.4 s at most, not until the next trig. A voice that only ever sends whole reports (03 / 04 / 43) never
+  refreshes. Cost: one load and a compare per voice per block while `dlast` is set; at most one 41-byte 03 a voice
+  every 1.37 s.
+- **The host** (Sidecar core/host_link.cpp) keeps each voice's last 16 values from its 03 / 04 / 43 / 44 / 56 and plays a
+  56 as the 03 they make; a 56 with no values to apply it to is dropped and its next 1D carries RESYNC.
+- **Cost:** about 420 B of elekloader RAM for this change (measured on its first version); the whole performance series costs 704 B with `tools/build_rui.sh`'s set (13,388 -> 12,684 B spare on 0.5.1.1).
+- **Measured** (rytm-emu 1.74, a project with an LFO on a user machine's P1, held to 122 M instructions a second, 5.5 s
+  of scene edit): Rytm -> host 03 90/s, 3,690 B/s -> 56 47/s, 704 B/s; every message 119.5/s, 4,257 B/s -> 78.0/s,
+  1,295 B/s (with the first version's 32-block hold; at 16 blocks the 56s go as often as the 03s did, ~90/s, 15 B
+  each instead of 41: see the PR for the measurement at the final rate). The values the host gets are the 03s' values,
+  in order, the last the same.
+- Tests: `tools/emu/pd_emu.py TAG all` (suite `pd`): no 1D / a 13-byte 1D -> 03s only; caps -> 04 then 56s at 03's
+  rate, the same end; resync -> one whole 03; the refresh -> a whole 03 within 1.4 s after the last 56, with no value
+  moving; a 13-byte 1D again -> 03s.

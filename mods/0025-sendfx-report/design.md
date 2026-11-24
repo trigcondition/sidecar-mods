@@ -191,3 +191,34 @@ pool sound, 0x401205e2 stores -1 in trig_kit_copied [code, not run].
 `sfx_emu.py kitswitch` also covers (tag `sfxr2`, DTEMU_STRICT=1, `sfx_emu.py all`: 39 checks pass): A01 -> A02 -> A01 stopped
 (kit 0's values again), a switch while playing (A02 queued), BD's trigs after PLAY on A02 (lock 7700, then kit 1's
 4400) and UI edits of FX 38 / 40 (SEND FX 1 knob 3, SEND FX 2 knob 4) after a switch, reported with no revert.
+
+## hook-throttle: the scan skipped when nothing can have changed
+
+With 12 tracks of 16ths playing and the Sidecar on, keys and knobs lagged, worst in scene edit: in rytm-emu (1.74) the
+Rytm is CPU-bound there and the UI task starves first. Reverting each audio-interrupt hook to stock bytes one at a time
+(link up, scene edit, the emulator held to 122 M instructions a second, about the device's rate) showed this reporter as
+the largest single cost: its 13-track scan ran every block (1500 a second), about 350 instructions each, 0.53 M
+instructions a second, while the values it reports change only at a trig with a lock, a knob turn or a kit change.
+
+Now `sfx_block` first reads the 18 words the scan looks at (tracks 0..11's sound index 0, the FX track's 0, 29, 38..41)
+into `raw`. When the previous scan went through all 13 tracks with nothing left to send (`clean`), no track is pending
+(`pend`, the round robin's resends included), no kit change is under way (`km` 0: every track reads the trig array) and
+none of the 18 words moved, the scan would find nothing: it is skipped. Otherwise it runs as before (same order, same
+`next_t`, same sends in the same block). The words are stable across the call: the trig loop writes them earlier in the
+same interrupt, and a knob's UI task cannot preempt it. Port down: the scan runs every block as before (it cannot send,
+so it never ends clean).
+
+Measured (rytm-emu 1.74, 12 tracks playing, USB host attached, on an image with more of the Sidecar's mods): 118.34 ->
+116.95 M instructions a second, and with 0026's `pin_frame` change (0026 design.md "hook-throttle") the scene-edit knob
+latency at the 122 M budget fell from 521 ms to 37 ms (stock with Overbridge: 32 ms). The reports the host gets are the same (162 0x20s in the same run).
+About +150 B of code, 20 B of state.
+
+**The check itself** (review on analog-emu's sidecar-upstream, 2026-11-24): with the scan skipped on ~98 % of blocks
+(17,247 calls, 255 scans in an 11.5 s scene-edit run), the skip test was most of the reporter's cost: the 18 words read
+in two loops, each zero-extended, compared and stored, about 250 instructions a block. `moved()` now compares them
+unrolled against a zero-extended shadow (`raw` as 32-bit words), first difference out: three instructions a word,
+about 60 a block. Same words, same order of the decision, same scan when it runs; `raw` is refreshed from the words
+whenever the scan runs (it was updated word by word before; the end state is the same). Measured (knoblag, 122 M, link
+up, 50 detents every 100 ms): scene edit 68.7 / 116 -> 64.0 / 107 ms, without 56.8 / 101 -> 53.0 / 96 ms, CPU busy
+-0.21 %; with gaps that don't divide the 50 ms UI tick (45 every 113 ms) 60.2 -> 54.9 and 49.0 -> 45.3 ms (stock 46.0 /
+40.9). +272 B of area code (unrolled), +36 B of state.

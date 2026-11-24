@@ -2890,3 +2890,36 @@ to +300 ms (20..300 ms) against the SMPL WAVEFORM header and layout of an analog
 runs in the tick after the activation, before the first frame), so no change for B; the test stays (it fails on smp0).
 
 **Not done (later feature):** a Sidecar-drawn waveform page for the SAMPLER on the SMPL key (design B of the research).
+
+## hook-throttle: per-block cost
+
+The UI-lag study (12 tracks of 16ths, link up; mods/0025-sendfx-report/design.md "hook-throttle" for the method and the
+0025 change, which is the main one) measured each per-block / per-trig hook by reverting it to stock bytes. 0026's:
+pm's S-pre / S-post 0.12 M instructions a second (idle path already short; unchanged), `rui_render_in` (freeze probe,
+QUICK PERF) 0.08 M (unchanged), `pin_frame` 0.04 M, the UART8 writer 0.03 M, `sq_fire` / `sq_end` / `pmo_vel` < 0.01 M.
+Changed here, behaviour identical: `pin_frame` reads DTCN0 (a peripheral read, slow on the device) only once the frame
+is worked on, after the two early returns that every block of a Rytm without a pinned track takes; `pin`'s timing
+statistic covers the same work.
+
+## 2D 0B DIRTY only when wanted (2E flags bit 3)
+
+The pattern-dirty walk (dk_poll: 4 KB of the active pattern a UI tick, a pass in 1.05 s) runs only while the host wants
+the 0Bs: the host's 2E flags bit 3 set means none wanted (the Sidecar's touch view not fetching the pattern, no pattern
+write running: sidecar-firmware core/seq/seq.cpp, sim/protocol.py SEQ_MASK_NODIRTY), and then there is no walk at all.
+Bit 3 clear - wanted, or an older host that never sets it - the walk as before. Wanted again: a fresh pass (edits made
+meanwhile were never summed), and one 0B when that first pass has summed every chunk (`dk_arm`, about 1.05 s, 21 UI
+ticks; longer when the UI task starves), not at once. Why at the pass's end (review of trigcondition/sidecar-firmware#67):
+an edit without its own 0A (a p-lock, a parameter change) in a chunk the fresh pass has not reached yet changes no sum
+the walk knows, so it would raise no 0B at all; a host that read the pattern at the first 0B, and a FILL started then,
+could write over it and still verify. The host reads after the end-of-pass 0B instead (its patwrite waits for it in
+kArming); every edit after it is in a summed chunk and raises a 0B. While armed, every other 0B (an edit report's, a
+pattern switch's) waits and goes as that one, so the first 0B after the host turns them on is always the pass's end; a
+pattern switch during the pass restarts the pass (its 2D 02 as before). Turned off again while armed: nothing held, as
+before. sq_forget (a hello, the port down): wanted, no 0B owed (an older host's behaviour: the walk
+never stopped). The edit reports (2D 0A) do not depend on it. Why: on a CPU-starved Rytm (12 tracks playing, scene edit)
+the walk, 85 KB every 21 ticks, was 0026's largest UI-task cost. The host's exact rule (sidecar-firmware
+docs/SEQUENCER.md, "When the host wants the DIRTYs"): wanted while its pattern mirror fetches (the touch view's PAT or
+VOICE page, a fetch asked for) or a pattern write runs (FILL's fills and undo: from the start to the end of the job,
+its arming, read, edit guard, the write's own two 0Bs and the verify); not wanted otherwise. Tests: sq_emu.py dirty (not wanted: a trig placed, no
+0B, the done mask 0; wanted again: no 0B within 0.5 s, then exactly one 0B after the first pass, and the walk on; the
+older host's runs before it: always on).

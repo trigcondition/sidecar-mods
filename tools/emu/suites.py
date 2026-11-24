@@ -77,6 +77,7 @@ SUITES = {
     "frz":  dict(mods={"0029"}, est=22),
     "sa44": dict(mods={"0021", "0026", "0014"}, imports={"us", "sfx"}, est=87),   # 0.5.0: SAMPLER on a 0.4.4 Rytm (needs build/emu/f44b)
     "pm":   dict(mods={"0026"}, imports={"rui"}, est=217),   # 0.5.0: the Rytm's own params modulated (ops 04..07)
+    "pd":   dict(mods={"0021"}, imports={"us"}, est=90),   # params-delta: 56 PARAMS DELTA after the host's 1D caps
 }
 # rled's 24 tests by their dtboot runs (rel0-3-0's job dir): stockupkeys 254, stockup 116, stocktrigup 44, upstock 38,
 # menustock 23 (long runs), upamp 20, the rest 6..18 each. Every rled test is independent (Emu keeps no run state;

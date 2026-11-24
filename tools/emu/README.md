@@ -62,6 +62,33 @@ tools/emu/suites.py TAG rled sq                   # named suites
 - Boots: every dtboot run starts from the post-boot snapshot (9 MB), not a cold boot; only the tests about cold boots
   / power-off do.
 
+## Knob latency under load: `knoblag.py`
+
+Not a suite (it needs the Sidecar's core as the host, and takes minutes): a measurement with a verdict, for changes to
+the audio interrupt's hooks, the UI tick or the link traffic, where the suites pass and the unit still lags. It plays
+12 tracks of 16ths and turns two knobs (45 detents each, one every 113 ms a knob: `--detents`, `--gap`; a gap that divides 50 ms would lock the detents to
+the UI tick and let each image's boot phase move its mean), with and
+without scene edit, on stock, a baseline
+and a candidate, with the emulator held to a budget of IPS M instructions per emulated second, and prints the mean /
+max latency from a detent to the OS's encoder dispatch, the CPU busy share and the key latency.
+
+```
+# in build/os/1.74 (after tools/ostarget.py port 1.74), both tags built with tools/build_rui.sh and based with us_base.sh
+export RYTM_EMU=...      # rytm-emu, built
+export RYTM_TEENSY=...   # sidecar-firmware of the builds' version: make -C core engines && make -C core lib
+.venv/bin/python tools/emu/knoblag.py CAND BASE [IPS]
+```
+
+- `stock` is your stock OS from `stock/` (the file the build uses), booted as `us_base.sh` boots a build; made once
+  (rytm-emu `sections/us_stock.*`). It runs with a bare USB host, the builds with the core on the Overbridge link.
+- The 12-track snapshot of each image is made once (`build/knoblag/snaps/`); runs and the JSON go to
+  `build/knoblag/runs/`. All of it is firmware-derived and git-ignored: never commit or attach it.
+- The verdict (exit 1): a lost detent; CAND's mean > BASE's + 10 ms or > 2x stock's; CAND's max > 2x BASE's + 20 ms.
+- The budget: 122 M puts stock close to the edge (a scene-edit mean of ~50 ms on analog-emu's sidecar-upstream
+  branch). At the emulator's normal 200 M nothing lags. That branch's panel takes about 30 detents a second at most,
+  so a faster turn rate (the performance PRs' first table: 100 detents every 50 ms) loses detents on every image,
+  stock included, and measures the panel instead of the Rytm.
+
 ## The area and `--count`
 
 Since 0021 lives in elekloader's area (mdpage), a few of `us_emu.py`'s `--count` hooks are area addresses
