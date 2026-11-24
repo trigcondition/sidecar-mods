@@ -17,7 +17,9 @@ emulator's normal 200 nothing lags; the scaled budget shows how close an image i
      build/knoblag/snaps).
   2. AMP page; with scene edit: SCNE, FUNC + SD (scene 2), PLAY, SD held 5.5 s; without: PLAY only.
   3. While it plays, knobs E (DELAY send) and F (REVERB send) turn, N detents each (--detents, default 50), a detent
-     every GAP ms on each knob (--gap, default 100), the two knobs half a gap apart: all inside the 5.5 s hold. (The
+     every GAP ms on each knob (--gap, default 113), the two knobs half a gap apart: all inside the 5.5 s hold. A gap that
+     divides 50 ms locks the detents to the UI tick's 50 ms period, and each image's boot phase then moves its mean by
+     several ms; 113 does not. (The
      PRs' first table used 100 detents every 50 ms; analog-emu's sidecar-upstream branch dispatches at most ~30
      detents a second, so that rate loses detents on every image there, stock included.)
   4. Latency of each detent: from its injection to the OS's encoder dispatch (a --count on it); the mean and the max.
@@ -51,7 +53,7 @@ EMU = os.path.abspath(os.environ.get("RYTM_EMU", os.path.join(ROOT, "..", "rytm-
 TEENSY = os.environ.get("RYTM_TEENSY", "")
 WORK = os.path.join(ROOT, "build", "knoblag")
 IPS = 122.0
-DETENTS, GAP = 50, 100
+DETENTS, GAP = 45, 113
 RENDER, EVTICK, KEYD, ENCD = 0x400a2b16, 0x400a2bee, 0x400a47cc, 0x400a4816   # the engine render, the UI event tick,
 TRIGS = 0x407dd8e3                     # the key and the encoder dispatch; the pattern's trig bits (917 B a track)
 PADS = ["BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"]

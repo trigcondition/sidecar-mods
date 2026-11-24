@@ -66,7 +66,8 @@ tools/emu/suites.py TAG rled sq                   # named suites
 
 Not a suite (it needs the Sidecar's core as the host, and takes minutes): a measurement with a verdict, for changes to
 the audio interrupt's hooks, the UI tick or the link traffic, where the suites pass and the unit still lags. It plays
-12 tracks of 16ths and turns two knobs (50 detents each, one every 100 ms a knob: `--detents`, `--gap`), with and
+12 tracks of 16ths and turns two knobs (45 detents each, one every 113 ms a knob: `--detents`, `--gap`; a gap that divides 50 ms would lock the detents to
+the UI tick and let each image's boot phase move its mean), with and
 without scene edit, on stock, a baseline
 and a candidate, with the emulator held to a budget of IPS M instructions per emulated second, and prints the mean /
 max latency from a detent to the OS's encoder dispatch, the CPU busy share and the key latency.
