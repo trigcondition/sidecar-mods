@@ -141,6 +141,7 @@ struct sfu_state sfu_st = {
    TYPEs with labels since SPACE: a host past rui1049's hello caps bit 1 sends up to 16). The emulator tests' offsets of
    the fields after lab[] follow NLT (tools/emu/sfu_emu.py DL, us_emu.py). */
 #define NLT 16
+#define LNG 16                  /* 51's full names: 16 characters (rytm-teensy core/fx/knob_labels.h kLongChars) */
 #define NZ 12
 #define XR0 334                 /* 0021's records: the user slots 334..373, JUNO / FM 374..389, DIGIDRUM 390.., */
 #define NXR 127                 /* PLAITS 408.., DSP SAMPLE / DAISYSP 416..453, page 2 457..460 */
@@ -192,6 +193,13 @@ struct sfu_x {
   /* sfx-basewidth review (appended): TIMER | 1 when FX k's last turn was sent (0 never); a host value for it within
      BW_HOLD crossed that turn on the wire and is not taken (the host keeps the turn and its 2 s refresh says it) */
   uint32_t bw_hold[2];
+  /* sfx-full-names (appended, issue #14): 51 SENDFX FULL NAMES. lng[k]: lab[k]'s TYPE's full names of P2..P5 (NUL first
+     byte: none, the record keeps "Send FX n"); written by the MIDI task beside lab[k] (hidden while written: lab[k].idp1
+     is 0, or lng_ok bit k clear). lname[fx][j]: P2..P5's record long names now (UI task, relabel). */
+  char lng[NLT][4][LNG + 1];
+  uint16_t lng_ok;
+  char lname[2][4][LNG + 1];
+  uint32_t lng_rx, lng_drop;
 };
 struct sfu_x sfu_x;   /* .bss (zeroed by core-ar2's boot copier) */
 #define X sfu_x
@@ -535,6 +543,7 @@ static void take_labels(const uint8_t *d, int32_t len) {
     if (!X.lab[k].idp1) e = &X.lab[k];
   if (!e) { X.lab_drop++; return; }     /* the table is full: that TYPE keeps P2..P5 generic */
   e->idp1 = 0;                          /* not seen while written */
+  X.lng_ok &= (uint16_t)~(1u << (e - X.lab));   /* a new 24: its 51 follows (an older Sidecar sends none) */
   for (j = 0; j < 4; ++j) {
     for (k = 0; k < 4; ++k) {
       uint8_t c = d[7 + 4 * j + k];
@@ -560,6 +569,35 @@ static void take_labels(const uint8_t *d, int32_t len) {
   e->nz = (uint8_t)nz;
   e->idp1 = (uint8_t)(id + 1);
   X.lab_rx++;
+  X.gen++;
+}
+
+/* 51 SENDFX FULL NAMES: F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7 (MIDI task), sent
+   by the host right after the TYPE's 24. P2..P5 are the effect's P1..P4 (first p 1); names past P4 are for the pages
+   of issue #15 and ignored here. The TYPE's 24 must have come first (its entry holds the names). */
+static void take_names(const uint8_t *d, int32_t len) {
+  int32_t k, j, c, id = d[6], p0 = d[7], n = d[8];
+  struct sfu_lab *e = 0;
+  if (len < 10 || id > 127 || p0 < 1 || n < 1 || n > 4 || len < 9 + 20 * n + 1) { X.lng_drop++; return; }
+  for (k = 0; k < NLT && !e; ++k)
+    if (X.lab[k].idp1 == id + 1) e = &X.lab[k];
+  if (!e) { X.lng_drop++; return; }
+  k = e - X.lab;
+  X.lng_ok &= (uint16_t)~(1u << k);   /* not seen while written */
+  for (j = 0; j < n; ++j) {
+    int32_t q = p0 - 1 + j;           /* the effect's P(q + 1) = the Rytm's P(q + 2) */
+    const uint8_t *src = d + 9 + 20 * j + 4;
+    if (q > 3) break;
+    for (c = 0; c < LNG; ++c) {
+      uint8_t ch = src[c];
+      if (ch < 0x20 || ch > 0x7e) break;
+      X.lng[k][q][c] = (char)ch;
+    }
+    while (c > 0 && X.lng[k][q][c - 1] == ' ') --c;
+    X.lng[k][q][c] = 0;
+  }
+  X.lng_ok |= (uint16_t)(1u << k);
+  X.lng_rx++;
   X.gen++;
 }
 
@@ -612,6 +650,8 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
     st.asked = 2;
   } else if (d[4] == 0x24) {
     take_labels(d, len);
+  } else if (d[4] == 0x51) {
+    take_names(d, len);
   } else if (d[4] == 0x22 && len >= 9 && d[6] < 2) {
     uint8_t id = d[7];
     st.miss_id[d[6]] = d[8] == 3 ? id : 0xff;
@@ -744,9 +784,15 @@ static void relabel(void) {
     for (j = 0; j < 4; ++j) {
       char *b = X.lbl[k][j];
       int32_t n = 0, step = 0;
+      char *L = X.lname[k][j];
+      L[0] = 0;
       if (e) {
+        int32_t ei = e - X.lab;
         for (c = 0; c < 4 && e->lab[j][c]; ++c) b[c] = e->lab[j][c];
         b[c] = 0;
+        if (X.lng_ok >> ei & 1)
+          for (c = 0; c <= LNG; ++c)
+            if (!(L[c] = X.lng[ei][j][c])) break;
         for (z = 0; z < e->nz && z < NZ; ++z)
           if ((e->z[z].kf & 3) == j) {
             step |= e->z[z].kf & 8;
@@ -755,6 +801,9 @@ static void relabel(void) {
       } else {
         b[0] = 'P'; b[1] = (char)('2' + j); b[2] = 0;
       }
+      L[LNG] = 0;
+      /* the upper left while turning: the effect's full name, else "Send FX n" (an older Sidecar, a built-in without) */
+      REC(ID0 + 4 + 6 * k + j)[10] = (uint32_t)(L[0] ? L : k ? l_fx2 : l_fx1);
       if (!step || n < 2) n = 0;   /* no step bit (an older Sidecar): continuous */
       X.kn[k][j] = (uint8_t)n;
       set_look(4 + 6 * k + j, n ? (n == 2 && is_offon(e, j) ? 2 : 1) : 0, n);
