@@ -465,6 +465,21 @@ def t_push(e):
     check("push: on another page (FLTR) a push is stock's alone (no 31)", not evs(r2, "key"), evs(r2, "key"))
 
 
+def t_pushside(e):
+    """0.5.2 rc3 review HIGH-1: under a held MORPH side (armed, PAGE + T15) a knob press on the SRC view of a Sidecar track
+    (BD on JUNO) is still sent to the host as key 31 0x70 down / up: the Rytm does not hold it back (the next release),
+    so the Pi's remote.cpp on_key ignores it while scene::edit_side() >= 0 (core test test_sedit_page t_push_under_side).
+    Observable here: the host receives the press (and the release). Without the side the same keys: see t_push."""
+    juno(e)
+    arm = bytes([0xF0, 0x7D, 0x52, 0x54, 0x5A, 0x01, 0x0B, 0x01, 0xF7])
+    r = e.run("pushside", 1500, [(200, "press", "PAGE", 600), (210, "press", "T15", 550), (400, "press", "PUSH_A", 200)],
+              snap=J, sends=[(140, arm)])
+    k = [(x["code"], x["down"]) for x in evs(r, "key")]
+    print(f"  keys {k}")
+    check("pushside: the press under PAGE + T15 reaches the host (31 0x70 down, up): the Pi side must ignore it",
+          (0x70, 1) in k and (0x70, 0) in k, k)
+
+
 def t_names(e):
     """1036: BD on GRANULAR, the stock SRC page (the host draws nothing): 47 list 0 (GRANULAR SRC) with 4 names (rows 8..11
     since 1043: a row's own name, no min(value, total - 1)); the SRC knob's value text is row 11's name (turned: the
@@ -576,8 +591,29 @@ def t_held(e):
     check("held: outside GRID REC a held trig sends no flagged 2A, the frame stays", not any(x["track"] & 0x40 for x in a3)
           and r3["oled"] == r3["frame"], [(hex(x["track"]), x["first"], x["n"]) for x in a3])
 
+def t_tblbview(e):
+    """The view over the SMPL page lives exactly as long as TBLB's list (P13, knob E, the host's announce 4A 7D 1): 29 0 1 once
+    the list opens, 29 0 0 and sv.on 0 once it ends, by YES, NO, another knob or another page (FLTR); with no
+    announce the view never comes on over the SMPL page."""
+    keys = UI["list_open"] + ["DOWN"] * 26 + [UI["list_confirm"]]
+    ev = [(500 + 300 * i, "press", k) for i, k in enumerate(keys)]
+    a = e.run("tblbview-wt", 500 + 300 * len(keys) + 1500, ev, answer=True)   # drawn: ls_p13 wants commits
+    ann = sx(0x4A, 0x7D, 1)
+    smpl, op = [(300, "press", "SMPL")], (900, "turn", "4:+8", 1, 50)
+    for name, tail in (("yes", (1500, "press", "YES")), ("no", (1500, "press", "NO")), ("knob", (1500, "turn", "5:+8", 4, 50)),
+                       ("page", (1500, "press", "FLTR"))):
+        r = e.run(f"tblbview-{name}", 2600, smpl + [op, tail], snap=a["snap"], sends=[(150, ann)])
+        v29 = [(x["track"], x["on"]) for x in evs(r, "v29")]
+        s = e.sv(r["snap"][0])
+        check(f"tblbview {name}: 29 0 1 for the list, then 29 0 0 last, sv.on 0 at the end (no stuck view)",
+              (0, 1) in v29 and v29[-1] == (0, 0) and not s["on"], (v29, s))
+    r = e.run("tblbview-old", 2000, smpl + [op], snap=a["snap"])
+    v29 = [(x["track"], x["on"]) for x in evs(r, "v29") if x["t"] > 0.4]
+    check("tblbview old: no announce: the view never comes on over the SMPL page", (0, 1) not in v29 and not e.sv(r["snap"][0])["on"], v29)
+
+
 TESTS = dict(held=t_held, bank=t_bank, popups=t_popups, level=t_level, padmode=t_padmode, dsp=t_dsp, juno=t_juno, knob=t_knob, list=t_list, leave=t_leave, gone=t_gone, trk=t_trk, push=t_push,
-             names=t_names)
+             names=t_names, tblbview=t_tblbview, pushside=t_pushside)
 
 
 def main():

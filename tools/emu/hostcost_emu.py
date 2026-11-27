@@ -42,14 +42,16 @@ subprocess.run = _patched
 
 def symtab(e, tag_dir):
     syms = {}
+    elek = json.load(open(os.path.join(e.out, "manifest.json")))["elek"]
+    area_lo = elek["area"][0]      # elekloader's area, from the manifest (not a constant)
     mp = json.load(open(os.path.join(tag_dir, "Analog-Rytm_MKII_OS1.74_lag0.syx.map.json")))
     for k, v in mp.items():
         if isinstance(v, str):
             v = int(v, 16)
-        if ":" not in k and isinstance(v, int) and v < 0x47be0000:
+        if ":" not in k and isinstance(v, int) and v < area_lo:
             syms[v] = k
-    for k, v in json.load(open(os.path.join(e.out, "manifest.json")))["elek"]["symbols"].items():
-        if k.startswith("rytm-") and v >= 0x47be0000 and v not in syms:
+    for k, v in elek["symbols"].items():
+        if k.startswith("rytm-") and v >= area_lo and v not in syms:
             syms[v] = k
     keys = sorted(syms)
     return keys, syms

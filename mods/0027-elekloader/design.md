@@ -7,7 +7,7 @@ a blob appended to MAIN OS, copied at early boot to a fixed 128 KB DDR area and 
 there. This replaces route A of rytm-teensy `docs/superpowers/specs/2026-10-16-drive-code-loader.md` (section 0).
 We write no boot stub of our own.
 
-Tags: **[doc]** elekloader's or Modwerk's own docs, not re-checked by us; **[measured]** run in rytm-emu, this
+Tags: **[doc]** elekloader's or a third-party mod project's own docs, not re-checked by us; **[measured]** run in rytm-emu, this
 tree, 2026-10-16; **[inferred]** reasoned, not shown. No hardware was used and nothing was flashed.
 
 ## 1. Decision: our mods become ordinary elekloader modules
@@ -36,7 +36,7 @@ There were two candidate paths:
 
 Path (b) keeps one source of truth per thing: the registry holds the addresses, elekloader holds the boot copier,
 the linker and the packer. Both checkers run on every build. It is also what makes our mods *compatible with
-elekloader as a standard*: the output is plain `.elemod` files that elekloader, its web page or Modwerk's kit can
+elekloader as a standard*: the output is plain `.elemod` files that elekloader, its web page or a third-party mod builder's kit can
 combine with anyone else's Rytm mods under elekloader's own overlap, name and RAM checks (section 5).
 
 ## 2. How a build runs
@@ -181,12 +181,12 @@ In hwus1nlel2 that code is linked into the area instead:
 - **The one-shot flag and run-time watchdog of route A** (rytm-teensy spec) are not part of elekloader's core.
   Add them later as an area mod on `ev_tick` if wanted.
 
-## 5. Compatibility with elekloader as a standard, and with Modwerk
+## 5. Compatibility with elekloader as a standard, and with a third-party mod builder
 
 **What fits as is:**
 - The generated `rytm-<id>.elemod` files are standard format-2 mods: target pinned by sha256, sites with stock
-  sha256, relocatable `.run`, event subscriptions. elekloader's `lint`, `patch --check`, its web page and the
-  Modwerk kit accept them like any mod. Anyone else's Rytm mod is checked against ours for overlapping bytes,
+  sha256, relocatable `.run`, event subscriptions. elekloader's `lint`, `patch --check`, its web page and a
+  third-party mod builder's kit accept them like any mod. Anyone else's Rytm mod is checked against ours for overlapping bytes,
   names and RAM.
 - 0028 is already shaped like an elekloader example: an `ev_tick` subscriber plus one `jmp` site.
 
@@ -202,23 +202,23 @@ In hwus1nlel2 that code is linked into the area instead:
    `ev_key` subscriber. No other registry claim overlaps a core-ar2 site; checked over the whole registry,
    2026-10-16. Our own hooks elsewhere in the UI loop are fine. When the same routine is hooked twice, prefer
    core-ar2's events, so other people's mods can share the site.
-4. **Params.** Modwerk and elekloader have no build-time params. Each published variant would be its own elemod,
+4. **Params.** That builder and elekloader have no build-time params. Each published variant would be its own elemod,
    or a param becomes a run-time setting (an `ev_settings` row).
-5. **Metadata.** Each elemod needs a real `license` (now `NOASSERTION`), author and description. Modwerk also asks
+5. **Metadata.** Each elemod needs a real `license` (now `NOASSERTION`), author and description. The builder also asks
    for its module contract, captures, a resource record and **hardware evidence on OS 1.73**.
 
-**Modwerk** ([modwerk.app](https://modwerk.app), [github.com/repeat98/modwerk](https://github.com/repeat98/modwerk)):
+**The third-party mod builder** (a public project, read as its README and docs only, not its source):
 - **What it is.** A browser builder plus a reviewed module library [doc]. For the Octatrack it is built on octabam
   (its own manifest format). For the Digitakt/Digitone families it vendors **elekloader's kit**: the TypeScript
   engine, worker and catalog, pinned by a lock file. Its Digitakt/Digitone modules are elemods.
-- **The Rytm.** Modwerk already carries `sdk/analog-rytm-mkii/core-profile/interface.json`: upstream core-ar2 0.1
-  with the same eight events. It has no Rytm module yet. A Rytm module is created with
-  `npm run module:new -- <id> --machine analog-rytm-mkii`. It needs its own reviewed module contract, docs,
+- **The Rytm.** The project already carries a core profile (`analog-rytm-mkii/core-profile/interface.json`): upstream
+  core-ar2 0.1 with the same eight events. It has no Rytm module yet. A Rytm module is created with its
+  `module:new` script for the `analog-rytm-mkii` machine. It needs its own reviewed module contract, docs,
   licensed source, captures, resource record and hardware evidence on 1.73 before it enters the public catalog
   [doc].
-- **What publishing takes.** Our elemods are in the format Modwerk's Rytm path consumes, so publishing there later
+- **What publishing takes.** Our elemods are in the format that project's Rytm path consumes, so publishing there later
   means section 5's adaptations (1 to 5), plus a hardware run and a licence decision. It does not need a new format.
-- **Licences.** Modwerk's backend is under Elastic-2.0 and its frontend under GPL-3.0-or-later; modules keep their
+- **Licences.** Its backend is under Elastic-2.0 and its frontend under GPL-3.0-or-later; modules keep their
   own licences [doc].
 
 ## 6. Status
@@ -237,7 +237,7 @@ In hwus1nlel2 that code is linked into the area instead:
 ## 7. Licence notes (for the user's decision before any public release)
 
 - **elekloader is GPL-2.0-or-later** (LICENSE, NOTICE). Its TypeScript engine/kit (js/) is GPL-3.0-or-later, and
-  so is the kit Modwerk vendors.
+  so is the kit the third-party mod builder vendors.
 - **Repository.** rytm-mods only *executes* the vendored checkout, like elektron-firmware-tool. Nothing of
   elekloader's code is copied into the repository, and our tools call it as a separate program. That alone does not
   make rytm-mods' sources a derivative work [inferred; not legal advice].
@@ -247,7 +247,7 @@ In hwus1nlel2 that code is linked into the area instead:
   terms. Our elemods carry only our own bytes, but they are written to be linked with core-ar2 by elekloader's
   linker.
 - **Nothing is published now.** Firmware images are never published anyway: they contain Elektron code. rytm-mods'
-  own licence is still undecided. If the mods are ever shared as elemods or through Modwerk, choosing
+  own licence is still undecided. If the mods are ever shared as elemods or through that builder, choosing
   GPL-2.0-or-later (or another GPL-compatible licence) for the mod sources avoids the question. Note that 0028's
   stub was written for this repository and copies no elekloader code.
 - **Third-party input.** The core-ar2 site list and the area's evidence come from elekloader's docs and
@@ -360,3 +360,66 @@ members (equal to the per-mod build's). bk's comparisons need build/emu/rui1043'
   flash a build whose version is not 1.73.
 - The live page moves: the guide pins c150ac5, says how to see the page's commit (`build.json`), and gives the pinned
   command line for when the hash differs.
+
+## 9. The builder moves to upstream 2bcafa1 (2026-11-23)
+
+`ELEK_REV` is upstream `2bcafa1` (150 commits past c150ac5; core-ar2 is 0.19 there). No behaviour change, measured:
+the 0.5.1.1 set built at 2bcafa1 is byte for byte the one built at c150ac5, on both OSes: the MAIN OS, the `.syx`,
+`core-0.1.elemod` (33de51c0..., 1.74's 89c00065...) and `rytm-sidecar-0.5.1.1[-os1.74].elemod` (9242f005... and
+5edea14a...). The cores stay core-ar2 0.1 (8972d70 for 1.73, 13fa795 for 1.74). What changes:
+
+- The Rytm profile has a second free area, `big` (0x47938000-0x47FFF000, 6.8 MB), and a bundle's `resources.regions`
+  may lie in it (c150ac5 refused such a region: "outside every free area"). `tools/test_elek_region.py` pins both.
+- `refuse_cores` (1.74) lists the cores the guard must refuse: 0.2 and 0.6 as before, and now 0.13 (3a7e943) and 0.19
+  (0ec561d), the newest at the pinned builder (the versions between were not built). The guard refuses every one with
+  the storage-overlap message at 0x400081f6. `release_check.py` builds these old sources with
+  `-std=gnu17` added: GCC 15 and later default to C23, where their `f()` declarations take no arguments.
+- `ELEK_DIR=<path>` in the environment points build.py, release_check.py and the Makefile at a checkout of `ELEK_REV`
+  other than the shared `vendor/elekloader` (a `git worktree add` of it), so one worktree can move on while the
+  others stay pinned to the shared checkout's HEAD.
+- The builder's source archive in a release folder is `elekloader-2bcafa1-src.tar.gz`.
+
+## 10. The bundle reserves the Sidecar's DDR block (step A2, 2026-11-23)
+
+The bundle declares one region, `resources.regions = [{"name": "sidecar buffers", "lo": "0x47c00000", "hi": "0x47f00000"}]`:
+3 MB of the profile's `big` area (0x47938000-0x47FFF000), just above elekloader's own 128 KB area (0x47BE0000-0x47C00000).
+Step A3 moves 0026's and 0029's UI-task buffers into it (0026 and 0029 design.md, "big-ram"). OS 1.74 only: the 1.73 file has no
+entry, and a bundle build for 1.73 is refused.
+
+- **Why this block.** Not 0x47938000-0x47BE0000: core-ar2 0.11 and later keep their step-tag tables at
+  0x47938000-0x47B10000, the OS clears a block at 0x479372E0 at boot, and sample memory ends at about 0x47937290. The
+  stack is the last 4 KB below 0x48000000. 0x47C00000-0x47F00000 leaves 1 MB below the stack's page.
+- **What declares it.** `tools/build.py` `bundle_regions()` reads the registry's pool `sidecar_buffers`
+  (`kind = "ddr"`, `registry/allocations.toml`) and this OS's `[pool.sidecar_buffers]` in `re/os/<os>.toml` (the same
+  bounds, a status and the evidence). It refuses the build when the OS file has no entry, other bounds, no status or no
+  evidence; when the block is not wholly inside `big`; and when it touches elekloader's area. The last check is ours:
+  elekloader compares regions only with regions. `tools/layout.py` assigns `[[buffer]]` claims inside the pool (none
+  yet), refuses one that does not fit wholly in it (so none can reach elekloader's area), and refuses any in a pool whose
+  status is `candidate`. `tools/ostarget.py` leaves the DDR pool untranslated (RAM, the same on every OS).
+- **Evidence (1.74).** Upstream's hardware canary on stock 1.74, 2026-11-05 (elekloader `docs/DEVICES.md`): nothing of
+  the OS wrote either side of the area. Ours: `tools/emu/el_area.py` now puts a canary (1 word in 128, every 512 B, in the region; 32 B
+  in the area) and a read/write watch over the whole block, with the bounds from the build manifest
+  (`elek.area`, `elek.regions`, `elek.buffers`; dtboot takes one watch range, so claimed ranges would split the run per
+  span). Strict mode, OS 1.74, `rytm-emu`, no CPU (and probably eDMA) access and every canary word intact (1 word in 128) in both runs: (a) the busy session
+  (trigs, MIDI, host attached, kit save and reload, power off) and a cold boot on its card; (b) `--samples-host`: the
+  stock sample browser loads six 110 s wav files from the card (63.4 MB of the sample memory's 68 MB; the emulator has
+  no other way to fill it, dtboot pokes single words), then BD and SD are set up from the host's meta messages and the
+  Overbridge link is open to the host (5 s, a pattern playing). The watch itself is not blind: the same boot with the
+  watch on the mods' own area at 0x47be0000 reports 40 accesses. `boot_emu.py --both` passes on the same `.syx` (26
+  checks). `lag_emu.py` takes `LAG_WAV_SEC` (file length) and `LAG_LOAD_STEP` for the large files.
+- **No code byte changes.** The 0.5.1.1 set built with the region and no claims has the same MAIN OS and `.syx`
+  (1.74: `97c75ed6...`, `108c4749...`) and the same `core-0.1-os1.74.elemod`; only `rytm-sidecar-0.5.1.1-os1.74.elemod`
+  differs, in its `resources` (the region): `ee9234c0...` (was `5edea14a...`). `docs/ELEKLOADER.md` gives the new hash.
+  The published 0.5.1.1 release keeps its own; the next release bump moves every hash anyway.
+- **The cost tools** (`hostcost_emu.py`, `mll_emu.py`, `modcost_emu.py`) take elekloader's area bounds from the manifest.
+
+### Step A3 (2026-11-24): the first claims
+
+0026's and 0029's UI-task buffers are `[[buffer]]` claims in the region (0026 and 0029 design.md, "big-ram"; based on
+twwwy's #34). Rules `tools/layout.py` enforces for each claim: a name (lower case, unique: the build gives its mod the
+assembler symbols `RAM_<NAME>` and `RAM_<NAME>_SIZE`), a size above 0, address and size multiples of 16, wholly in the pool,
+no overlap. `bundle_regions()` also refuses a pool that starts below 0x47C00000 (A2 review M2: elekloader's area ends there;
+below it are the OS's boot-cleared block and, with a core 0.11 or later, its step tags). A build with claims needs
+`--elek-bundle` (a per-mod elemod declares no region), `tools/build_rui.sh` passes it, and `tools/verify.py` checks that the
+manifest's buffers are the registry's, inside a declared region, outside the area and not overlapping. The evidence wording
+now says "CPU (and probably eDMA)": the emulator's watch sees CPU accesses, and the canary samples 1 word in 128.

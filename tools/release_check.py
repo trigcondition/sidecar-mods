@@ -18,7 +18,7 @@ at the pinned vendor/elekloader:
 Each image must have our build's MAIN OS byte for byte (--expect), and sections 1, 2 (the bootstrap,
 also by its pinned sha256, docs/HAZARDS.md), 5 and 8 as stock. Then the refusals: the bundle without a
 core, and with each core of re/os/<os>.toml refuse_cores (core-ar2 0.2 from upstream's 92a99c9, the last 1.73 core;
-on 1.74 also the pinned elekloader's own, 0.6) are refused, by the storage guard.
+on 1.74 also 0.6, 0.13 and the pinned elekloader's own, 0.19) are refused, by the storage guard.
 
 The OS is the tree's (re/symbols.toml [meta] target): run it in build/os/1.74 for the 1.74 release (make release-check
 OS=1.74 does).
@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ELEK_DIR = ROOT / "vendor" / "elekloader"
+ELEK_DIR = Path(os.environ.get("ELEK_DIR") or ROOT / "vendor" / "elekloader").resolve()   # as build.py
 EFT = ROOT / "vendor" / "elektron-firmware-tool" / "elektron-firmware-tool"
 sys.path.insert(0, str(ROOT / "tools"))
 import ostarget                                          # noqa: E402
@@ -197,6 +197,12 @@ def main():
           f"bundle: {doc['id']} {doc['version']}, {doc['license']}, by {doc['author']}, requires "
           f"{doc['requires']}, core >= {doc.get('resources', {}).get('core')}")
 
+    pool = ostarget.load(OSV)["pool"]["sidecar_buffers"]
+    region = [{"name": "sidecar buffers", "lo": f"0x{pool['start']:08x}", "hi": f"0x{pool['end']:08x}"}]
+    check(doc.get("resources", {}).get("regions") == region,
+          f"bundle: declares the region {region[0]['name']} {region[0]['lo']}-{region[0]['hi']} "
+          f"({pool['status']} on OS {OSV})")
+
     want = {l.split()[1]: l.split()[0] for l in (ROOT / "stock" / "SHA256SUMS").read_text().splitlines() if l}
     check(sha256(STOCK_SYX.read_bytes()) == want[STOCK_SYX.name], f"stock: {STOCK_SYX.name} as stock/SHA256SUMS")
     stock_secs = sections(STOCK_SYX, work / "x-stock")
@@ -253,6 +259,12 @@ def main():
         arc = subprocess.run(["git", "-C", ELEK_DIR, "archive", rev, "mods/core", "mods/core-ar2"],
                              check=True, capture_output=True).stdout
         subprocess.run(["tar", "-x", "-C", cw / "src"], input=arc, check=True)
+        # the compiler's default C standard is newer than the one these sources were written for (GCC 15 and later:
+        # C23, where f() takes no arguments): the flag is the toolchain's, the hooks (the refusal) are the source's
+        mj = cw / "src" / "mods" / "core-ar2" / "mod.json"
+        doc = json.loads(mj.read_text())
+        doc["cflags"] = doc.get("cflags", []) + ["-std=gnu17"]
+        mj.write_text(json.dumps(doc))
         rc, out = elek("elekloader.sdk.build", cw / "src" / "mods" / "core-ar2", "--stock", STOCK_SYX,
                        "--out", cw / "out")
         cnew = next((cw / "out").glob(f"core-{ver}*.elemod"), None)

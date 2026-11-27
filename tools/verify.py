@@ -110,6 +110,7 @@ def main():
         else:
             print(f"FAIL elekloader block: tail {tail_ok}, inside its area {area_ok} ({lay})")
             ok = False
+        ok = check_buffers(manifest, elek) and ok
         boot_site = ostarget.addr(0x400008c0)        # the OS entry's jsr to the VBR setup (1.73 and 1.74 alike)
         site = boot_site - base
         want = b"\x4e\xb9" + boot_lo.to_bytes(4, "big")
@@ -394,6 +395,36 @@ def main():
 
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def check_buffers(manifest, elek):
+    """The mods' DDR buffers (manifest elek.buffers, registry [[buffer]]): each wholly inside a region the bundle
+    declares (elek.regions, which elekloader checks against every other mod's) and outside elekloader's area, none
+    overlapping another, and exactly the registry's active claims of the build's mods."""
+    reg = layout.load(ROOT / "registry" / "allocations.toml")
+    enabled, params = set(manifest.get("enabled", [])), manifest.get("params", {})
+    want = sorted((c["owner"], c["name"], c["addr"], c["addr"] + c["size"]) for c in reg.get("buffer", [])
+                  if c["owner"] in enabled and not layout.gated_out(c.get("gate"), params.get(c["owner"], {}), c["owner"]))
+    got = sorted((b["owner"], b["name"], b["lo"], b["hi"]) for b in elek.get("buffers", []))
+    regions = [(r["lo"], r["hi"]) for r in elek.get("regions", [])]
+    good = True
+    if want != got:
+        print(f"FAIL buffers: the manifest's {got} are not the registry's {want}")
+        good = False
+    for i, (own, nm, lo, hi) in enumerate(got):
+        bad = []
+        if lo < elek["area"][1] and elek["area"][0] < hi:
+            bad.append(f"overlaps elekloader's area 0x{elek['area'][0]:08x}..0x{elek['area'][1]:08x}")
+        if not any(a <= lo and hi <= b for a, b in regions):
+            bad.append("not inside a region the bundle declares")
+        bad += [f"overlaps {o2}'s {n2}" for o2, n2, l2, h2 in got[i + 1:] if lo < h2 and l2 < hi]
+        if bad:
+            print(f"FAIL buffer {nm} ({own}) 0x{lo:08x}..0x{hi:08x}: " + "; ".join(bad))
+            good = False
+    if got and good:
+        print(f"ok   {len(got)} DDR buffers 0x{min(b[2] for b in got):08x}..0x{max(b[3] for b in got):08x}, "
+              f"{sum(b[3] - b[2] for b in got)} B: inside the bundle's region, outside elekloader's area, none overlapping")
+    return good
 
 
 if __name__ == "__main__":

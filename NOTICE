@@ -46,13 +46,13 @@ sources the build uses (Makefile, tools/build.py, re/os/<os>.toml):
     mods/core-ar2 and mods/core at elekloader commit
     13fa795d601c52a7152c17554ae3b3f6f6ca8b05;
   - the builder, linker and packer are elekloader at commit
-    c150ac583a4b7e6d64680d5592f4a40f409193f7.
+    2bcafa17c5ebd9a00f33b0e74d6993f37ab18266.
 
 Their source is also in each release folder, beside the files (GPL-2.0
 section 3): for OS 1.73 elekloader-8972d70-core-ar2-src.tar.gz (mods/core and
 mods/core-ar2 at 8972d70, with elekloader's LICENSE and NOTICE), for OS 1.74
 elekloader-13fa795-core-ar2-src.tar.gz (the same at 13fa795), and in both
-elekloader-c150ac5-src.tar.gz (all of elekloader at c150ac5).
+elekloader-2bcafa1-src.tar.gz (all of elekloader at 2bcafa1).
 
 Some of our stubs are generated from C (mods/*/build.sh says how); the C file
 is the source, the generated stub.s is committed beside it.

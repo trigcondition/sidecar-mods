@@ -173,6 +173,22 @@ def fm(e):
     return e.fm
 
 
+WT = None
+
+
+def wt(e):
+    """BD on WAVETABLE (machine 46, the list's 26th entry), from the base."""
+    global WT
+    if WT is None:
+        keys = ["SRC", "SRC"] + ["DOWN"] * 26 + ["YES"]
+        ev = [(500 + 500 * i, "press", k) for i, k in enumerate(keys)]
+        r = e.run("wt", 500 + 500 * len(keys) + 1500, ev, usb=False)
+        m = e.peek(r["snap"][0], 0x8000EA00, 1)[0]
+        check("wt: BD's machine is WAVETABLE (46)", m == 46, m)
+        WT = r["snap"]
+    return WT
+
+
 REC_RUN = None
 
 
@@ -210,6 +226,17 @@ def t_rec(e):
     print(f"  0x04s {t}")
     check("rec: the pads' 0x04s (60, 62, 68), then the step's playback: note root, P13..P16 the chord",
           len(t) >= 4 and [x[1] for x in t[:3]] == [60, 62, 68] and t[3] == (0x48, CHORD[0], list(CHORD[1:])), t)
+
+
+def t_wt28(e):
+    """0.5.2: WAVETABLE has no chord (P13..P16 are TBLB POSB MIX FTYP): the same live chord and 28 1 on a WAVETABLE track
+    is refused (28 2 <track> 7F 3: not a chord track) and locks nothing; 6-OP FM (t_rec) keeps its write-back."""
+    r = e.run("wt28", 4500, REC + PADS + [(1700, "usb", msgchord(0, *CHORD)), (4000, "press", "STOP")], snap=wt(e))
+    rp = replies(r)
+    print(f"  replies {rp}")
+    check("wt28: the 28 1 on a WAVETABLE track is answered 28 2 0 7F 3", rp == [(0, 0x7F, 3)], rp)
+    lk = e.live_locks(r["snap"][0], 7)
+    check("wt28: no lock of P13..P16 on the recorded step", lk == [0xFFFF] * 4, [hex(x) for x in lk])
 
 
 def t_save(e):
@@ -299,7 +326,7 @@ def t_keep(e):
           e.live_locks(r["snap"][0], 7)[0] == 0xFFFF, replies(r))
 
 
-TESTS = dict(rec=t_rec, status=t_status, keep=t_keep, copy=t_copy, save=t_save)
+TESTS = dict(wt28=t_wt28, rec=t_rec, status=t_status, keep=t_keep, copy=t_copy, save=t_save)
 
 
 def main():

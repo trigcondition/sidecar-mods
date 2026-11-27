@@ -143,15 +143,24 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 enum { R_USER, R_HOST, R_TIMEOUT, R_ESCAPE };
 enum { S_TIME = 1, S_HOST, S_IDLE, S_KEY, S_ENC, S_OPEN };   /* why the splash ended */
 
-static uint8_t shadow[1024] __attribute__((aligned(4)));
-static uint8_t staging[1024] __attribute__((aligned(4)));
-static uint8_t comp[1024] __attribute__((aligned(4)));      /* UI task: the shadow with the text drawn over it */
-static uint8_t comp_in[1024] __attribute__((aligned(4)));   /* UI task: the shadow's copy, checked before comp takes it */
+/* ---- big-ram (design.md "big-ram"): the large buffers of the UI and MIDI tasks live in the bundle's DDR region (registry
+   [[buffer]] claims of the pool sidecar_buffers, 0x47C00000-0x47F00000), not in elekloader's 128 KB area. build.py gives
+   this mod RAM_<CLAIM> (the claim's address) and RAM_<CLAIM>_SIZE as assembler symbols; DDR() declares the buffer as an
+   absolute symbol of its own name, so every access, and the emulator suites' peeks, keep the name. One DDR() line a
+   buffer: to put a buffer back in .bss, replace its line by `static <decl>;` (and drop its ZERO() in ram_init).
+   Nothing zeroes this RAM at boot (only the area's .bss is): ram_init, in the first UI tick, zeroes each buffer before
+   rui_sysex is published, and st.init (in .bss) is the flag. What the audio interrupt reads (pmo) stays in .bss. */
+#define DDR(decl, name, claim) extern decl; __asm__(".globl " #name "\n.set " #name ", RAM_" #claim)
+DDR(uint8_t shadow[1024] __attribute__((aligned(4))), shadow, RUI_SHADOW);
+DDR(uint8_t staging[1024] __attribute__((aligned(4))), staging, RUI_STAGING);
+DDR(uint8_t comp[1024] __attribute__((aligned(4))), comp, RUI_COMP);          /* UI task: the shadow with the text drawn over it */
+DDR(uint8_t comp_in[1024] __attribute__((aligned(4))), comp_in, RUI_COMP_IN);   /* UI task: the shadow's copy, checked before comp takes it */
 
 /* A text slot (3D): glass x, top y, font 0..16, flags (bits 0-1 align, bit 2 inverted), len, the characters. */
 struct txt { uint8_t x, y, font, flags, len, pad[3]; char s[TXTLEN + 4]; };   /* 44 B */
-static struct txt txt_st[NTXT] __attribute__((aligned(4)));    /* MIDI task: staging */
-static struct txt txt_sh[NTXT] __attribute__((aligned(4)));    /* committed with the shadow (same seqlock) */
+DDR(struct txt txt_st[NTXT] __attribute__((aligned(4))), txt_st, RUI_TXT_ST);   /* MIDI task: staging */
+DDR(struct txt txt_sh[NTXT] __attribute__((aligned(4))), txt_sh, RUI_TXT_SH);   /* committed with the shadow (same seqlock) */
+DDR(struct txt txt_tl[NTXT] __attribute__((aligned(4))), txt_tl, RUI_TXT_TL);   /* UI task: compose's copy of txt_sh */
 /* An encoder's local echo (3F): the slot it writes, the value, range, flags (bit 0 FUNC x 8, bit 1 shown -64..63),
    the prefix. Written by the MIDI task under gen (odd while writing). */
 struct bind { uint8_t slot, value, lo, hi, flags, plen; char pre[14]; };   /* 20 B */
@@ -164,10 +173,14 @@ static volatile uint32_t commits __attribute__((aligned(4)));     /* frames comm
 static volatile uint32_t rx __attribute__((aligned(4)));        /* valid host messages */
 static volatile uint32_t rx_bad __attribute__((aligned(4)));      /* malformed / out of range */
 static volatile uint8_t host_open, host_close;
+static volatile uint32_t host_rehello;   /* 0.5.2 re-hello: 3C with flags bit 0 counted (the MIDI task is the only writer; the UI task's tick compares it with st.rh_seen: a request is never lost) */
+#define REHELLO_TICKS 20   /* at most one answer a second (50 ms ticks) */
 static volatile uint32_t t_commit __attribute__((aligned(4)));    /* TIMER at the last commit */
 static volatile uint32_t pc_seq __attribute__((aligned(4)));      /* 1030: odd while a 28 1 chord is copied, +2 each */
 static volatile uint8_t pc_req[6];                                /* 1030: the chord request (pc_tick takes it) */
 static volatile uint32_t ls_host_presets;   /* 0.4.0: the host's 4A 7F 1: it draws JUNO's / 6-OP FM's preset list; off with the port */
+static volatile uint32_t ls_host_p13;       /* TBLB: the host's 4A 7D 1: it draws WAVETABLE's P13 list (the 4A frame's 6th byte 12); off with the port */
+static uint32_t ls_smpl;                    /* TBLB: P13's list (ls below) is open: its track + 1, else 0; the view (29 1) is on over the SMPL page for as long (sv_tick) */
 static volatile uint32_t fk_claim;          /* fk (0.5.0): the host's 4A 7E <flags>, bit 0: it takes UP + LEFT / RIGHT; off with the port */
 static volatile uint32_t ls_in_v, ls_in_gen __attribute__((aligned(4)));   /* 1040: the host's 4A <track> <browse> (ls_tick) */
 static uint8_t st_seq, st_valid;     /* MIDI task only: the 38s' seq since the last commit */
@@ -233,6 +246,9 @@ struct rui {
   uint32_t hdr_until, hdrs;                        /* the stock header's TRK LEVEL readout over the page: until, turns */
   /* 1042 (after every field the tests read by offset) */
   uint32_t ov_asides;                              /* the page stepped aside for a stock overlay (TEMPO, a menu, ...) */
+  /* 0.5.2 re-hello (after every field the tests read by offset) */
+  uint32_t rehellos, rh_t;                         /* re-hellos answered; the tick of the last answer (0: none yet) */
+  uint32_t rh_seen, pm_hello;                      /* host_rehello as the tick last saw it; a port-up hello is to fade param modulation (a re-hello's is not) */
 };
 static struct rui st __attribute__((aligned(4)));
 /* 1037b: TRK + TRIG / TRK + LFO used this TRK hold (cleared at TRK's release); YES on the page they opened is the page's
@@ -315,7 +331,7 @@ static volatile uint8_t pg_req[4];
 #define NM_LISTS 3                     /* 0 GRANULAR SRC, 1 WAVETABLE TBL, 2 MULTISAMPLE INST */
 #define NM_LEN 10                      /* 9 characters kept of the 13 sent (0021's JN_NAME: what a knob shows) */
 #define WQ_N 8
-static struct {
+struct ux_t {
   uint32_t push;                       /* pushes reported at their press (their release goes too) */
   uint32_t pushes, nm_msgs, nm_bad, w_rx, w_done, w_refused, w_drop, w_sent;   /* diagnostics */
   uint8_t nm_total[NM_LISTS], pad;
@@ -328,7 +344,8 @@ static struct {
   uint8_t nm_bank[NM_LISTS], pad3;     /* the bank (0..7, A..H) whose names nm[l] holds (47's bank byte; 0 an old 47) */
   uint8_t wq_flags[WQ_N];              /* 48's fifth byte (bit 0: from the bank list) */
   uint32_t w_locked, w_full;           /* 48s that locked the held steps; refused for a full lock budget */
-} ux __attribute__((section(".bss"), aligned(4)));
+};
+DDR(struct ux_t ux __attribute__((aligned(4))), ux, RUI_UX);   /* MIDI task writes, UI task reads */
 /* 1036b: the Pi display (49): UP + T1..T5 asks for its page; the selected track, its machine and name, its P1..P8 with
    their labels, for the display's voice view (polled at the UI tick, sent on a change and after each hello) */
 static struct {
@@ -423,12 +440,59 @@ static struct {
   volatile uint32_t ref_op, ref_n;       /* MIDI task: a refusal the ring had no room for (its op), counted */
   uint32_t ref_t, hello;                 /* UI task: the refusals sent of those; this connection's hello gone out */
 } qp __attribute__((aligned(4)));
+/* ms (morph v2, P2 Task 9; design.md "ms"): the MORPH scene edit on the Rytm's own pages, momentary (the owner,
+   2026-11-14): hold PAGE + T15 (scene A) or PAGE + T16 (scene B) and turn: the turn is reported to the host (2D 01 12),
+   never written to the kit (the param_apply_delta detour, ms_pad); T1..T12 while the side is held pick that side's
+   scene (2D 01 13); a DATA ENTRY knob pressed under the side removes that parameter's lock (2D 01 14 <side> <t> <w>:
+   the page's key handler, ms_knob). Armed by the host (5A 01 0B 1; a hello clears it). On a stock page PAGE's press is kept back until
+   it is let go alone (stock gets press and release then), another key comes (PAGE first) or MS_PAGE_TICKS pass (its
+   popup); PAGE + T15 / T16 never reach stock (a PAGE given late is let go for stock at once: its popup gone). The
+   host's own pages: T15 / T16 go to the host while it holds PAGE, T1..T12 while that side is held, whatever its mask
+   says yet (review M2: the mask that claims them came one round trip late). T15 blue / T16 yellow while PAGE is held
+   on a stock page. The readout (5A 01 08 <n> <ASCII>, or 0026's own NOT LOCKABLE) is drawn over stock's header for
+   MS_HDR_TICKS. */
+#define MS_PAGE_TICKS 6                  /* 300 ms: PAGE held alone, then its press is stock's (the popup) */
+#define MS_HDR_TICKS  20                 /* 1 s: a readout */
+#define MS_REC   0x401bf918u             /* the ROM parameter records, stride 0x34: +4 the sound word [P0 padword] */
+#define MS_NREC  469                     /* records in the table (the first whose label pointer is not code: 469) */
+#define MS_T15   0x0e
+#define MS_T16   0x0f
+#define MS_BLUE   47                     /* T15's colour, T16's [P0 leds] */
+#define MS_YELLOW 60
+#define MS_NQ 8
+static struct {
+  volatile uint32_t on;                  /* MIDI task: 5A 01 0B (the UI task clears it at a hello / a port drop) */
+  uint32_t page_held, pdef, pt0;         /* PAGE down on a stock page under the mode; its press kept back; since */
+  uint32_t side;                         /* the gesture's side key held: 1 A (T15), 2 B (T16); 0 none */
+  uint32_t hside;                        /* a host page: the side key the PAGE rule gave the host (1 / 2), 0 none */
+  void *brain;
+  uint32_t pev[8];                       /* PAGE's press event (stock gets it late from the tick) */
+  uint32_t acc_on, acc_side, acc_t, acc_w, acc_f, acc_base;   /* the turn being coalesced (one UI tick) */
+  int32_t acc_d;                         /* its delta, 1/256 step (stock's units) */
+  uint8_t q[MS_NQ][8];                   /* reports owed, in order: kind 12 / 13 and its data */
+  uint32_t qn, qdrop;
+  volatile uint32_t rd_gen;              /* MIDI task: odd while it writes rd_in */
+  volatile uint8_t rd_in[20];
+  uint32_t rd_seen, rd_until;
+  char rd[20];                           /* the readout drawn (UI task) */
+  uint32_t led_on;                       /* T15 / T16 painted */
+  uint32_t defers, fwd_alone, fwd_late, fwd_key, gestures, picks, caps, sent, nolock, cut, m2, gates, base_raw;
+  uint32_t clrs;                         /* knob presses under a side reported (2D 01 14) */
+  uint32_t pushd;                        /* bit i: the press of knob i (PUSH_A + i) was eaten; its release is too */
+} ms __attribute__((aligned(4)));
+/* the offsets ms_emu.py peeks (MS_OFF) */
+_Static_assert(__builtin_offsetof(__typeof__(ms), side) == 16 && __builtin_offsetof(__typeof__(ms), rd_until) == 188 &&
+               __builtin_offsetof(__typeof__(ms), led_on) == 212 && __builtin_offsetof(__typeof__(ms), defers) == 216 &&
+               __builtin_offsetof(__typeof__(ms), base_raw) == 264 && __builtin_offsetof(__typeof__(ms), clrs) == 268 &&
+               __builtin_offsetof(__typeof__(ms), pushd) == 272, "ms_emu.py's ms offsets");
+static void ms_tick(void *ctrl);
 /* pm (0.5.0, below "pm"): the param modulation's state */
 #define PMO_SLOTS   128
 #define PMO_RING    256u
 #define PMO_TIMEOUT 375u           /* audio blocks: 250 ms */
 #define PMO_FADE    32             /* blocks: 21 ms */
 #define PMO_DRAIN   64             /* records a block at most */
+#define PMO_MREL    8              /* blocks: a removed morph part's value ramps out, a new one's mix in (P3) */
 #define PMO_EFF     ((volatile uint16_t *)0x8000f774u)          /* the effective words, g = 26 + 42 t + w (8.8)  */
 #define PMO_STATE   ((const volatile uint32_t *)0x8000ee84u)    /* the smoother's state, value << 16: the base   */
 #define PMO_SCN_G   ((const volatile uint16_t *)0x8000ecacu)    /* the active scene's 48 locks' g (25: none)     */
@@ -438,7 +502,10 @@ static struct {
 #define PMO_ACC     ((const volatile uint32_t *)0x8000e53cu)    /* bit 3: stage E adds eff word 39 (accent)      */
 #define PMO_ROUTES(t) ((const volatile uint32_t *)(0x8000ea3cu + 32u * (t)))   /* VM 0..3, AT 4..7: {amount, g} */
 #define PMO_ROUTE4  ((void (*)(int32_t, const uint32_t *))0x4011ddbeu)  /* stage E's: eff[g] = sat(eff[g] + src x amt) */
-struct pmo_rec { uint8_t t, w, op, ramp; uint16_t v; uint8_t mix, pad; };   /* 8 B; op 6: v the track mask */
+struct pmo_rec { uint8_t t, w, op, ramp; uint16_t v; uint8_t mix, pad; };   /* 8 B; op 6: v the track mask; op 9: v a |
+                                   flags << 14, ramp b's high 7, mix its low 7; op 10: v the fader (P3, "pm morph") */
+struct pmo_mph { int32_t a, b; uint32_t fl; };   /* a morph part (P3): a, b 1/128 step; fl 1 has A, 2 has B, 0 none;
+                                                    fl >> 8: the blocks of its mix's ramp-in left (review M3) */
 struct pmo_ent {                   /* off, ovr: 8.8 << 8; mix: 1 << 23 = 1.0; n_*: blocks of ramp left */
   uint8_t tp1, w, n_off, n_ovr;    /* tp1: track + 1, 0 free */
   int32_t off, off_st, off_tg, ovr, ovr_st, ovr_tg, mix, mix_st, mix_tg;
@@ -465,13 +532,21 @@ static struct {
   uint32_t link_drop;              /* the interrupt's: records discarded at a hello / port drop (the old link's) */
   uint32_t rtab[13][2][2][4];      /* S-pre's route tables per track: [into 1..8 / 9..41][VM / AT][route] {amount, g} */
   uint8_t rany[13];                /* bit 0 / 1 VM / AT into 1..8, bit 2 / 3 into 9..41 */
+  /* P3 (morph v2, "pm morph"), the interrupt's: the fader (1 << 23 = 1.0, ramped), the morph parts in use, a part per
+     slot (an entry's: freed with it) */
+  uint8_t mpad[3];                 /* (fad on a 4-byte boundary: 10080) */
+  int32_t fad, fad_st, fad_tg;
+  uint32_t fad_n, mused;
+  struct pmo_mph mph[PMO_SLOTS];
 } pmo __attribute__((section(".bss"), aligned(4)));
 /* the offsets pm_emu.py peeks (PMO_RH, PMO_RT, PMO_HELLO_N, PMO_SMASK, PMO_RING) */
 _Static_assert(__builtin_offsetof(__typeof__(pmo), rh) == 56 && __builtin_offsetof(__typeof__(pmo), rt) == 80 &&
                __builtin_offsetof(__typeof__(pmo), hello_n) == 68 && __builtin_offsetof(__typeof__(pmo), smask) == 512 &&
                __builtin_offsetof(__typeof__(pmo), ring) == 1416 && __builtin_offsetof(__typeof__(pmo), idx) == 584 &&
                __builtin_offsetof(__typeof__(pmo), ent) == 3464 && sizeof(struct pmo_ent) == 44 &&
-               __builtin_offsetof(__typeof__(pmo), link_drop) == 9228, "pm_emu.py's pmo offsets");
+               __builtin_offsetof(__typeof__(pmo), link_drop) == 9228 &&
+               __builtin_offsetof(__typeof__(pmo), fad) == 10080 && __builtin_offsetof(__typeof__(pmo), mused) == 10096,
+               "pm_emu.py's pmo offsets");
 static void qp_isr(void);
 void rui_render_in(void) {
   if (!TX_SYSEX) txsx_gap = 1;
@@ -516,15 +591,25 @@ static void flush(void) {
   uint32_t i, k;
   if (st.pend_hello) {
     uint32_t up = st.ticks < 16383 ? st.ticks : 16383;
-    uint8_t h[11] = {0xf0, 0x7d, 0x52, 0x54, 0x35, 0x01, (uint8_t)(up >> 7), (uint8_t)(up & 0x7f), 127, 1, 0xf7};
+    uint8_t h[11] = {0xf0, 0x7d, 0x52, 0x54, 0x35, 0x01, (uint8_t)(up >> 7), (uint8_t)(up & 0x7f), 127, 63, 0xf7};
+    ms.on = 0;                         /* ms (morph v2): every hello clears the arm, a re-hello too: the host arms again after each hello (an older host that does not leaves PAGE + T15 / T16 stock's, not swallowed) */
+    if (st.pm_hello) {                 /* a port-up hello (a new link) also clears the owed reports and a held gesture, before it goes */
+      ms.qn = 0;
+      ms.side = 0; ms.acc_on = 0; ms.page_held = 0; ms.pdef = 0;   /* (review L1). A re-hello (the link stayed up) keeps the gesture: the owed let-go and a PAGE kept back are still the link's */
+    }
     if (!send(h, 11)) return;   /* caps: 36, 1049's 16 label tables, 1052's 4B, 7ae's 45, 0.5.0's host command (16), FUNC in
                                    the browser (32), pm: param modulation (64: 5A 04..07); fk (0.5.0): caps2, the 4th byte:
-                                   bit 0 UP + LEFT / RIGHT as 49 1 1 15 / 16 once the host claims them (4A 7E 1) */
+                                   bit 0 UP + LEFT / RIGHT as 49 1 1 15 / 16 once the host claims them (4A 7E 1);
+                                   bit 1 (morph v2) the 0E report's flags bit 2 = the QUICK PERF macros muted;
+                                   bit 2 (morph v2) the scene edit on stock pages: 5A 01 0B / 08, 2D 01 12 / 13 ("ms");
+                                   bit 3 (morph v2 P3) the Rytm-side morph: 5A 01 09 / 0A ("pm morph");
+                                   bit 4 (16): answers 3C with flags bit 0 with this hello again (0.5.2);
+                                   bit 5 (32): TBLB's list (4A 7D 1 from the host, then the 4A frame's 6th byte) */
     st.pend_hello = 0;
     st.hellos++;
     qp.owe_n++; qp.scn_owe = 1;        /* 0.5.0: the knob's and the scene's reports again (qp_tick: live) */
     qp.hello = 1;
-    pmo.hello_n++;                     /* pm: a new link: the old one's modulation fades out */
+    if (st.pm_hello) { st.pm_hello = 0; pmo.hello_n++; }   /* pm: a new link: the old one's modulation fades out (a re-hello: the link is the same, nothing fades) */
   }
   if (st.pend_open) {
     uint8_t m[10] = {0xf0, 0x7d, 0x52, 0x54, 0x30, 0x01, st.pend_page, st.pend_on, st.pend_reason, 0xf7};
@@ -802,6 +887,7 @@ static struct {
   void *smpl;                          /* the SamplePageView this tick (0: not in the view list) */
   uint32_t smpl_idx, smpl_seen, smpl_fix;   /* its index after this tick; ticks it was seen; ticks the normaliser put a Sidecar machine's track back to index 0 */
   uint32_t smpl_cov;                   /* 0.5.2 (F9 review A): the SMPL page is covered (a menu, PATSEL held ...): left alone (the normaliser waits) */
+  uint32_t spage;                      /* TBLB: the SMPL page is the screen (1) / there but covered (2), else 0 (sv_page) */
 } sv __attribute__((section(".bss"), aligned(4)));
 
 /* 0 not the SRC page, 1 the SRC page is the screen, 2 the SRC page is there but covered */
@@ -886,6 +972,7 @@ static int32_t sv_page(void *ctrl) {
   int32_t k, j, found = 0, cov = 0, after = 0, unknown = 0;
   sv.view = 0;
   sv.smpl = 0;
+  sv.spage = 0;
   sv.smpl_cov = 1;                     /* until the walk below says the page is the plain screen */
   for (k = 0; k < 16 && n && (const uint8_t *)n != c + 20; ++k) {
     const uint32_t *v = (const uint32_t *)n[2];
@@ -913,7 +1000,7 @@ static int32_t sv_page(void *ctrl) {
   if (!after) cov = 1;                 /* SamplerLedView gone: not the plain SRC screen */
   if (unknown && last != VT_SAMPLELED && sv.top_age < UNKNOWN_TICKS) cov = 1;
   sv.smpl_cov = (uint32_t)cov;
-  if (!(found & 1)) { sv.view = 0; return 0; }   /* the SMPL page, not the view */
+  if (!(found & 1)) { sv.view = 0; sv.spage = cov ? 2 : 1; return 0; }   /* the SMPL page, not the view (TBLB: sv.spage) */
   return cov ? 2 : 1;
 }
 
@@ -969,6 +1056,7 @@ static void sv_tick(void *ctrl, uint32_t r) {
     }
     sv.smpl_idx = v[0x8c / 4];
   }
+  if (!pg && ls_smpl == (uint32_t)t + 1 && sv.spage) pg = sv.spage;   /* TBLB: P13's list over WAVETABLE's SMPL page */
   if (t > 11) pg = 0;
   if (pg) m = MACHINE_OF(t);
   on = pg && mr_vb(t, m) != 0x7f;
@@ -1080,11 +1168,21 @@ static void sv_flush(void) {
 
 static void led_restore(void);
 
+/* fix round 1 (0029, review M2): 0029's page key (SRC / SMPL's further press on a user effect's SEND FX page) must not page
+   the stock page hidden under this page or its splash, so it is told: sfu_p's ovl word (0x47C071F0, the claim 0029 zeroes
+   in its first tick; 0029's mailbox magic 'SFXU' is set after that zeroing, so the write waits for it). Nonzero while the
+   page or the splash is the screen; written at every change of either. */
+#define SFU_OVL 0x47c071f0u   /* sfu_p's claim base + 4704: tools/build.py check_buffer_ties fails a build in which the registry or 0029's struct says another address */
+static void ovl_pub(void) {
+  if (*(volatile uint32_t *)0x401b9e54u == 0x53465855u) *(volatile uint32_t *)SFU_OVL = st.active | st.splash_on;
+}
+
 static void enter(void *ctrl, uint8_t reason, uint8_t page) {
   int32_t i;
-  if (st.active) return;
+  if (st.active || !st.init) return;   /* (big-ram: the page draws from buffers the first tick zeroes) */
   if (st.splash_on) { st.splash_on = 0; st.splash_why = S_OPEN; }
   st.active = 1;
+  ovl_pub();
   st.idle = 0;
   st.enter_commits = commits;
   st.shown = 0xffffffffu;
@@ -1103,6 +1201,7 @@ static void enter(void *ctrl, uint8_t reason, uint8_t page) {
 static void splash_end(void *ctrl, uint32_t why) {
   if (!st.splash_on) return;
   st.splash_on = 0;
+  ovl_pub();
   st.splash_why = why;
   *((volatile uint8_t *)ctrl + 0x20) = 1;     /* the stock views redraw, as after leaving */
 }
@@ -1110,6 +1209,7 @@ static void splash_end(void *ctrl, uint32_t why) {
 static void leave(void *ctrl, uint8_t reason) {
   if (!st.active) return;
   st.active = 0;
+  ovl_pub();
   st.leaves++;
   st.seq_view = 0;                     /* 1036 */
   st.aside = 0;                        /* 1038 */
@@ -1195,13 +1295,15 @@ static int32_t sysex_body(const uint8_t *d, int32_t len) {
     if (n < 2) { rx_bad++; return 1; }
     if (b[1]) host_open = 1; else host_close = 1;
     break;
-  case 0x3c:
+  case 0x3c:     /* keepalive; 0.5.2: flags bit 0 (b[0]) asks for the hello again (caps2 bit 4). An older mod reads no payload. */
+    if (n >= 1 && (b[0] & 1)) host_rehello++;
     break;
   case 0x5a:     /* 0.5.0: <op> ...: the host command (qp_cmd, below), answered 2D 01 10 <op> <status> */
     qp_cmd(b, n);
     break;
   case 0x4a:     /* 1040: <track 0..11> <browse 0/1>: the host's file browser over the bank list (YES / NO its own while 1) */
     if (n == 2 && b[0] == 0x7f && b[1] <= 1) { ls_host_presets = b[1]; break; }
+    if (n == 2 && b[0] == 0x7d && b[1] <= 1) { ls_host_p13 = b[1]; break; }   /* TBLB: the host draws the P13 list */
     if (n >= 2 && b[0] == 0x7e) { fk_claim = b[1] & 1; break; }   /* fk (0.5.0): the host's key claims (bits 1..6 and any later
                                                                      bytes for later claims: read the first only) */
     if (n != 2 || b[0] > 11 || b[1] > 1) { rx_bad++; return 1; }
@@ -1401,6 +1503,8 @@ static uint8_t shp[4][4];
 /* 1044: TRK's LED, the same way: stock's last slot colours, and while the page has the keys the host side's colour */
 static volatile uint8_t ovt_on, ovt_col;
 static uint8_t sht[4];
+/* ms (morph v2): T15 / T16 alone (bit 0: LED 14, bit 1: LED 15), while ov_on is off */
+static volatile uint8_t ovm_on, ovm_col[2];
 #define PG_LED(i) (43 - (i))                 /* page i + 1's LED id */
 static uint8_t ps_left, ps_hdr, ps_pos, ps_id;   /* the stream: bytes left in the message, its header, the byte's place */
 static uint32_t uart_bytes __attribute__((aligned(4))), uart_sub __attribute__((aligned(4)));   /* diagnostics: bytes seen, colour bytes rewritten */
@@ -1449,6 +1553,7 @@ static uint8_t uart_byte(uint8_t b) {
   }
   if (ps_id >= 16) return b;
   sh[ps_id][ps_hdr == 0xb4 ? ps_pos - 2 : ps_hdr & 3] = b;
+  if (!ov_on && ps_id >= 14 && (ovm_on >> (ps_id - 14) & 1)) { uart_sub++; return ovm_col[ps_id - 14]; }
   if (!ov_on) return b;
   uart_sub++;
   return ov_col[ps_id];
@@ -1458,7 +1563,7 @@ static uint8_t uart_byte(uint8_t b) {
 int32_t rui_uart(int32_t len, const uint8_t *m) {
   uint8_t buf[16];
   int32_t i, k = 0;
-  if (!ov_on && !ovp_on && !ovt_on) {
+  if (!ov_on && !ovp_on && !ovt_on && !ovm_on) {
     for (i = 0; i < len; ++i) uart_byte(m[i]);
     return 0;
   }
@@ -1582,6 +1687,29 @@ static void trk_tick(void) {
   k44.trk_col = col;
 }
 
+/* ms (morph v2): T15 blue / T16 yellow while PAGE is held on a stock page under the mode (only those two LEDs: stock's
+   step 15 / 16 and playhead otherwise), stock's slot colours and selectors back at PAGE's release. Try-lock as above. */
+static void ms_led_tick(void) {
+  uint32_t want = ms.on && ms.page_held && !st.active && !ov_on;
+  uint8_t c[4];
+  if (want == ms.led_on) return;
+  if (!MUTEX_TRY(LED_MUTEX)) { st.led_busy++; return; }
+  if (want) {
+    ovm_col[0] = MS_BLUE; ovm_col[1] = MS_YELLOW;
+    ovm_on = 3;
+    c[0] = c[1] = c[2] = c[3] = MS_BLUE; led_send4(14, c);
+    c[0] = c[1] = c[2] = c[3] = MS_YELLOW; led_send4(15, c);
+  } else {
+    ovm_on = 0;
+    if (!ov_on) {
+      led_send4(14, sh[14]); led_send4(15, sh[15]);
+      if (shs[3] != 0xff) { c[0] = 0x23; c[1] = shs[3]; rui_uart_raw(2, c); }
+    }
+  }
+  MUTEX_GIVE(LED_MUTEX);
+  ms.led_on = want;
+}
+
 /* 1032: the PAGE LEDs (2F): page i + 1 the host's colour while it owns the LEDs and its 2F names one (7F: stock's) */
 static void pg_tick(void) {
   uint32_t g = pg_gen, want = 0, old = ovp_on;
@@ -1672,7 +1800,7 @@ static uint8_t pc_apply(const uint8_t *q, uint8_t *step) {
   int32_t t = q[0], i, j, used = 0;
   uint8_t *blk, *pool, *mirror, *live;
   *step = 0x7f;
-  if (t > 11 || !REC_ACTIVE(REC_STATE()) || mr_vb(t, MACHINE_OF(t)) == 0x7f) return 3;
+  if (t > 11 || !REC_ACTIVE(REC_STATE()) || mr_vb(t, MACHINE_OF(t)) == 0x7f || MACHINE_OF(t) == 46) return 3;   /* 0.5.2: not WAVETABLE (P13..P16 are TBLB POSB MIX FTYP) */
   if (!pc.have[t] || st.ticks - pc.tick[t] > PC_TICKS) return 1;
   *step = pc.step[t];
   blk = (uint8_t *)PAT_TRACK(PAT_ACTIVE(PROJECT()), t);
@@ -2033,7 +2161,9 @@ void pin_frame(uint8_t *f) {
  * The stock edit functions (re/symbols.toml; rytm-teensy docs/SEQUENCER.md 2 [measured: each tied to its gesture]) are
  * wrapped (detours at their entries, below): the stock function runs, then ed_report(op, arg1, arg2, result) queues
  *   2D 0A <op> <pattern 0..127> <track 0..11 | 7F> <ok 0/1> <src 0 stock / 1 seq mode> <a0> <a1> <a2>
- * pattern = the working pattern (0x405c8d04: every op acts on it, a paste on another pattern after selecting it),
+ * pattern = the working pattern (0x405c8d04), except COPY / PASTE PAT: the pattern they were given (their first
+ * argument, the slot record project + 16092 + 1468 p, 0x400ae510: the BANK menu's copy 0x400406ec and paste 0x4003f296
+ * pass the held trigs' patterns, FUNC + REC / STOP the working one [measured, P2 bankcopy]),
  * track = the selected track for track / page / trig ops (they act on current_track_pattern), 7F for pattern ops;
  * ok = the function's result byte (a paste with nothing copied, an undo with nothing to undo: 0); a0..a2 a 21-bit arg:
  * the undo kind (1 clear, 2 paste: the kind the function was asked to undo), the held trig mask (src 1), else 0. Ops:
@@ -2048,7 +2178,11 @@ void pin_frame(uint8_t *f) {
 static int32_t sq_send2(uint8_t kind, const uint8_t *a, int32_t n);
 enum { ED_PCOPY = 1, ED_PPASTE, ED_PCLEAR, ED_PUNDO, ED_TCOPY, ED_TPASTE, ED_TCLEAR, ED_TUNDO, ED_GCOPY, ED_GPASTE,
        ED_GCLEAR, ED_GUNDO, ED_RCOPY, ED_RPASTE, ED_RCLEAR, ED_PRELOAD, ED_PSAVE, ED_TRELOAD, ED_TSAVE };
+static void ed_queue_pat(uint32_t op, uint32_t ok, uint32_t src, uint32_t arg, uint32_t pat);
 static void ed_queue(uint32_t op, uint32_t ok, uint32_t src, uint32_t arg) {
+  ed_queue_pat(op, ok, src, arg, (uint32_t)SQ_PAT);
+}
+static void ed_queue_pat(uint32_t op, uint32_t ok, uint32_t src, uint32_t arg, uint32_t pat) {
   uint8_t *e;
   ed.calls++;
   ed.dirty = 1;                        /* the pattern changed: 0B at once */
@@ -2056,7 +2190,7 @@ static void ed_queue(uint32_t op, uint32_t ok, uint32_t src, uint32_t arg) {
   if (ed.qh - ed.qt >= ED_NQ) { ed.drops++; return; }
   e = ed.q[ed.qh % ED_NQ];
   e[0] = (uint8_t)op;
-  e[1] = (uint8_t)((uint32_t)SQ_PAT & 0x7f);
+  e[1] = (uint8_t)(pat & 0x7f);
   e[2] = op <= ED_PUNDO || op == ED_PRELOAD || op == ED_PSAVE ? 0x7f : (uint8_t)(SEL_TRACK < 12 ? SEL_TRACK : 0x7f);
   e[3] = (uint8_t)(ok ? 1 : 0);
   e[4] = (uint8_t)src;
@@ -2067,8 +2201,12 @@ static void ed_queue(uint32_t op, uint32_t ok, uint32_t src, uint32_t arg) {
 void ed_report(int32_t op, uint32_t a1, uint32_t a2, uint32_t res);
 void ed_report(int32_t op, uint32_t a1, uint32_t a2, uint32_t res) {
   uint32_t undo = op == ED_PUNDO || op == ED_TUNDO || op == ED_GUNDO;
-  (void)a1;
-  ed_queue((uint32_t)op, res & 0xff, 0, undo ? (a2 & 3) : 0);
+  uint32_t pat = (uint32_t)SQ_PAT;
+  if (op == ED_PCOPY || op == ED_PPASTE) {   /* a1 = the pattern's slot record: project + 16092 + 1468 p (0x400ae510) */
+    uint32_t o = a1 - (uint32_t)PROJECT() - 16092u;
+    if (o < 128u * 1468u && o % 1468u == 0) pat = o / 1468u;
+  }
+  ed_queue_pat((uint32_t)op, res & 0xff, 0, undo ? (a2 & 3) : 0, pat);
 }
 
 /* the SCALE poll (UI tick): per track (+0x2c5 length, +0x2c7 speed index) and the pattern's (+85683 length, a BE word;
@@ -2297,7 +2435,7 @@ static void sq_forget(void) {
 #define LS_NQ 4
 static struct {
   uint8_t on, track, mach, pad;
-  uint8_t q[LS_NQ][5];                 /* 4A owed: track on hi lo why */
+  uint8_t q[LS_NQ][6];                 /* 4A owed: track on hi lo why param (TBLB: 12 for P13's list, else 0: no 6th byte) */
   uint32_t qn;
   uint32_t down;                       /* the nav keys 0x40..0x45 pressed while open: their releases (to the host / eaten) */
   uint32_t fwd;                        /* 1040: of those, the ones whose press went to the host (31): their release too */
@@ -2307,6 +2445,7 @@ static struct {
   uint8_t p, knob;                     /* 1045: the list's parameter (0 P1, 10 DSP SAMPLE's P11), the knob that opened it */
   uint32_t tick0;                      /* its open tick */
   uint32_t srcyes;                     /* 1049: lists opened by FUNC + YES on the SRC view (the browser at once) */
+  uint32_t nd_hello;                   /* TBLB: st.hellos + 1 of a host that announced but drew no P13 list (none: 0) */
 } ls __attribute__((section(".bss"), aligned(4)));
 #define LS_HELD_HI(o) (*(const volatile uint32_t *)((o) + 0x158u))
 #define LS_HELD_LO(o) (*(const volatile uint32_t *)((o) + 0x15cu))
@@ -2331,11 +2470,13 @@ static int32_t sv_held_step(void) {
    host or no frame, their own stepped PAT knob (0029) */
 static int32_t ls_banked(uint32_t m) { return m == CU_WT_M || m == CU_GR_M || m == CU_MS_M || m == CU_CP_M ||
                                              ((m == 40 || m == 41) && ls_host_presets); }
+#define TBLB_P 12     /* TBLB: WAVETABLE's table B (P13, SMPL knob E): the P13 list's parameter byte and its sound index - 9 */
 static void ls_queue(uint8_t on, uint8_t why) {
   uint16_t v = sv_word(ls.track, ls.p, -1);
   if (ls.qn >= LS_NQ) { ls.drops++; return; }
   ls.q[ls.qn][0] = ls.track; ls.q[ls.qn][1] = on; ls.q[ls.qn][2] = (uint8_t)(v >> 7); ls.q[ls.qn][3] = (uint8_t)(v & 0x7f);
   ls.q[ls.qn][4] = why;
+  ls.q[ls.qn][5] = ls.p == TBLB_P ? TBLB_P : 0;
   ls.qn++;
 }
 
@@ -2345,10 +2486,11 @@ static void ls_queue(uint8_t on, uint8_t why) {
 static int32_t ls_flush(void) {
   uint32_t i, k;
   for (k = 0; k < ls.qn; ++k) {
-    uint8_t m[12] = {0xf0, 0x7d, 0x52, 0x54, 0x4a, 0x01, ls.q[k][0], ls.q[k][1], ls.q[k][2], ls.q[k][3], ls.q[k][4], 0xf7};
-    if (!send(m, 12)) break;
+    uint8_t m[13] = {0xf0, 0x7d, 0x52, 0x54, 0x4a, 0x01, ls.q[k][0], ls.q[k][1], ls.q[k][2], ls.q[k][3], ls.q[k][4], 0xf7, 0};
+    if (ls.q[k][5]) { m[11] = ls.q[k][5]; m[12] = 0xf7; }   /* TBLB: P13's list names its parameter; every other frame is the 12 bytes */
+    if (!send(m, ls.q[k][5] ? 13 : 12)) break;
   }
-  for (i = k; i < ls.qn; ++i) { int32_t j; for (j = 0; j < 5; ++j) ls.q[i - k][j] = ls.q[i][j]; }
+  for (i = k; i < ls.qn; ++i) { int32_t j; for (j = 0; j < 6; ++j) ls.q[i - k][j] = ls.q[i][j]; }
   ls.qn -= k;
   return ls.qn == 0;
 }
@@ -2359,11 +2501,21 @@ static void ls_close(uint8_t why) {
   ls.browse = 0;                       /* 1040: the host's browser ends with the list (its 4A 0 tells it) */
   ls.closes++;
   ls.why[why < 6 ? why : 5]++;
-  st.acc[0] = 0;                       /* turns not yet sent belong to the list that closed */
+  ls_smpl = 0;                         /* TBLB: the view over the SMPL page ends with it */
+  st.acc[ls.knob] = 0;                 /* turns not yet sent belong to the list that closed */
   st.acc[LS_PREV_KNOB] = 0;            /* (and knob H's, the browser's preview level) */
   ls_queue(0, why);
 }
 
+/* TBLB: may knob E (or FUNC + YES) open P13's list here: WAVETABLE's SMPL page, not covered, the host up and having said it
+   draws that list (4A 7D 1 since the last hello): else knob E stays stock's banked step */
+static int32_t ls_p13(void) {
+  int32_t t = SEL_TRACK;
+  return ls_host_p13 && t <= 11 && sv.spage == 1 && MACHINE_OF(t) == CU_WT_M && mr_vb(t, CU_WT_M) != 0x7f && !st.active &&
+         !st.splash_on && PORT_STATE == 1 && sv.idle < TIMEOUT_TICKS && commits && ls.nd_hello != st.hellos + 1;
+}
+
+static void ms_say(const char *t);
 /* ev_enc, the page closed: 1 the list's (the turn eaten) */
 static int32_t ls_enc(int32_t idx, int32_t delta) {
   if (ls.on && ls.browse && ls.mach != 40 && ls.mach != 41 && idx == LS_PREV_KNOB) {   /* 0.5.0: knob H in the host's
@@ -2373,18 +2525,29 @@ static int32_t ls_enc(int32_t idx, int32_t delta) {
     return 1;
   }
   if (ls.on && idx != ls.knob) { ls_close(3); return 0; }
-  if (idx != 0 || st.splash_on) return 0;
+  if ((idx != 0 && idx != 4) || st.splash_on) return 0;
   if (!ls.on) {
-    if (sv.on && sv.show && (ls_banked(sv.mach) || SMP_M(sv.mach))) {   /* 7h: DSP SAMPLE's knob A is SMP (P11); 0.5.0 SAMPLER's */
+    if (idx == 0 && sv.on && sv.show && (ls_banked(sv.mach) || SMP_M(sv.mach))) {   /* 7h: DSP SAMPLE's knob A is SMP (P11); 0.5.0 SAMPLER's */
       ls.track = sv.track; ls.mach = sv.mach; ls.p = SMP_M(sv.mach) ? DSPS_P : 0;
+    } else if (idx == 4 && ls_p13()) {   /* TBLB: knob E on WAVETABLE's SMPL page */
+      ls.track = (uint8_t)SEL_TRACK; ls.mach = CU_WT_M; ls.p = TBLB_P;
+      ls_smpl = (uint32_t)ls.track + 1;
     } else return 0;
+    if (ms.on && ms.side) {            /* 0.5.2 rc4: under a held MORPH side the source is NOT LOCKABLE (a morph of it
+                                          would sweep through the pool): no list, the turn eaten, the source unchanged */
+      ls_smpl = 0;
+      if (!delta) return 0;            /* (1046's UP + SRC asks with 0: nothing to say) */
+      ms.nolock++;
+      ms_say("NOT LOCKABLE");
+      return 1;
+    }
     ls.on = 1; ls.knob = (uint8_t)idx; ls.tick0 = st.ticks;
     ls.opens++;
     ls_queue(1, 0);
     flush();
     return 1;                          /* the opening turn moves nothing (as stock's list) */
   }
-  st.acc[0] += delta;
+  st.acc[ls.knob] += delta;
   ls.turns++;
   flush();
   return 1;
@@ -2441,8 +2604,12 @@ static int32_t ls_release(uint32_t code) {
 /* the UI tick, after sv_tick: the view gone (another page, a cover, another track or machine, the page, the host gone) */
 static void ls_tick(void) {
   /* 1045: opened on the SMPL page the view comes on a tick after (29 1) and shows at the host's first frame: closed
-     when it never showed within a second (an older host: knob D stock's until the next hello), or stopped showing */
-  if (ls.on && (!sv.on || !sv.show || sv.track != ls.track || sv.mach != ls.mach || st.active)) {
+     when it never showed within a second (a host that draws nothing: knob E stock's until the next hello), or stopped showing */
+  if (ls.on && ls_smpl && !sv.show && sv.on && !sv.covered && sv.track == ls.track && !st.active &&
+      commits == sv.base && st.ticks - ls.tick0 <= 20) {
+    /* TBLB: P13's list opened on the SMPL page: the view came on this tick, the host's first frame is on its way */
+  } else if (ls.on && (!sv.on || !sv.show || sv.track != ls.track || sv.mach != ls.mach || st.active)) {
+    if (ls_smpl && commits == sv.base && st.ticks - ls.tick0 > 20) ls.nd_hello = st.hellos + 1;   /* TBLB: it drew nothing: not asked again until the next hello */
     ls_close(5);
   }
   if (ls_in_gen != ls.br_gen) {        /* 1040: the host's 4A <track> <browse> */
@@ -2462,7 +2629,8 @@ static void ls_tick(void) {
 static void u46_tick(void) {
   int32_t ok;
   if (!u46.src_t) return;
-  if (ls.on || st.active || st.ticks - u46.src_t > 20 || SEL_TRACK > 11 || MACHINE_OF(SEL_TRACK) != u46.src_m) {
+  if (ls.on || st.active || st.ticks - u46.src_t > 20 || SEL_TRACK > 11 || MACHINE_OF(SEL_TRACK) != u46.src_m ||
+      (ms.on && ms.side)) {            /* 0.5.2 rc4: asked under a held MORPH side: dropped (no list after it lets go) */
     u46.src_t = 0;
     return;
   }
@@ -2634,6 +2802,21 @@ __asm__(
     "pm_icon:\n"
     "  rts\n");
 
+/* big-ram: zero each buffer of the DDR region (it holds noise at power-on). The assembler refuses a registry claim
+   smaller than its buffer. One ZERO() a DDR() line. */
+static void ram_zero(void *a, uint32_t n) {
+  volatile uint32_t *p = a;
+  for (n = (n + 3) >> 2; n; --n) *p++ = 0;   /* (m68k aligns ints to 2: a size may be 2 mod 4) */
+}
+#define ZERO(name, claim) do { \
+    __asm__ volatile(".if RAM_" #claim "_SIZE < %c0\n.error \"registry buffer " #claim " is too small\"\n.endif" :: "i"((sizeof name + 3) & ~3u)); \
+    ram_zero((void *)&name, sizeof name); } while (0)
+static void ram_init(void) {
+  ZERO(shadow, RUI_SHADOW); ZERO(staging, RUI_STAGING); ZERO(comp, RUI_COMP); ZERO(comp_in, RUI_COMP_IN);
+  ZERO(txt_st, RUI_TXT_ST); ZERO(txt_sh, RUI_TXT_SH); ZERO(txt_tl, RUI_TXT_TL); ZERO(ux, RUI_UX);
+  __asm__ volatile("" ::: "memory");   /* the zeros before the mailbox publishes rui_sysex and st.init is set */
+}
+
 /* ---- UI task ------------------------------------------------------------------------------------------ */
 static void tick_body(void *ctrl) {
   uint32_t r = rx;
@@ -2641,6 +2824,7 @@ static void tick_body(void *ctrl) {
   st.ticks++;
   st.t_tick = TIMER;
   if (!st.init) {
+    ram_init();                     /* big-ram: before rui_sysex is published (nothing writes the buffers before) */
     MBOX[1] = (uint32_t)rui_sysex;
     MBOX[0] = 0x52554950u;          /* 'RUIP' */
     st.init = 1;
@@ -2657,9 +2841,19 @@ static void tick_body(void *ctrl) {
       if (st.port_ticks || st.ticks > HELLO_UP - HELLO_TICKS) st.port_ticks++;
       else if (st.active) st.port_ticks = HELLO_TICKS;
     }
-    if (st.port_ticks == HELLO_TICKS) { st.hello_rx = r; st.hello_n = 1; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; sq_forget(); pm.c_hello = commits; }
+    if (st.port_ticks == HELLO_TICKS) { st.hello_rx = r; st.hello_n = 1; st.pend_hello = 1; st.pm_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; sq_forget(); pm.c_hello = commits; ls_host_p13 = 0; }   /* TBLB: the host announces after every hello */
     else if (st.hello_n && st.hello_n < 3 && st.port_ticks == HELLO_TICKS + 20 * st.hello_n) {
-      if (r == st.hello_rx) { st.hello_n++; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; } else st.hello_n = 3;
+      if (r == st.hello_rx) { st.hello_n++; st.pend_hello = 1; st.pm_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; } else st.hello_n = 3;
+    }
+    uint32_t rq = host_rehello;         /* (read once: the copy below is what was compared, so a request in between is seen next tick) */
+    if (rq != st.rh_seen) {             /* 0.5.2: a host that missed the port-up hellos asks again: one hello, as the port-up's, at most 1 s apart */
+      st.rh_seen = rq;
+      if (st.port_ticks >= HELLO_TICKS && (!st.rh_t || st.ticks - st.rh_t >= REHELLO_TICKS)) {
+        st.rh_t = st.ticks; st.rehellos++;
+        st.hello_n = 3;   /* no port-up repeat on top of it */
+        st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; sq_forget();
+        ls_host_p13 = 0;                /* TBLB: the host announces again after this hello (not after the port-up repeats: they would race it) */
+      }
     }
     if (st.pend_hello && sv.on) { sv.pend29 = 1; sv.p_track = sv.track; sv.p_on = 1; sv.vals_all = 1; }   /* 1027 */
   } else {
@@ -2667,11 +2861,17 @@ static void tick_body(void *ctrl) {
     st.port_ticks = 0;
     st.hello_n = 0;
     st.pend_hello = 0;
+    st.pm_hello = 0;
+    st.rh_t = 0;                       /* L2: the 1 s limit is the old link's */
+    st.rh_seen = host_rehello;         /* a request pending at the drop is the old link's */
     qp.live = 0;                       /* 0.5.0: no QPERF report until the next hello */
     qp.hello = 0;                      /* (L4: qp_tick waits for this connection's hello) */
     qp.ack_t = qp.ack_h; qp.ref_t = qp.ref_n;   /* the old connection's answers: not for the next host */
     ls_host_presets = 0;               /* 0.4.0: another host may come */
+    ls_host_p13 = 0;                   /* TBLB: the same */
     fk_claim = 0;                      /* fk (0.5.0): UP + LEFT / RIGHT stock's until the next host claims them */
+    ms.on = 0; ms.qn = 0;              /* ms (morph v2): the mode off until the next host arms it; nothing owed */
+    ms.side = 0; ms.acc_on = 0; ms.page_held = 0; ms.pdef = 0;   /* a held gesture ends too (review L1) */
     if (sq.on) sq_forget();            /* 1032 */
   }
   if (splash_req) {
@@ -2682,6 +2882,7 @@ static void tick_body(void *ctrl) {
     else {
       if (!st.splash_on) {
         st.splash_on = 1;
+        ovl_pub();
         st.splashes++;
         st.shown = 0xffffffffu;
         st.idle = 0;
@@ -2734,6 +2935,8 @@ static void tick_body(void *ctrl) {
   led_tick();
   pg_tick();                         /* 1032: the PAGE LEDs */
   trk_tick();                        /* 1044: TRK's LED while the page has the keys */
+  ms_led_tick();                     /* ms (morph v2): T15 / T16 while PAGE is held */
+  ms_tick(ctrl);                     /* ms: the readout, PAGE kept back, the reports */
   flush();
   pc_tick();                         /* 1030: the chord write-back */
   if (!st.pend_hello && !st.pend_open && mr_tick()) {   /* 1025: behind the hello and the 30; 1027 behind those */
@@ -2782,23 +2985,22 @@ static void draw_txt(const struct txt *t, const char *str) {
    without its labels and values, as often as commits meet draws - an animated page (a playhead, a moving value) commits
    at up to 40 Hz [read; not reproduced in rytm-emu: torn 0 over thousands of frames, see the popup report]. */
 static int32_t compose(uint32_t c) {
-  static struct txt tl[NTXT];
   char eb[TXTLEN + 4];
   uint32_t s0, t0 = TIMER, dt;
   int32_t i, e;
   s0 = sh_seq;
   if (s0 & 1) return 0;
   copy32((uint32_t *)comp_in, (const volatile uint32_t *)shadow, 256);
-  copy32((uint32_t *)tl, (const volatile uint32_t *)txt_sh, sizeof tl / 4);
+  copy32((uint32_t *)txt_tl, (const volatile uint32_t *)txt_sh, sizeof txt_tl / 4);
   if (sh_seq != s0) return 0;
   copy32((uint32_t *)comp, (const volatile uint32_t *)comp_in, 256);
   if (!st.bm[0]) BITMAP_CTOR(st.bm, 128, 64, comp, 0);
   for (i = 0; i < NTXT; ++i) {
-    const char *str = tl[i].s;
-    if (!tl[i].len) continue;
+    const char *str = txt_tl[i].s;
+    if (!txt_tl[i].len) continue;
     for (e = 0; e < NBIND; ++e)
       if (st.echo_until[e] && st.echo_bind[e].slot == i) { echo_text(e, eb); str = eb; }
-    draw_txt(&tl[i], str);
+    draw_txt(&txt_tl[i], str);
   }
   st.composed = c;
   st.comps++;
@@ -2836,6 +3038,14 @@ static void draw_body(void *bmp, void *ctrl) {
   if (hdr) hdr_save(px, keep);
   draw_page(bmp, ctrl);
   if (hdr && (st.active || st.splash_on || sv.show) && !(st.active && st.aside)) hdr_put(px, keep);
+  if (ms.rd_until && !st.active && !st.splash_on) {   /* ms: the readout over stock's header (0.5.2 rc4: and the SRC view's) */
+    void *font = TEXT_FONT(FONT_CTX(16));
+    int32_t h = *(const uint16_t *)((const uint8_t *)font + 6), x;
+    uint8_t *b = (uint8_t *)px;
+    for (x = 0; x < HDR_COLS; ++x) b[8 * x + 7] = 0xff, b[8 * x + 6] |= 1;   /* the field lit, stock's text gone (review M3) */
+    TEXT_DRAW(bmp, font, 2, 64 - h - 2, 0, 1, ms.rd, "%s", ms.rd);
+    st.texts_drawn++;
+  }
 }
 static void draw_page(void *bmp, void *ctrl) {
   uint32_t *px = *(uint32_t **)((uint8_t *)bmp + 16);   /* canvas(+4 w, +8 h, +16 pixels) 0x4006f9c2 */
@@ -2899,6 +3109,115 @@ static int32_t key_owner(uint32_t code) {
   return code == K_FUNC ? 2 : 1;
 }
 
+/* ms (morph v2): stock gets a key event as its own (a copy of ev, the code and its down bit set) */
+static void ms_stock_key(void *brain, const void *ev, uint32_t code, uint32_t down) {
+  uint32_t e2[8];
+  int32_t i;
+  for (i = 0; i < 8; ++i) e2[i] = ((const uint32_t *)ev)[i];
+  e2[3] = (e2[3] & ~0xffu) | code;
+  e2[4] = (e2[4] & ~1u) | down;
+  STOCK_KEY(brain, e2);
+}
+/* the mode acts on this stock page (not a host page, the splash, the bank list, seq mode's keys) */
+static int32_t ms_stock_ok(void) {
+  return ms.on && !st.active && !st.splash_on && !ls.on && !sq.mode;
+}
+/* a report owed, after those before it (the turn being coalesced goes first) */
+static void ms_acc_out(void);
+static void ms_push(const uint8_t *d) {
+  int32_t i;
+  /* the last slot is a let-go's (review: a dropped let-go left the host in EDIT): at most one is owed at a time */
+  if (ms.qn >= (d[0] == 0x13 && d[1] == 0 ? MS_NQ : MS_NQ - 1)) { ms.qdrop++; return; }
+  for (i = 0; i < 8; ++i) ms.q[ms.qn][i] = d[i];
+  ms.qn++;
+}
+static void ms_ev(uint32_t ev, uint32_t side, uint32_t n) {
+  uint8_t d[8] = {0x13, (uint8_t)ev, (uint8_t)side, (uint8_t)n, 0, 0, 0, 0};
+  ms_acc_out();
+  ms_push(d);
+}
+/* the coalesced turn as a report: whole detents (256 a step, 16 with FUNC: stock's fine), at most 63 a report, the
+   rest kept for the next */
+static void ms_acc_out(void) {
+  int32_t u = ms.acc_f ? 16 : 256, d;
+  uint8_t r[8];
+  if (!ms.acc_on) return;
+  d = ms.acc_d / u;
+  if (d > 63) d = 63;
+  if (d < -63) d = -63;
+  if (!d) return;
+  if (ms.qn >= MS_NQ - 1) return;      /* (kept: the next tick; the last slot is a let-go's) */
+  ms.acc_d -= d * u;
+  r[0] = 0x12; r[1] = (uint8_t)(ms.acc_side - 1); r[2] = (uint8_t)ms.acc_t; r[3] = (uint8_t)ms.acc_w;
+  r[4] = (uint8_t)(d & 0x7f); r[5] = (uint8_t)ms.acc_f; r[6] = (uint8_t)(ms.acc_base >> 7 & 0x7f);
+  r[7] = (uint8_t)(ms.acc_base & 0x7f);
+  ms_push(r);
+  ms.caps++;
+}
+static void ms_say(const char *t) {
+  int32_t i;
+  for (i = 0; i < 19 && t[i]; ++i) ms.rd[i] = t[i];
+  ms.rd[i] = 0;
+  ms.rd_until = st.ticks + MS_HDR_TICKS;
+  if (!ms.rd_until) ms.rd_until = 1;
+}
+/* the side let go (or the gesture dropped): its last turn, then the release */
+/* review L8: a coalesced turn ended while the queue had no room for it (ms_acc_out kept it): counted as a drop */
+static void ms_acc_drop(void) {
+  if (ms.acc_on && ms.acc_d / (ms.acc_f ? 16 : 256)) ms.qdrop++;
+}
+static void ms_side_end(void) {
+  if (!ms.side) return;
+  ms_ev(0, ms.side - 1, 0x7f);
+  ms_acc_drop();
+  ms.side = 0;
+  ms.acc_on = 0;
+}
+/* the owed reports, in order: 2D 01 12 <side> <t> <w> <delta s7> <func> <base hi7> <lo7>, 2D 01 13 <ev> <side> <n>,
+   2D 01 14 <side> <t> <w> (a knob press: that parameter's scene lock removed) */
+static void ms_send(void) {
+  uint8_t m[15];
+  uint32_t k = 0, i, n;
+  while (k < ms.qn) {
+    const uint8_t *d = ms.q[k];
+    m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x2d; m[5] = 0x01; m[6] = d[0];
+    n = d[0] == 0x12 ? 7u : 3u;
+    for (i = 0; i < n; ++i) m[7 + i] = d[1 + i];
+    m[7 + n] = 0xf7;
+    if (!send(m, (int32_t)(8 + n))) break;
+    k++;
+    ms.sent++;
+  }
+  for (i = k; i < ms.qn; ++i)
+    for (n = 0; n < 8; ++n) ms.q[i - k][n] = ms.q[i][n];
+  ms.qn -= k;
+}
+/* the UI tick: the host's readout taken, the readout's time, PAGE kept back too long (stock's now: its popup), the
+   coalesced turn out */
+static void ms_tick(void *ctrl) {
+  uint32_t g = ms.rd_gen;
+  int32_t i;
+  if (g != ms.rd_seen && !(g & 1)) {
+    char t[20];
+    for (i = 0; i < 20; ++i) t[i] = (char)ms.rd_in[i];
+    if (ms.rd_gen == g) { ms.rd_seen = g; t[19] = 0; ms_say(t); }
+  }
+  if (ms.rd_until) {
+    if ((int32_t)(ms.rd_until - st.ticks) <= 0) ms.rd_until = 0;
+    *((volatile uint8_t *)ctrl + 0x20) = 1;   /* drawn each tick while it lasts, stock's header again at its end */
+  }
+  if (ms.pdef && st.ticks - ms.pt0 >= MS_PAGE_TICKS) {
+    ms.pdef = 0;
+    if (ms_stock_ok()) {
+      ms.fwd_late++;
+      SET(st.stock_down, K_PAGE);
+      STOCK_KEY(ms.brain, ms.pev);
+    } else SET(st.eat, K_PAGE);      /* a host page (or the list) came meanwhile: PAGE is nobody's, its release eaten */
+  }
+  ms_acc_out();
+  ms_send();
+}
+
 static int32_t key_body(void *brain, void *ev) {
   uint32_t code = *(uint32_t *)((uint8_t *)ev + 12) & 0xff;
   uint32_t down = *(uint32_t *)((uint8_t *)ev + 16) & 1;
@@ -2907,6 +3226,17 @@ static int32_t key_body(void *brain, void *ev) {
   if (code == K_FILL && down != ed.fill) { ed.fill = down; ed.fill_owed = 1; }   /* 1033: 2D 0C FILL (stock keeps it) */
   st.last_key = code | down << 8 | (*(uint32_t *)((uint8_t *)ev + 16) & 0xfe) << 8;
   if (!down) {   /* a release goes where its press went, whatever the mask or the mode is now */
+    if (ms.side && code == 13 + ms.side) ms_side_end();   /* ms: the side let go (its release eaten below) */
+    if (ms.hside && code == 13 + ms.hside) ms.hside = 0;  /* ms: the host's side key (its release the host's below) */
+    if (code == K_PAGE && ms.page_held) {
+      ms.page_held = 0;
+      if (ms.pdef) {                 /* ms: PAGE kept back, let go alone: stock's press now, this release stock's */
+        ms.pdef = 0;
+        ms.fwd_alone++;
+        ms_stock_key(brain, ev, K_PAGE, 1);
+        return 0;
+      }
+    }
     if (code == K_UP && k44.up_on) {  /* 1044: the combo map goes with UP */
       k44.up_on = 0;
       if (k44.up_map) { k44.up_map = 0; k44.map_req = 2; }
@@ -2939,7 +3269,7 @@ static int32_t key_body(void *brain, void *ev) {
     if (BIT(sq.down, code)) { CLR(sq.down, code); queue_key(code, 0); flush(); return 1; }   /* 1032: seq mode's */
     if (BIT(st.stock_down, code)) {   /* pressed before: stock's */
       CLR(st.stock_down, code);
-      if (code >= K_PUSH0 && code <= K_PUSH7 && (ux.push >> (code - K_PUSH0) & 1)) {   /* 1036: the SRC view's push */
+      if (code >= K_PUSH0 && code <= K_PUSH7 && st.init && (ux.push >> (code - K_PUSH0) & 1)) {   /* 1036: the SRC view's push */
         ux.push &= ~(1u << (code - K_PUSH0));
         queue_key(code, 0);
         flush();
@@ -2961,6 +3291,58 @@ static int32_t key_body(void *brain, void *ev) {
   if (BIT(st.eat, code)) return 1;
   if (BIT(st.our_down, code) || BIT(sq.down, code)) return 1;   /* a repeat of a held key: to whoever took its press */
   if (BIT(st.stock_down, code) || BIT(st.both_down, code)) return 0;
+  if (code == K_PAGE && ms.pdef) return 1;   /* ms: a repeat of PAGE kept back (its 300 ms run on) */
+  /* ms (morph v2): the scene edit on a stock page. Under a held side every trig is the gesture's (T1..T12 pick that
+     side's scene); PAGE kept back (not with FUNC: FUNC + PAGE is stock's SCALE); PAGE + T15 / T16 the side */
+  if (ms.side && code <= 15) {
+    SET(st.eat, code);
+    if (code < 12) { ms_ev(2, ms.side - 1, code); ms.picks++; ms_send(); }
+    return 1;
+  }
+  if (ms_stock_ok()) {
+    if (code == K_PAGE && !HELD(K_FUNC)) {
+      int32_t i;
+      ms.page_held = 1; ms.pdef = 1; ms.pt0 = st.ticks; ms.brain = brain;
+      for (i = 0; i < 8; ++i) ms.pev[i] = ((const uint32_t *)ev)[i];
+      ms.defers++;
+      return 1;
+    }
+    if ((code == MS_T15 || code == MS_T16) && ms.page_held) {
+      if (ms.pdef) ms.pdef = 0;                       /* PAGE never reaches stock */
+      else if (BIT(st.stock_down, K_PAGE)) {          /* given late (its popup up): let go for stock now */
+        CLR(st.stock_down, K_PAGE);
+        ms_stock_key(brain, ev, K_PAGE, 0);
+        ms.cut++;
+      }
+      SET(st.eat, K_PAGE);
+      SET(st.eat, code);
+      ms.side = code - 13;
+      ms.gestures++;
+      ms.acc_on = 0;
+      ms_ev(1, ms.side - 1, 0x7f);
+      ms_send();
+      return 1;
+    }
+  }
+  if (ms.pdef) {                     /* another key while PAGE is kept back: stock has PAGE first (the order kept) */
+    ms.pdef = 0;
+    ms.fwd_key++;
+    ms_stock_key(brain, ms.pev, K_PAGE, 1);
+    SET(st.stock_down, K_PAGE);
+  }
+  /* ms, a host page (review M2): T15 / T16 while the host holds PAGE, T1..T12 while that side is held, are the host's
+     whatever its mask says yet (its claim comes a round trip after PAGE) */
+  if (st.active && !st.aside && ms.on && code <= 15 &&
+      (((code == MS_T15 || code == MS_T16) && !ms.hside && (BIT(st.our_down, K_PAGE) || BIT(st.both_down, K_PAGE))) ||
+       (ms.hside && code < 12))) {
+    if (code >= MS_T15) ms.hside = code - 13;
+    ms.m2++;
+    st.k_caught++;
+    SET(st.our_down, code);
+    queue_key(code, 1);
+    flush();
+    return 1;
+  }
   /* 1052d (the user): NO held on a page + a reload key (SCNE the pattern, CHRO the track, PLAYMODE the kit): both are
      stock's, so its NO + key reload works under the page - NO's press given to stock now (it never went to the host:
      kept back below), its release then stock's too; the key stock's. Any other key while NO is kept back: NO's press to
@@ -3147,11 +3529,25 @@ static int32_t key_body(void *brain, void *ev) {
   /* 1038: the bank list open (the page closed): the nav keys are the list's, another key closes it and goes on */
   if (!st.active && ls_key(code)) return 1;
   /* 1049: FUNC + YES on a banked machine's or DSP SAMPLE's SRC view (the host's): the list with the host's browser */
-  if (!st.active && !ls.on && code == K_YES && !st.splash_on && sv.on && sv.show && !sv.covered && ls.qn + 2 <= LS_NQ &&
-      (int32_t)sv.track == SEL_TRACK && (ls_banked(sv.mach) || SMP_M(sv.mach)) && !(sq.mode && (sq.down[0] & 0xffffu)) &&
+  if (!st.active && !ls.on && code == K_YES && !st.splash_on && ls.qn + 2 <= LS_NQ &&
+      ((sv.on && sv.show && !sv.covered && (int32_t)sv.track == SEL_TRACK && (ls_banked(sv.mach) || SMP_M(sv.mach))) || ls_p13()) &&
+      !(sq.mode && (sq.down[0] & 0xffffu)) &&
       (BIT(st.stock_down, K_FUNC) || BIT(st.both_down, K_FUNC) || BIT(st.our_down, K_FUNC))) {
-    ls.track = sv.track; ls.mach = sv.mach; ls.p = SMP_M(sv.mach) ? DSPS_P : 0;
-    ls.on = 1; ls.knob = 0; ls.tick0 = st.ticks;
+    if (ms.on && ms.side) {            /* 0.5.2 rc4: under a held MORPH side the source is NOT LOCKABLE (as ls_enc's
+                                          turn): no list, no browser, YES and its release eaten */
+      ms.nolock++;
+      ms_say("NOT LOCKABLE");
+      SET(st.eat, code);
+      flush();
+      return 1;
+    }
+    if (ls_p13()) {                    /* TBLB: WAVETABLE's SMPL page: P13's list, knob E's */
+      ls.track = (uint8_t)SEL_TRACK; ls.mach = CU_WT_M; ls.p = TBLB_P; ls.knob = 4;
+      ls_smpl = (uint32_t)ls.track + 1;
+    } else {
+      ls.track = sv.track; ls.mach = sv.mach; ls.p = SMP_M(sv.mach) ? DSPS_P : 0; ls.knob = 0;
+    }
+    ls.on = 1; ls.tick0 = st.ticks;
     ls.opens++; ls.srcyes++;
     ls_queue(1, 0);
     ls.browse = 1; ls.br_ack = 0; ls.br_tick = st.ticks; ls.br_gen = ls_in_gen; ls.browses++;
@@ -3411,7 +3807,8 @@ static const char cu_chd[16][5] = {"OFF", "MAJ", "MIN", "SUS2", "SUS4", "7", "MA
                                    "DIM", "AUG", "6", "MIN6", "9", "ADD9", "MIN9", "5"};
 static const char cu_loop[3][5] = {"AUTO", "OFF", "ON"};
 /* 1034: the host's value texts (rytm-teensy docs/WAVETABLE.md 6, docs/GRANULAR.md 5) */
-static const char cu_warp[4][5] = {"OFF", "SYNC", "PWM", "FM"};
+static const char cu_warp[9][5] = {"OFF", "SYNC", "PWM", "FM", "FRMT", "QNT", "BEND", "SQZE", "RM"};   /* 0.5.2: nine zones */
+static const char cu_ftyp[8][5] = {"DJ", "LP12", "LP24", "BP12", "BP24", "HP12", "HP24", "LDR"};   /* 0.5.2: WAVETABLE's FTYP */
 static const char cu_win[4][6] = {"HANN", "TRI", "TUKEY", "PERC"};
 static const char cu_anim[8][5] = {"8BAR", "4BAR", "2BAR", "1BAR", "1/2", "1/4", "1/8", "1/16"};
 static const char cu_frz[] = "FRZ", cu_off[] = "OFF";
@@ -3441,7 +3838,7 @@ static const char cu_dst[4][5] = {"OFF", "DIN", "USBC", "USBA"};   /* 7o, in the
 static const char cu_fmt_db[] = "%dDB", cu_fmt_pd[] = "+%d", cu_fmt_x[] = "X%d", cu_fmt_pct[] = "%d%%";
 static const char cu_fm_short[] = "6OP";
 static const char cu_fmt_s[] = "%s", cu_fmt_d[] = "%d", cu_fmt_bk[] = "%c%03d", cu_fmt_inv[] = "INV%d", cu_fmt_spr[] = "SPR%d";
-/* text: 0 the look's own, 1 OFF / ON, 2 LOOP, 3 CHD, 4 INV, 5 SPR, 6 VOI, 7 WARP (4 zones), 8 WIN (4 zones),
+/* text: 0 the look's own, 1 OFF / ON, 2 LOOP, 3 CHD, 4 INV, 5 SPR, 6 VOI, 7 WARP (9 zones since 0.5.2), 34 FTYP (8), 8 WIN (4 zones),
    9 SRC (the host's names (47), else names 0..11, a number above), 12 TBL / INST (the host's names, else a number),
    10 HOLD (0..119: v x 99 / 119, 120..127 FRZ), 11 ANIM (0 OFF, then 8BAR 4BAR 2BAR
    1BAR 1/2 1/4 1/8 1/16 by 16s) */
@@ -3472,12 +3869,14 @@ static const struct cu_knob cu_p2k[8] = {
    BASIC in its wavetable list template), was 0 */
 static const struct cu_knob cu_wtk[8] = {
     {"Table", "TBL", CU_DIAL, 12, 1, CU_BANKED},           {"Position", "POS", CU_DIAL, 0, 0, 0},
-    {"Warp", "WARP", CU_DIAL, 7, 0, 0x104},       {"Amount", "AMT", CU_DIAL, 0, 0, 0},
+    {"Warp", "WARP", CU_DIAL, 7, 0, 0x109},       {"Amount", "AMT", CU_DIAL, 0, 0, 0},
     {"Unison", "UNI", CU_DIAL, 0, 0, 0},          {"Sub Osc", "SUB", CU_LEVEL, 0, 0, 0},
     {"Cutoff", "CUT", CU_BIPOLAR, 0, 64, 0},      {"Resonance", "RES", CU_DIAL, 0, 0, 0}};
 static const struct cu_knob cu_wtp2k[8] = {
     {"Attack", "ATK", CU_DIAL, 0, 0, 0},          {"Decay", "DEC", CU_DIAL, 0, 64, 0},
-    {"Sustain", "SUS", CU_DIAL, 0, 100, 0},       {"Env>Pos", "ENV", CU_BIPOLAR, 0, 64, 0}, CU_CHORD};
+    {"Sustain", "SUS", CU_DIAL, 0, 100, 0},       {"Env>Pos", "ENV", CU_BIPOLAR, 0, 64, 0},
+    {"Table B", "TBLB", CU_DIAL, 12, 0, CU_BANKED}, {"Position B", "POSB", CU_DIAL, 0, 0, 0},
+    {"Mix A-B", "MIX", CU_DIAL, 0, 0, 0},         {"Filter Type", "FTYP", CU_DIAL, 34, 0, 0x108}};
 static const struct cu_knob cu_grk[8] = {
     {"Source", "SRC", CU_DIAL, 9, 10, CU_BANKED},         {"Position", "POS", CU_DIAL, 0, 0, 0},
     {"Spray", "SPRY", CU_DIAL, 0, 20, 0},         {"Grain Size", "SIZE", CU_DIAL, 0, 64, 0},
@@ -3575,7 +3974,7 @@ int32_t cu_text(void *functor, int32_t value, void *str) {
     case 4: return CU_PRINTF(str, cu_fmt_inv, v < 4 ? v : 0);
     case 5: return CU_PRINTF(str, cu_fmt_spr, v < 3 ? v : 0);
     case 6: return v >= 1 && v <= 6 ? CU_PRINTF(str, cu_fmt_d, v) : CU_PRINTF(str, cu_fmt_s, cu_loop[0]);
-    case 7: return CU_PRINTF(str, cu_fmt_s, cu_warp[(v * 4) >> 7]);
+    case 7: return CU_PRINTF(str, cu_fmt_s, cu_warp[(v * 9) >> 7]);
     case 8: return CU_PRINTF(str, cu_fmt_s, cu_win[(v * 4) >> 7]);
     case 10: return v < 120 ? CU_PRINTF(str, cu_fmt_d, v * 99 / 119) : CU_PRINTF(str, cu_fmt_s, cu_frz);
     case 11: return v ? CU_PRINTF(str, cu_fmt_s, cu_anim[v >> 4]) : CU_PRINTF(str, cu_fmt_s, cu_off);
@@ -3601,6 +4000,7 @@ int32_t cu_text(void *functor, int32_t value, void *str) {
     case 31: return v ? CU_PRINTF(str, cu_fmt_d, (v - 1) * 127 / 126) : CU_PRINTF(str, cu_fmt_s, cu_off);
     case 32: return v ? CU_PRINTF(str, cu_fmt_d, v - 1) : CU_PRINTF(str, cu_fmt_s, cu_off);
     case 33: return CU_PRINTF(str, cu_fmt_s, cu_play[(v * 9) >> 7]);   /* 0.5.0: SAMPLER's PLAY */
+    case 34: return CU_PRINTF(str, cu_fmt_s, cu_ftyp[v >> 4]);   /* 0.5.2: WAVETABLE's FTYP (8 zones) */
     case 26: return v >= 127 ? CU_PRINTF(str, cu_fmt_s, cu_hold) : v ? CU_PRINTF(str, cu_fmt_d, v) : CU_PRINTF(str, cu_fmt_s, cu_slc);
     case 9:
     case 12: {   /* 1036: the host's names (47) for GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST. 1038: the bank
@@ -3610,7 +4010,7 @@ int32_t cu_text(void *functor, int32_t value, void *str) {
       int32_t l = r == CU_DSPS_SMP || cu.p1m == CU_GR || cu.p1m == CU_CP ? 0 : cu.p1m == CU_WT ? 1 : cu.p1m == CU_MS ? 2 : -1,
               bk = value >> 5 & 7;   /* (1051: CHOP's SRC the SAMPLES list's, as GRANULAR's) */
       if (!v) return CU_PRINTF(str, cu_fmt_s, cu_off);
-      if (l >= 0 && ux.nm_bank[l] == bk && ux.nm[l][v][0])   /* (a bank's names: its rows that hold a file) */
+      if (l >= 0 && st.init && ux.nm_bank[l] == bk && ux.nm[l][v][0])   /* (a bank's names: its rows that hold a file) */
         return CU_PRINTF(str, cu_fmt_s, ux.nm[l][v]);
       return CU_PRINTF(str, cu_fmt_bk, 'A' + bk, v);
     }
@@ -3779,7 +4179,7 @@ static void wr_tick(void) {
     else if (k >= 8 && (m == CU_LI || m == CU_CP || m == CU_MI) && cu.p2m != (uint32_t)m)
       status = 1;   /* 1051: their page 2 too. 0.5.0: never SAMPLER: SMP is 441 (DSP SAMPLE's own) and the shared page-2
                        records' kind is 0x36 (>= 53), so the drain writes the word whatever they are set up for, unclamped */
-    else if ((k == 0 || (k == DSPS_P && SMP_M(m))) && (fl & 1) && (lk = ls_lock(t, v, 9 + k)) >= 0) {   /* 1038: the
+    else if ((k == 0 || (k == DSPS_P && SMP_M(m)) || (k == TBLB_P && m == CU_WT)) && (fl & 1) && (lk = ls_lock(t, v, 9 + k)) >= 0) {   /* 1038: the
                                                                      list's YES with trigs held: locks (1045: P11 too) */
       status = lk ? 3 : 4;
       if (lk) ux.w_full++; else ux.w_locked++;
@@ -3903,7 +4303,8 @@ static void dp_tick(void) {
  * Rytm -> host  2D 01 0E <pos >> 7> <pos & 7F> <mask lo7> <mask hi5> <flags>   the knob 0..255 (the OS's word, the panel
  *               MCU's last message), the PERF macros on it (the kit's 12 bits), flags bit 0 FUNC held, bit 1 the knob has
  *               sent since the Rytm booted (its word or time stamp changed, or not 0 at the first block: until then pos
- *               means nothing), bit 2 the macros muted (not located: 0). On a change, at most one per QP_GAP audio blocks
+ *               means nothing), bit 2 the macros muted (morph v2: QP_MUTED,
+ *               the gate 0x8000ed74; caps2 bit 1 says the build sends it). On a change, at most one per QP_GAP audio blocks
  *               (8 ms), the newest when its time comes (a value in between may be skipped, the last never), from the audio
  *               interrupt by isr_send (polled every block: 1500 a second); again after each hello.
  *               2D 01 0F <n>   the active scene 1..12, 0 none (the kit's byte), on a change by any path (pads, CC 92,
@@ -3917,6 +4318,8 @@ static void dp_tick(void) {
 #define QP_POS    (*(const volatile uint32_t *)0x42f9210cu)   /* the pot, 0..255, never cleared [measured, 1.73 + 1.74] */
 #define QP_STAMP  (*(const volatile uint32_t *)0x42f92110u)   /* its message's time stamp (cleared once posted) [code] */
 #define QP_FUNC   (*(const volatile uint8_t *)0x418d1346u & 0x20u)   /* panel key state group 6 bit 5 [measured] */
+#define QP_MUTED  (*(const volatile uint32_t *)0x8000ed74u)   /* stage G's gate: the QUICK PERF macros muted (nonzero),
+                                                                 the active kit's + 2495 copied by 0x4011f816 [measured] */
 #define QP_GAP    12u                                         /* audio blocks: 8 ms */
 #define QP_APP    ((uint8_t *(*)(void))0x4017f83eu)           /* the app singleton (CC 92 / 94's) */
 #define QP_MASK   ((int32_t (*)(void *))0x400a6da2u)          /* (app + 352): the kit's macros on the pot (the type-5 handler's) */
@@ -3935,11 +4338,11 @@ static void qp_isr(void) {
   if (!qp.moved && (pos != qp.pos0 || QP_STAMP != qp.stamp0)) qp.moved = 1;
   if (!qp.live) return;
   pos &= 0xffu;
-  v = pos << 16 | mk << 4 | (qp.moved ? 2u : 0u) | (QP_FUNC ? 1u : 0u);
+  v = pos << 16 | mk << 4 | (QP_MUTED ? 4u : 0u) | (qp.moved ? 2u : 0u) | (QP_FUNC ? 1u : 0u);
   if ((v == qp.last && o == qp.owes) || fp.blocks - qp.blk < QP_GAP) return;
   m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x2d; m[5] = 0x01; m[6] = 0x0e;
   m[7] = (uint8_t)(pos >> 7); m[8] = (uint8_t)(pos & 0x7f); m[9] = (uint8_t)(mk & 0x7f); m[10] = (uint8_t)(mk >> 7);
-  m[11] = (uint8_t)(v & 3u); m[12] = 0xf7;
+  m[11] = (uint8_t)(v & 7u); m[12] = 0xf7;
   if (!isr_send(m, 13)) return;          /* the next block */
   if (qp.sent && (!qp.gmin || fp.blocks - qp.blk < qp.gmin)) qp.gmin = fp.blocks - qp.blk;
   qp.last = v; qp.owes = o; qp.blk = fp.blocks; qp.sent++;
@@ -3957,9 +4360,12 @@ static void qp_isr(void) {
  *               5A 01 05 <kit> <ramp> <n> {<t> <w | jump << 6> <hi> <lo> <mix>} x n   OVERRIDE, v 1/128 step, mix /127
  *               5A 01 06 <kit> <ramp> <mask lo7> <mask hi6>           CLEAR the tracks in the mask (offset, mix -> 0)
  *               5A 01 07                                              STATUS
+ *               5A 01 09 <kit> <n 1..20> {<t> <w> <flags: 1 A, 2 B> <a hi lo> <b hi lo>} x n   MORPH-SET (P3), 1/128 step;
+ *                                                                     flags 0 removes the part (design.md "pm morph")
+ *               5A 01 0A <kit> <f hi7> <lo7> <ramp>                   FADER (P3), f 0..16383
  * Rytm -> host  2D 01 10 <op> 1 (refused), 2D 01 10 <op> 2 (slots full, at most once a second), a done op nothing;
  *               2D 01 11 <slots, 127 max> <ring drops hi lo> <kit drops hi lo> <timeouts> <flags: 1 an override skipped
- *               for a scene lock in the last second, 2 the hook ran in the last block>
+ *               for a scene lock in the last second, 2 the hook ran in the last block> <morph parts, 127 max (P3)>
  * The MIDI task checks a message and queues its records (ring: one writer, one reader); the audio interrupt drains the
  * ring, owns the entries and the ramps. 250 ms without a 04..06, a USB port drop or a hello: everything fades out over
  * 32 blocks; a kit change or reload: everything freed at once. */
@@ -3971,6 +4377,135 @@ static int32_t pmo_word_ok(uint32_t t, uint32_t w, uint32_t op) {
   if (w >= 48 && w <= 55) return t < 12 && op == 4;                             /* VM1..4, AT1..4: offsets only */
   return w == 56 && t < 12;                                                      /* VEL */
 }
+
+/* ms (morph v2): param_apply_delta at +0x1c (0x400378c2: the track resolved; ms_pad_det below). 1: the turn is the
+   scene edit's - reported (coalesced, ms_acc_out), never written; or refused (NOT LOCKABLE), never written either -
+   and stock skips it; 0: stock's, unchanged. Lockable: words 1..41 by the ROM record's +4 as pm's rules (not 0 / 4,
+   not the FX's 29 / 38..41), never the TRIG page's ids 28..38 (their +4 collide with sound words) nor a record whose
+   +4 is -1 (0029's pages) [P0 padword]. The base: stock's own stored value of that id on the view's parameter set
+   (vtable +160 with -1, then the set's read at +0x28, as 0029's sfu_get) [measured: ms_emu.py edbase]. A later gate
+   (CTRL ALL) is reserved here: one function for both. */
+typedef void **(*ms_set_fn)(void *, int32_t);
+typedef int32_t (*ms_rd_fn)(void *, int32_t);
+int32_t ms_pad(void **view, uint32_t id, uint32_t track, int32_t delta, uint32_t func) {
+  int32_t w;
+  ms.gates++;
+  if (!ms.side || !ms.on) return 0;
+  w = id < 28 || (id > 38 && id < MS_NREC) ? *(const volatile int32_t *)(MS_REC + 0x34u * id + 4u) : -1;
+  if (w < 1 || w > 41 || !pmo_word_ok(track, (uint32_t)w, 5)) { ms.nolock++; ms_say("NOT LOCKABLE"); return 1; }
+  func = (func & 0xff) ? 1u : 0u;
+  if (ms.acc_on && (ms.acc_t != track || ms.acc_w != (uint32_t)w || ms.acc_f != func || ms.acc_side != ms.side)) {
+    ms_acc_out();
+    ms_acc_drop();
+    ms.acc_on = 0;
+  }
+  if (!ms.acc_on) {
+    void **set = ((ms_set_fn)((uint32_t *)*view)[160 / 4])(view, -1);
+    int32_t v = ((ms_rd_fn)((uint32_t *)*set)[0x28 / 4])(set, (int32_t)id);
+    ms.base_raw = (uint32_t)v;
+    v >>= 1;                       /* 8.8 -> 7.7 */
+    ms.acc_base = v < 0 ? 0u : v > 0x3fff ? 0x3fffu : (uint32_t)v;
+    ms.acc_on = 1; ms.acc_t = track; ms.acc_w = (uint32_t)w; ms.acc_f = func; ms.acc_side = ms.side; ms.acc_d = 0;
+  }
+  ms.acc_d += delta;
+  return 1;
+}
+__asm__(
+    "  .text\n"
+    "  .globl ms_pad_det\n"
+    "  .align 2\n"
+    /* param_apply_delta at 0x400378c2 (6 B: `moveal %a2@,%a0; pea 0xffffffff`, where 0013's hpf_delta rejoins), the
+       track lookup's argument still pushed: 0 it, 4..12 d2 / d3 / a2, 16 the return, 20 view, 24 id, 28 delta, 32 func;
+       d0 the track. ms_pad(view, id, track, delta, func): 0 -> d0 back, the two displaced instructions, 0x400378c8;
+       1 -> param_apply_delta's own epilogue (its argument and the saved d0 dropped first). */
+    "ms_pad_det:\n"
+    "  move.l %d0,-(%sp)\n"
+    "  move.l 36(%sp),-(%sp)\n"
+    "  move.l 36(%sp),-(%sp)\n"
+    "  move.l %d0,-(%sp)\n"
+    "  move.l 40(%sp),-(%sp)\n"
+    "  move.l 40(%sp),-(%sp)\n"
+    "  jsr ms_pad\n"
+    "  lea 20(%sp),%sp\n"
+    "  tst.l %d0\n"
+    "  bne.s 1f\n"
+    "  move.l (%sp)+,%d0\n"
+    "  movea.l (%a2),%a0\n"
+    "  pea 0xffffffff\n"
+    "  jmp 0x400378c8\n"
+    "1:\n"
+    "  addq.l #8,%sp\n"
+    "  movem.l (%sp),%d2-%d3/%a2\n"
+    "  lea 12(%sp),%sp\n"
+    "  moveq #0,%d0\n"
+    "  rts\n");
+
+/* ms: a DATA ENTRY knob's press under a held side removes that parameter's scene lock (the owner, 2026-11-26: as the
+   Octatrack's trig + knob press removes a p-lock). The page's key handler (0x4003a544, the one every stock page class
+   has at vtable +12) takes PUSH_A..H (0x70..0x77) at 0x4003a5d6: idx = key - 0x70, id = the page's vtable +156 (view,
+   idx), word = the ROM record's +4 (as the turn's param_apply_delta gets the same id [measured: ms_emu.py edclr
+   notes]); at 0x4003a5fc, after both, ms_knob_det asks ms_knob. 1: eaten (stock's press - its p-lock clear under a held
+   trig, its popup - never runs) and, for a lockable word, reported (2D 01 14 <side> <t> <w>: the track as the turn's,
+   0x400b693e of the view's +116); a word that is not lockable (the same rule as ms_pad's) shows NOT LOCKABLE and
+   sends nothing. A press with no side held is stock's, unchanged. The release of an eaten press is eaten too (ms.pushd:
+   also after the side let go: stock would clear a lock on a release it never had the press of); a repeat of the held
+   press under the side is eaten without a second report. */
+int32_t ms_knob(void *view, const uint32_t *ev, uint32_t id) {
+  uint32_t idx = (ev[3] & 0xff) - K_PUSH0, bit = 1u << (idx & 31);
+  int32_t w;
+  uint32_t track;
+  uint8_t d[8];
+  if (idx > 7) return 0;
+  if (!(ev[4] & 1)) {                  /* a release goes where its press went */
+    if (!(ms.pushd & bit)) return 0;
+    ms.pushd &= ~bit;
+    return 1;
+  }
+  if (!ms.on || !ms.side) {            /* stock's press (a stale bit of a release that never came: dropped) */
+    ms.pushd &= ~bit;
+    return 0;
+  }
+  if (ms.pushd & bit) return 1;        /* a repeat of the eaten press */
+  ms.pushd |= bit;
+  w = id < 28 || (id > 38 && id < MS_NREC) ? *(const volatile int32_t *)(MS_REC + 0x34u * id + 4u) : -1;
+  track = ((uint32_t (*)(uint32_t))0x400b68d2u)(*(const uint32_t *)((const uint8_t *)view + 116));
+  if (w < 1 || w > 41 || !pmo_word_ok(track, (uint32_t)w, 5)) { ms.nolock++; ms_say("NOT LOCKABLE"); return 1; }
+  ms_acc_out();                        /* a turn of the knob still being coalesced goes first */
+  ms_acc_drop();
+  ms.acc_on = 0;
+  d[0] = 0x14; d[1] = (uint8_t)(ms.side - 1); d[2] = (uint8_t)track; d[3] = (uint8_t)w;
+  d[4] = d[5] = d[6] = d[7] = 0;
+  ms_push(d);
+  ms.clrs++;
+  return 1;
+}
+__asm__(
+    "  .text\n"
+    "  .globl ms_knob_det\n"
+    "  .align 2\n"
+    /* the page key handler at 0x4003a5fc (6 B: `movel %d0,%fp@(-20); tstl %d4`, nothing pc-relative; the beqw behind it
+       at 0x4003a602 takes the flags): a2 the page, d2 the event, d4 the param id (0: none), d0 the record's word. 0 ->
+       the two displaced instructions, back at 0x4003a602; 1 -> the handler's own end with d3 = 1 (as its "no id" exit,
+       0x4003a91c: moveq #1,%d3 and 0x4003ac56's epilogue, the frame is a6's). */
+    "ms_knob_det:\n"
+    "  lea -16(%sp),%sp\n"
+    "  movem.l %d0-%d1/%a0-%a1,(%sp)\n"
+    "  move.l %d4,-(%sp)\n"
+    "  move.l %d2,-(%sp)\n"
+    "  move.l %a2,-(%sp)\n"
+    "  jsr ms_knob\n"
+    "  lea 12(%sp),%sp\n"
+    "  tst.l %d0\n"
+    "  bne.s 1f\n"
+    "  movem.l (%sp),%d0-%d1/%a0-%a1\n"
+    "  lea 16(%sp),%sp\n"
+    "  move.l %d0,-20(%fp)\n"
+    "  tst.l %d4\n"
+    "  jmp 0x4003a602\n"
+    "1:\n"
+    "  lea 16(%sp),%sp\n"
+    "  moveq #1,%d3\n"
+    "  jmp 0x4003ac56\n");
 
 /* the MIDI task: 0 done (or dropped for another kit), 1 refused */
 static int32_t pmo_cmd(const uint8_t *b, int32_t n) {
@@ -3986,7 +4521,16 @@ static int32_t pmo_cmd(const uint8_t *b, int32_t n) {
   }
   if (op == 6) {
     if (n != 5 || b[4] > 0x3f) return 1;
-  } else {
+  } else if (op == 9) {            /* P3: <kit> <n> {<t> <w> <flags> <a hi lo> <b hi lo>}: continuous words (the host's) */
+    cnt = b[2];
+    if (cnt < 1 || cnt > 20 || n != 3 + 7 * cnt) return 1;
+    for (i = 0; i < cnt; ++i) {
+      const uint8_t *q = b + 3 + 7 * i;
+      if (q[1] > 0x3f || q[2] > 3 || !pmo_word_ok(q[0], q[1], 5)) return 1;
+    }
+  } else if (op == 10) {           /* P3: <kit> <f hi7> <lo7> <ramp> */
+    if (n != 5) return 1;
+  } else if (op == 4 || op == 5) {
     sz = op == 4 ? 4 : 5;
     if (n < 4) return 1;
     cnt = b[3];
@@ -3995,13 +4539,17 @@ static int32_t pmo_cmd(const uint8_t *b, int32_t n) {
       const uint8_t *q = b + 4 + sz * i;
       if (!pmo_word_ok(q[0], q[1] & 0x3fu, op) || (op == 4 && (q[1] & 0x40))) return 1;
     }
-  }
+  } else return 1;                 /* review L2: an op pm does not know is refused here, never stored as a 05 */
   if (b[1] != (ACTIVE_KIT & 127u)) { pmo.kit_drop++; return 0; }   /* a message for the kit before: not a refusal */
   pmo.last_blk = fp.blocks;
   r.op = (uint8_t)op; r.ramp = b[2]; r.pad = b[1];   /* pad: the kit (the drain drops it after a kit change) */
-  cnt = op == 6 ? 1 : b[3];
+  cnt = op == 6 || op == 10 ? 1 : op == 9 ? b[2] : b[3];
   for (k = 0; k < cnt; ++k) {
     if (op == 6) { r.t = 0; r.w = 0; r.v = (uint16_t)(b[3] | b[4] << 7); r.mix = 0; }
+    else if (op == 9) {
+      const uint8_t *q = b + 3 + 7 * k;
+      r.t = q[0]; r.w = q[1]; r.v = (uint16_t)(q[2] << 14 | q[3] << 7 | q[4]); r.ramp = q[5]; r.mix = q[6];
+    } else if (op == 10) { r.t = 0; r.w = 0; r.v = (uint16_t)(b[2] << 7 | b[3]); r.ramp = b[4]; r.mix = 0; }
     else {
       const uint8_t *q = b + 4 + (op == 4 ? 4 : 5) * k;
       r.t = q[0]; r.w = q[1]; r.v = (uint16_t)(q[2] << 7 | q[3]); r.mix = op == 5 ? q[4] : 0;
@@ -4025,7 +4573,8 @@ static const uint16_t pmo_rcp[128] = {
   R4(116), R4(120), R4(124)
 #undef R4
 };
-static inline int32_t pmo_step(int32_t d, uint32_t ramp) { return ((d >> 9) * (int32_t)pmo_rcp[ramp & 127u]) >> 6; }
+static inline __attribute__((always_inline)) int32_t pmo_step(int32_t d, uint32_t ramp) {   /* (inlined: P3 made -Os call it) */
+  return ((d >> 9) * (int32_t)pmo_rcp[ramp & 127u]) >> 6; }
 static void pmo_set(int32_t *cur, int32_t *st, int32_t tg, uint8_t *n, uint32_t ramp) {
   if (!ramp) { *cur = tg; *n = 0; return; }
   *st = pmo_step(tg - *cur, ramp);
@@ -4049,13 +4598,24 @@ static void pmo_free_all(void) {
   for (i = 0; i < PMO_SLOTS; ++i) pmo.ent[i].tp1 = 0;
   for (i = 0; i < 13; ++i) pmo.velw[i] = 0;
   pmo.used = 0; pmo.top = 0; pmo.nfree = 0; pmo.vmmask = 0;
+  pmo.mused = 0;                   /* (a slot's part is reset when the slot is taken again: pmo_get) */
   pmo.clears++;
+}
+/* P3: a morph part ends (removed, faded, or the entry cleared): its last value stays as a plain override, whose mix the
+   caller ramps to its target (as a 05 release) */
+static void pmo_mph_end(struct pmo_ent *e, int32_t tg, uint32_t ramp) {
+  struct pmo_mph *m = &pmo.mph[e - pmo.ent];
+  if (m->fl) { m->fl = 0; pmo.mused--; }
+  pmo_mix(e, tg, ramp);
 }
 static void pmo_fade(uint32_t mask, uint32_t ramp) {   /* the tracks in mask: offset and mix to 0 */
   uint32_t i;
   for (i = 0; i < pmo.top; ++i) {
     struct pmo_ent *e = &pmo.ent[i];
-    if (e->tp1 && (mask >> (e->tp1 - 1) & 1)) { pmo_off(e, 0, ramp); pmo_mix(e, 0, ramp); }
+    if (e->tp1 && (mask >> (e->tp1 - 1) & 1)) {
+      pmo_off(e, 0, ramp);
+      if (pmo.mused) pmo_mph_end(e, 0, ramp); else pmo_mix(e, 0, ramp);   /* (no part: the fade as before P3) */
+    }
   }
 }
 static struct pmo_ent *pmo_get(uint32_t t, uint32_t w) {
@@ -4069,6 +4629,7 @@ static struct pmo_ent *pmo_get(uint32_t t, uint32_t w) {
   e = &pmo.ent[i];
   e->tp1 = (uint8_t)(t + 1); e->w = (uint8_t)w; e->n_off = e->n_ovr = 0; e->g = 26u + 42u * t + w;
   e->off = e->off_tg = e->ovr = e->ovr_tg = e->mix = e->mix_tg = 0;
+  pmo.mph[i].fl = 0;
   pmo.idx[t][w] = (uint8_t)(i + 1);
   pmo.used++;
   if (i + 1 > pmo.top) pmo.top = i + 1;
@@ -4083,6 +4644,22 @@ static void pmo_take(const struct pmo_rec *r) {
     if (!v && !pmo.idx[t][w]) return;
     if (!(e = pmo_get(t, w))) { pmo.full++; pmo.full_op = 4; return; }
     pmo_off(e, v << 10, r->ramp);                           /* 8.8 x 4, << 8 */
+  } else if (r->op == 10) {        /* P3 FADER: f 0..16383 -> 0..1 << 23 (16383 exactly 1.0; one divide a record) */
+    uint32_t f = r->v & 0x3fffu, x = f << 9;
+    pmo.fad_tg = (int32_t)(x + (x + 8191u) / 16383u);
+    if (!r->ramp) { pmo.fad = pmo.fad_tg; pmo.fad_n = 0; }
+    else { pmo.fad_st = pmo_step(pmo.fad_tg - pmo.fad, r->ramp); pmo.fad_n = r->ramp; }
+  } else if (r->op == 9) {         /* P3 MORPH-SET: the part of (t, w); flags 0 removes it (its value ramps out) */
+    uint32_t fl = (uint32_t)r->v >> 14, s = pmo.idx[t][w];
+    struct pmo_mph *m;
+    if (!fl) {
+      if (s && pmo.mph[s - 1].fl) pmo_mph_end(&pmo.ent[s - 1], 0, PMO_MREL);
+      return;
+    }
+    if (!(e = pmo_get(t, w))) { pmo.full++; pmo.full_op = 9; return; }
+    m = &pmo.mph[e - pmo.ent];
+    if (!m->fl) { pmo.mused++; m->fl = PMO_MREL << 8; }   /* review M3: a new part's mix ramps in (pmo_pre; fl >> 8) */
+    m->a = r->v & 0x3fff; m->b = r->ramp << 7 | r->mix; m->fl = (m->fl & ~3u) | fl;
   } else {
     int32_t mix = r->mix >= 127 ? 1 << 23 : r->mix * 66052;
     if (!mix && !pmo.idx[t][w]) return;
@@ -4139,6 +4716,8 @@ static void pmo_time(uint32_t t0) {
 }
 void pmo_pre(void) {
   uint32_t t0 = TIMER, i, n, kit = ACTIVE_KIT & 127u, h, fmask, framp, faded;
+  int32_t f7;
+  uint32_t mu;
   pmo.t0 = 0;
   pmo.runs++;
   pmo.ran = fp.blocks;
@@ -4164,6 +4743,7 @@ void pmo_pre(void) {
     pmo_take(r);
   }
   if (fmask) { pmo_fade(fmask, framp); faded = 1; }
+  if (pmo.fad_n) { if (--pmo.fad_n) pmo.fad += pmo.fad_st; else pmo.fad = pmo.fad_tg; }   /* P3: the fader's ramp */
   if (!pmo.used) { pmo_time(t0); return; }
   if (!faded && pmo.last_blk != pmo.to_last && fp.blocks - pmo.last_blk > PMO_TIMEOUT) {   /* the host silent 250 ms
                                     (else of the other fades: a later block takes it) */
@@ -4176,6 +4756,24 @@ void pmo_pre(void) {
     for (i = 0; i < 48; ++i) { uint32_t g = PMO_SCN_G[i]; if (g < 572) pmo.smask[g >> 5] |= 1u << (g & 31); }
   }
   pmo.vmmask = 0;
+  f7 = pmo.fad >> 7;                /* P3: the fader 0..65536 for the parts below */
+  mu = pmo.mused;
+  for (i = 0; mu && i < pmo.top; ++i) {   /* P3: a morph part is its entry's override this block (8.8 << 8, mix 1 << 23;
+                                             its own pass: the loop below stays as before P3) */
+    struct pmo_ent *e = &pmo.ent[i];
+    struct pmo_mph *m = &pmo.mph[i];
+    uint32_t fl = m->fl & 3u, n = m->fl >> 8;
+    int32_t o, x;
+    if (!fl || !e->tp1) continue;
+    if (fl == 3) { o = 2 * m->a + (((m->b - m->a) * f7 + (1 << 14)) >> 15); x = 1 << 23; }   /* a + (b - a) f */
+    else if (fl == 1) { o = 2 * m->a; x = (1 << 23) - pmo.fad; }                              /* A: mix 1 - f */
+    else { o = 2 * m->b; x = pmo.fad; }                                                       /* B: mix f */
+    if (n) {                        /* review M3: a new part's mix 1 / n of the way a block (n blocks left; Q15) */
+      if (n > 1) x = e->mix + pmo_step(x - e->mix, n);
+      m->fl -= 1u << 8;
+    }
+    e->ovr = e->ovr_tg = o << 8; e->mix = e->mix_tg = x; e->n_ovr = 0;
+  }
   for (i = 0; i < pmo.top; ++i) {   /* the ramps (a finished entry at 0 is freed), the route amounts, words 1..8 */
     struct pmo_ent *e = &pmo.ent[i];
     if (!e->tp1) continue;
@@ -4183,7 +4781,7 @@ void pmo_pre(void) {
     if (e->n_ovr) {
       if (--e->n_ovr) { e->ovr += e->ovr_st; e->mix += e->mix_st; } else { e->ovr = e->ovr_tg; e->mix = e->mix_tg; }
     }
-    if (!e->off && !e->n_off && !e->mix && !e->n_ovr) {
+    if (!e->off && !e->n_off && !e->mix && !e->n_ovr && !(mu && pmo.mph[i].fl)) {
       pmo.idx[e->tp1 - 1][e->w] = 0;
       e->tp1 = 0;
       pmo.used--;
@@ -4248,7 +4846,7 @@ int32_t pmo_vel(uint32_t t, int32_t vel) {
 }
 /* the UI task, after the hello: 07's answer, the "full" notice (at most once a second) */
 static void pmo_tick(void) {
-  uint8_t m[15];
+  uint8_t m[16];
   uint32_t q = pmo.stat_req, x;
   if (!qp.hello) return;
   m[0] = 0xf0; m[1] = 0x7d; m[2] = 0x52; m[3] = 0x54; m[4] = 0x2d; m[5] = 0x01;
@@ -4261,8 +4859,9 @@ static void pmo_tick(void) {
     m[10] = (uint8_t)(x >> 7); m[11] = (uint8_t)(x & 0x7f);
     m[12] = (uint8_t)(pmo.timeouts > 127 ? 127 : pmo.timeouts);
     m[13] = (uint8_t)((pmo.scn_skips && fp.blocks - pmo.scn_blk < 1500u ? 1 : 0) | (fp.blocks - pmo.ran < 2u ? 2 : 0));
-    m[14] = 0xf7;
-    if (!send(m, 15)) return;
+    m[14] = (uint8_t)(pmo.mused > 127 ? 127 : pmo.mused);   /* P3: the morph parts in use */
+    m[15] = 0xf7;
+    if (!send(m, 16)) return;
     pmo.stat_t = q;
   }
   x = pmo.full;
@@ -4309,7 +4908,8 @@ __asm__(
 static void qp_cmd(const uint8_t *b, int32_t n) {
   uint32_t h = qp.ack_h, set, clr;
   int32_t i, s = 1;
-  if (n >= 1 && b[0] >= 4 && b[0] <= 7) {   /* pm: param modulation (04..07): a done op is not answered */
+  if (n >= 1 && ((b[0] >= 4 && b[0] <= 7) || b[0] == 9 || b[0] == 10)) {   /* pm: 04..07, P3's 09 / 0A: a done op is
+                                                                               not answered */
     s = pmo_cmd(b, n);
     if (!s) { qp.cmds++; return; }
     pmo.refused++;
@@ -4325,6 +4925,20 @@ static void qp_cmd(const uint8_t *b, int32_t n) {
   } else if (n == 3 && b[0] == 3 && b[1] >= 1 && b[1] <= 12 && b[2] <= 0x7f) {   /* L2: a 7-bit value only */
     QP_PERF(QP_PERFO(), (int32_t)b[1] - 1, (int32_t)b[2] << 8);
     s = 0;
+  } else if (n == 2 && b[0] == 0x0b && b[1] <= 1) {   /* ms (morph v2): the scene edit armed / off */
+    ms.on = b[1];
+    s = 0;
+  } else if (n >= 3 && b[0] == 8 && b[1] >= 1 && b[1] <= 16 && n == 2 + b[1]) {   /* ms: the readout, ASCII 20..5F */
+    for (i = 0; i < b[1] && b[2 + i] >= 0x20 && b[2 + i] <= 0x5f; ++i) {}
+    if (i == b[1]) {
+      ms.rd_gen++;
+      __asm__ volatile("" ::: "memory");
+      for (i = 0; i < b[1]; ++i) ms.rd_in[i] = b[2 + i];
+      ms.rd_in[b[1]] = 0;
+      __asm__ volatile("" ::: "memory");
+      ms.rd_gen++;
+      s = 0;
+    }
   }
   qp.cmds++;
   if (s) qp.refused++;

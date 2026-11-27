@@ -144,3 +144,10 @@ size  = 4
 site  = 0x40002c14
 at    = 2
 note  = "DDR, the USB MIDI sender's SysEx state (set / cleared per stock message): its movel %d0 store; 0026 send() and 0030 try_send wait on it (0.5.0 rc5b)"
+[[data]]
+name  = "qp_muted"
+value = 0x8000ed74
+size  = 4
+site  = 0x40120f54
+at    = 2
+note  = "the QUICK PERF macros muted (u32, nonzero; the active kit's + 2495 copied each block): stage G's tst.l; 0026 qp_isr's QP_MUTED (morph v2)"

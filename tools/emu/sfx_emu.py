@@ -62,12 +62,20 @@ def pokes(e, snap, edits):
         for i, b in enumerate(d):
             mem[a + i] = b
     out = []
-    for w in sorted({a & ~3 for a in mem}):
-        cur = bytearray(e.peek(snap, w, 4))
-        for i in range(4):
-            if w + i in mem:
-                cur[i] = mem[w + i]
-        out += ["--poke", f"{w:x}={cur.hex()}"]
+    words = sorted({a & ~3 for a in mem})
+    runs = []   # consecutive words, one dtpeek a run (a 4.7 KB pool was 1188 dtpeek processes, about 4 minutes)
+    for w in words:
+        if runs and runs[-1][1] == w:
+            runs[-1][1] = w + 4
+        else:
+            runs.append([w, w + 4])
+    for lo, hi in runs:
+        cur = bytearray(e.peek(snap, lo, hi - lo))
+        for i in range(hi - lo):
+            if lo + i in mem:
+                cur[i] = mem[lo + i]
+        for w in range(lo, hi, 4):
+            out += ["--poke", f"{w:x}={cur[w - lo:w - lo + 4].hex()}"]
     return out
 
 
@@ -338,6 +346,174 @@ def t_stock(e):
             none_18_21(s5), str(sl))
 
 
+# ---- fxfull: the stock rebuild's 71-row cap and what it does to 0025's rows (reviewer finding F1, trackb-b2-review.md)
+ROW = 66                     # a stored lock row: type, track, 64 step values (0xff = none)
+REBUILD = 0x40009216         # stock's full pattern rebuild (SAVE PROJECT); the same address on OS 1.73 and 1.74
+REBUILD_CAP = 0x400092a2     # in it: moveq #71,%d4; cmpl %d6,%d4; bltw skip-this-index (rows written + 1 + fine > 71)
+ROW_CAP = 71
+
+
+def stock_rows(n):
+    """n stock lock rows as mk_fixtures' fullpat makes them: types 1..6 x tracks 0..11 (type 1 + i // 12, track
+    i % 12), step 1 always set, no fine row (these types have none)."""
+    return [lockslot(1 + i // 12, i % 12, {s: (7 * i + 3 * s) & 0x7f for s in range(0, 64, 9 + i % 5)}) for i in range(n)]
+
+
+def fx_rows(k, hi=True, lo=True):
+    """0025's rows of FX word 38 + k on the FX track (12): the hi half's type 42 + k, the lo half's 46 + k, step 1."""
+    return ([lockslot(42 + k, 12, {0: 0x21 + k})] if hi else []) + ([lockslot(46 + k, 12, {0: 0x11 + k})] if lo else [])
+
+
+def pattern_rows(rows):
+    """Poke edit: A01's row pool, `rows` from row 0, the rest unused (0xff), all 72 slots."""
+    assert len(rows) <= 72, f"{len(rows)} rows: the stored pool has 72 slots (the live arrays have no row limit: live_fx())"
+    return {B0 + 0x2091: b"".join(rows) + b"\xff" * (ROW * (72 - len(rows)))}
+
+
+def live_fx(k, hi, lo):
+    """Poke edit: FX word 38 + k locked on FX step 1 straight in the live arrays (the working pattern's and A01's bank
+    copy: LIVE_LOCKS, + 85760), word hi << 8 | lo << 1, fine flag set - what the lock loader makes of rows 42 + k /
+    46 + k, and what 0029 makes in the UI. A stored pool holds 72 rows; the live arrays hold any number of locks."""
+    ed = {}
+    for base in (LIVE_LOCKS, LIVE_LOCKS + 85760):
+        ed[base + 5674 * 12 + 2 * (38 + k)] = (hi << 8 | lo << 1).to_bytes(2, "big")
+        ed[base + 5674 * 12 + 5632 + 38 + k] = b"\x01"
+    return ed
+
+
+FX_KIT = bytes.fromhex("1100220033004400")      # the project copy's FX words 38..41 (0x816)
+
+
+SLOT0, SLOT_SIZE = 0x10000000, 0x200000    # +Drive slot n at SLOT0 + SLOT_SIZE * (n - 1) on the card (pj_emu.py)
+HEADER, PAT_SIZE = 24, 13101               # a slot image: the header, then 129 patterns (the working one, then A01..)
+
+
+def file_rows(card, slot=3, pat=1):
+    """The lock rows [(type, track)] that SAVE PROJECT AS wrote for pattern `pat` (1 = A01) into `slot` of `card` (run
+    with --card-save). The rebuild writes the file, not the RAM pool: the pool keeps what was loaded."""
+    with open(card, "rb") as f:
+        f.seek(SLOT0 + SLOT_SIZE * (slot - 1))
+        img = f.read(SLOT_SIZE)
+    assert img[:4] == bytes.fromhex("beefbace"), "no project in the slot"
+    a = HEADER + PAT_SIZE * pat + 0x2091
+    return [(img[a + ROW * i], img[a + ROW * i + 1]) for i in range(72) if img[a + ROW * i] != 0xff]
+
+
+def fxfull_case(e, name, rows, live=None):
+    """A01 holds `rows` (stored form), cold boot, SAVE PROJECT AS 003 (stock's full rebuild of every pattern):
+    -> (rows in the RAM pool before the save, A01's rows in the saved file, the rebuild count)."""
+    ed = pattern_rows(rows)
+    ed[ST_KIT + 0x816] = FX_KIT
+    ed.update(trig_bits(e, e.snap, 12, [0, 8]))
+    s, c = poke_boot(e, name, ed)
+    before = slots_of(e, s)
+    ev, t = proj_keys(100, True)
+    e.run(f"{name}-save", t, ev, snap=s, start=4400, card=c, save=True, count=[REBUILD],
+          extra=["--card-save"] + (pokes(e, s, live) if live else []))
+    return before, file_rows(c), e.counts.get(REBUILD)
+
+
+def want_loaded(e, name, before, rows):
+    U.check(f"{name}: the cold boot kept the {len(rows)} poked rows in A01's stored pool",
+            len(before) == len(rows), f"{len(before)} rows")
+
+
+class StockEmu(U.Emu):
+    """The stock image without any mod (tag 'stock'): a fresh card and its post-boot snapshot as us_base.sh makes them
+    for a build (the startup dialogs answered; no settings changed), under rytm-emu's fw/ and sections/ as us_ffstock."""
+
+    def __init__(self, tag="stock"):
+        self.tag = tag
+        self.fw = os.path.join(U.EMU, "fw", "AR173_us_ffstock.syx")
+        self.card = os.path.join(U.EMU, "sections", "us_ffstock.img")
+        self.snap = os.path.join(U.EMU, "sections", "us_ffstock.snap")
+        if not os.path.exists(self.snap):
+            import shutil
+            import subprocess
+            shutil.copy(STOCK, self.fw)
+            subprocess.run(["cp", "-c", os.path.join(U.EMU, "sections", "led.img"), self.card], check=True)
+            subprocess.run(["./target/release/dtboot", self.fw, "--instr", "4800M", "--every", "4800M", "--card", self.card,
+                            "--press", "YES@2600M", "--press", "NO@3000M", "--press", "NO@3400M", "--press", "NO@3800M",
+                            "--save", self.snap], cwd=U.EMU, capture_output=True, check=True)
+        self.clock = 4800
+        self.out = os.path.join(os.environ.get("RYTM_OUT_ROOT") or os.path.join(U.ROOT, "build", "emu"), tag)
+        os.makedirs(self.out, exist_ok=True)
+        import atexit
+        import shutil
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        atexit.register(shutil.rmtree, self.tmp, True)
+        self.log, self.sent, self.counts = "", [], {}
+        self.strict = False
+        U.OBJ = self.out
+        self.params = {}
+
+
+def t_fxfull(e):
+    """(F1, trackb-b2-review) The stock rebuild keeps at most 71 lock rows per pattern and skips a lock index (coarse +
+    fine together) that would pass 71; 0025's FX rows (types 42..49) come last, so a full pattern loses them on SAVE
+    PROJECT. Stock only: 72 stock rows -> 71 (the cap), 71 -> 71, 70 -> 70. With 0025: 72 stock rows -> 71; 69 stock +
+    FX 38 + FX 39 -> FX 38 kept, FX 39 dropped; 70 stock + a hi-only row 42 -> kept, plus row 46 -> both dropped; a
+    control with room (60 stock + all four FX words) keeps all eight rows. Every case: poke A01's rows, cold boot,
+    SAVE PROJECT AS 003, A01's rows in the saved file."""
+    stock_only = isinstance(e, StockEmu)
+    print(f"    stock rebuild cap: {REBUILD_CAP:#x} in the rebuild at {REBUILD:#x} (moveq #71)")
+    cases = []   # (name, rows, checks)
+
+    def fxtypes(got):
+        return sorted(t for t, tr in got if t >= 42)
+
+    def stock_part(got):
+        return [x for x in got if x[0] < 42 and x[0] != 0x80]
+
+    # 72 / 71 / 70 stock rows
+    for n, kept in ((72, 71), (71, 71), (70, 70)) if stock_only else ((72, 71),):
+        rows = stock_rows(n)
+        before, got, rb = fxfull_case(e, f"fxfull-stock{n}", rows)
+        want_loaded(e, f"fxfull-stock{n}", before, rows)
+        lost = sorted(set(map((lambda r: (r[0], r[1])), rows)) - set(got))
+        U.check(f"fxfull-stock{n}: {n} stock rows -> {kept} stored (stock's cap is {ROW_CAP}), {rb} full rebuilds",
+                len(got) == kept and rb == 129, f"{len(got)} stored, dropped {lost}")
+        if n == 72:
+            U.check("fxfull-stock72: the row dropped is the last one the rebuild reaches (type 6, track 11), no other",
+                    lost == [(6, 11)], str(lost))
+    if stock_only:
+        return
+    # 69 stock rows + FX 38 and FX 39 pairs: 73 rows do not fit the stored pool (72 slots), so FX 39 is locked in the live
+    # arrays after the boot, as the UI makes it; the rebuild reads the live arrays
+    rows = stock_rows(69) + fx_rows(0)
+    before, got, rb = fxfull_case(e, "fxfull-pair", rows, live=live_fx(1, 0x22, 0x12))
+    want_loaded(e, "fxfull-pair", before, rows)
+    U.check("fxfull-pair: 69 stock rows + FX 38 (42, 46) + FX 39 (43, 47; live lock) -> 71 stored, FX 38's rows kept, "
+            "FX 39's dropped (the pair does not fit)", len(got) == 71 and fxtypes(got) == [42, 46] and len(stock_part(got)) == 69,
+            f"{len(got)} stored, FX rows {fxtypes(got)}")
+    # control of the live poke: the same FX 39 lock with room -> both rows written
+    rows = stock_rows(60) + fx_rows(0)
+    before, got, rb = fxfull_case(e, "fxfull-livefit", rows, live=live_fx(1, 0x22, 0x12))
+    want_loaded(e, "fxfull-livefit", before, rows)
+    U.check("fxfull-livefit: control - 60 stock rows + FX 38 rows + a live FX 39 lock -> 64 stored, FX 39's rows 43 and 47 "
+            "among them (the live poke is a lock the rebuild sees)", len(got) == 64 and fxtypes(got) == [42, 43, 46, 47],
+            f"{len(got)} stored, FX rows {fxtypes(got)}")
+    # 70 stock rows + a hi-only row 42
+    rows = stock_rows(70) + fx_rows(0, lo=False)
+    before, got, rb = fxfull_case(e, "fxfull-odd", rows)
+    want_loaded(e, "fxfull-odd", before, rows)
+    U.check("fxfull-odd: 70 stock rows + a hi-only row 42 (no fine flag: one row) -> kept, 71 stored",
+            len(got) == 71 and fxtypes(got) == [42], f"{len(got)} stored, FX rows {fxtypes(got)}")
+    # ... plus row 46
+    rows = stock_rows(70) + fx_rows(0)
+    before, got, rb = fxfull_case(e, "fxfull-odd2", rows)
+    want_loaded(e, "fxfull-odd2", before, rows)
+    U.check("fxfull-odd2: 70 stock rows + rows 42 and 46 (the lo half sets the fine flag: two rows, 72 > 71) -> both "
+            "dropped, 70 stored", len(got) == 70 and fxtypes(got) == [], f"{len(got)} stored, FX rows {fxtypes(got)}")
+    # control: room for everything
+    rows = stock_rows(60) + [r for k in range(4) for r in fx_rows(k)]
+    before, got, rb = fxfull_case(e, "fxfull-fit", rows)
+    want_loaded(e, "fxfull-fit", before, rows)
+    U.check("fxfull-fit: 60 stock rows + all four FX words (8 rows) -> all 68 stored, types 42..49 all there",
+            len(got) == 68 and fxtypes(got) == list(range(42, 50)), f"{len(got)} stored, FX rows {fxtypes(got)}")
+
+
 TRIG = 0x8000e5b0            # trig_sound_array: track t at + 84 t
 SFX_S = (0x1100, [0x2a54, 0x3b66, 0x1100, 0x2200, 0x3300, 0x4400])   # BD word 0; FX words 0, 29, 38..41
 
@@ -553,16 +729,21 @@ def t_nokit(e):
 TESTS = {"report": t_report, "migrate": t_migrate, "sendlock": t_sendlock, "fx38": t_fx38, "stock": t_stock,
          "reload": t_reload, "kitswitch": t_kitswitch, "nokit": t_nokit}
 
+# named only, never in "all" (a probe of stock's cap, not a regression test; it also runs on TAG stock = no mods)
+NAMED = {"fxfull": t_fxfull}
+
 
 def main():
     names = list(TESTS) if sys.argv[2:] == ["all"] else sys.argv[2:]
-    if len(sys.argv) < 3 or any(t not in TESTS for t in names):
-        sys.exit(__doc__ + "\nTESTS: all " + " ".join(TESTS))
-    e = U.Emu(sys.argv[1])
+    if len(sys.argv) < 3 or any(t not in TESTS and t not in NAMED for t in names):
+        sys.exit(__doc__ + "\nTESTS: all " + " ".join(TESTS) + "\nNamed only: " + " ".join(NAMED) +
+                 "   (TAG stock: the stock image, no mods; fxfull only)")
+    e = StockEmu() if sys.argv[1] == "stock" else U.Emu(sys.argv[1])
     e.strict = True
     for t in names:
-        print(f"-- {t}: {TESTS[t].__doc__.splitlines()[0]}")
-        TESTS[t](e)
+        fn = TESTS.get(t) or NAMED[t]
+        print(f"-- {t}: {fn.__doc__.splitlines()[0]}")
+        fn(e)
     print(f"\n{'ALL PASS' if not U.fails else 'FAILED: ' + ', '.join(U.fails)}")
     sys.exit(1 if U.fails else 0)
 

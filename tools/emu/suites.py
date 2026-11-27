@@ -56,7 +56,8 @@ ENV_DEFAULTS = {   # as build/suites/run.sh
 # one reruns this one too); est: a suite's wall seconds as one process, measured 2026-11-19 (OS 1.74, --full -j 4,
 # before the shards), for the longest-first order and the plan's estimate when build/suites/est.json has no entry.
 SUITES = {
-    "rled": dict(mods={"0026"}, est=6099),   # one process, 2026-10-29 (its shards: RLED_SHARDS)
+    # 0029: its ev_key subscriber (order 5, ahead of 0026's) takes a page key's press on a user effect's SEND FX page
+    "rled": dict(mods={"0026", "0029"}, est=6099),   # one process, 2026-10-29 (its shards: RLED_SHARDS)
     "us":   dict(mods={"0021", "0029", "0023", "0014", "0004"}, est=1890),
     "sfu":  dict(mods={"0029", "0021", "0025"}, imports={"us", "sfx"}, est=1369),
     "pj":   dict(mods={"0026"}, est=922),
@@ -65,7 +66,7 @@ SUITES = {
     "sq":   dict(mods={"0026", "0021"}, est=888),
     "cu":   dict(mods={"0021", "0029", "0026"}, imports={"pc"}, est=387),
     "sp":   dict(mods={"0021", "0029"}, imports={"us", "sfx"}, est=233),
-    "rui":  dict(mods={"0026"}, est=276),
+    "rui":  dict(mods={"0026", "0029"}, est=276),   # (0029: the key subscriber, as for rled)
     "sv":   dict(mods={"0026", "0029", "0021"}, imports={"rui"}, est=239),
     "pc":   dict(mods={"0026", "0021", "0022"}, est=109),
     "mrep": dict(mods={"0026", "0021"}, est=93),
@@ -77,6 +78,8 @@ SUITES = {
     "frz":  dict(mods={"0029"}, est=22),
     "sa44": dict(mods={"0021", "0026", "0014"}, imports={"us", "sfx"}, est=87),   # 0.5.0: SAMPLER on a 0.4.4 Rytm (needs build/emu/f44b)
     "pm":   dict(mods={"0026"}, imports={"rui"}, est=217),   # 0.5.0: the Rytm's own params modulated (ops 04..07)
+    "ms":   dict(mods={"0026"}, imports={"sq", "rled"}, est=1100),   # the scene edit on stock pages (morph v2); its declared stock-fact probes print STOCK, not FAIL
+    "ram":  dict(mods={"0026", "0029"}, imports={"rui", "sfu"}, est=120),   # the UI-task buffers in the bundle's DDR region (dirty DDR)
 }
 # rled's 24 tests by their dtboot runs (rel0-3-0's job dir): stockupkeys 254, stockup 116, stocktrigup 44, upstock 38,
 # menustock 23 (long runs), upamp 20, the rest 6..18 each. Every rled test is independent (Emu keeps no run state;
@@ -109,11 +112,17 @@ SPLITS = {
           "assigngen"], 491),
         (["variants", "unused", "junopat", "menu", "load", "window", "taglock", "tagname", "untagged", "install",
           "tagkit1", "freshtrig"], 486),
+        (["smplpage_u1", "smplayer", "smpvoices", "smpnoise", "smpswitch", "smpseq", "smplong", "smpcpu", "smpref",
+          "smpshared", "smpall"], 552),   # the sample-layer tests (0.5.2): the table missed them, so us ran as one process (2,661 s)
     ],
     "sfu": [
-        (["labels", "locks", "save", "stock"], 530),   # stock reads save's (and locks') result: same shard
+        (["labels", "locks", "pretick", "save", "stock"], 560),   # stock reads save's (and locks') result: same shard
         (["enumlock", "enumkit", "ext", "bw", "bw2"], 441),
         (["fmname", "enum", "typelist", "cost", "bwwrap", "pages", "names", "kits"], 407),
+        (["fullnames", "xpages", "xmisc", "xlock"], 430),   # the full names and the extra SEND FX pages (estimates, 2026-11-24)
+        (["xkeys", "xcopy"], 340),
+        (["xreset"], 370),
+        (["xfix", "xcc"], 450),
     ],
     "sfx": [
         (["fx38", "stock"], 619),   # stock reads fx38's result: same shard (fx38 alone is ~470 s)
@@ -130,13 +139,23 @@ SPLITS = {
           "otherprobe"], 442),
         (["recleds", "jump", "ticks", "switch", "mode", "solo", "hello", "pin", "pinvel", "edits", "seqedit", "fetch",
           "fetchrace", "noreload", "yestime", "trkfx", "lockkeys", "yes", "trigkey", "trkpad", "otherplay",
-          "otherfm"], 438),
+          "otherfm", "bankcopy"], 455),   # (bankcopy's seconds added)
     ],
     "bk": [
         (["range", "lock", "browse", "salist", "sa2a", "sabusy", "upt", "nrpn", "popups", "dspknob", "dsplistlock",
-          "dspnrpn", "upsrc", "latehost", "polymenu", "uplrlist"], 456),
+          "dspnrpn", "upsrc", "latehost", "polymenu", "uplrlist", "wtwarp", "wtbank"], 540),
         (["preset", "knob", "text", "list", "browsefunc", "browseknob", "saopen", "listlock", "scale", "banka", "tbldef",
-          "dsplist", "dspbrowse", "dsptext", "dsplock", "dspold"], 456),
+          "dsplist", "dspbrowse", "dsptext", "dsplock", "dspold", "wtftyp"], 520),
+        (["tblblist", "tblbbrowse", "tblblock", "tblbold", "tblbguard", "tblbcover", "tblbgate", "tblbnodraw"], 420),   # (+ tblbgate, tblbnodraw: the script has had them; the table missed them, so bk ran as one process)
+    ],
+    "ms": [   # pagekeys is one test over 13 contexts (PAGECTX, as rled's UPKEYS): a shard each group; the rest in one
+        (["pagekeys"], 300, {"PAGECTX": "main,grid,gridtrig"}),
+        (["pagekeys"], 300, {"PAGECTX": "src,fltr,trig"}),
+        (["pagekeys"], 300, {"PAGECTX": "chro,scne,perf"}),
+        (["pagekeys"], 450, {"PAGECTX": "mute,bank,menu,fx"}),
+        (["mute", "qpmute", "padword", "padtrig", "padbase", "pagelen", "pagecatch", "leds", "hdr", "edcap", "edfx", "edgrid",
+          "edpick", "edpage", "edleds", "edread", "edhello", "edhold", "edrehello", "edclear", "m2", "pagelat", "pagefast",
+          "pagechord", "pageplay", "pageunarm", "edrate"], 900),
     ],
     "pj": [
         (["hello", "saveto_empty", "copypaste", "clear", "locked", "init", "renameactive", "createnew", "setters"], 450),
@@ -157,12 +176,13 @@ ALL_PATHS = ("mods/0000-shared/", "mods/0027-elekloader/", "mods/0028-elek-hello
 NONE_PATHS = ("docs/", "re/subsystems/", "re/ghidra/", "tools/comp/", "tools/test_", "tools/cavescan.py",
               "tools/verify.py", "tools/release_check.py", "tools/voice_dac_timing.py", "tools/us_records.py",
               "tools/emu/suites.py", "tools/emu/README.md", "tools/emu/el_area.py", "LICENSE", "NOTICE", ".gitignore",
-              "requirements.txt", "README.md", "CLAUDE.md")
+              "requirements.txt", "README.md", "CLAUDE.md", ".github/")
 # measurement scripts (F4 / machine-list lag), not suites; no suite imports them
 NONE_PATHS += ("tools/emu/lag_emu.py", "tools/emu/lag_base.sh", "tools/emu/mll_emu.py", "tools/emu/soak_emu.py",
                "tools/emu/keytime_emu.py", "tools/emu/hostcost_emu.py", "tools/emu/modcost_emu.py",
                "tools/emu/boot_emu.py")
-PATH_SUITES = {"tools/build_rui.sh": set(SUITES), "tools/looper_base.sh": set(SUITES)}
+PATH_SUITES = {"tools/build_rui.sh": set(SUITES), "tools/looper_base.sh": set(SUITES),
+               "tools/emu/sfu_pretick.s": {"sfu"}}   # sfu_emu pretick's stub
 # the mods every image carries (enabled by default, stock sites) that no suite is about: the quick suites that boot
 # the image and drive its UI, as a smoke test (the full set runs before a flash)
 SMOKE = ["frz", "td", "fxin", "rui", "sv"]
@@ -270,11 +290,13 @@ def shards(suite, emu, shard, notes):
         else:
             return [(f"rled.{i + 1}", t, e, est) for i, (t, e, est) in enumerate(RLED_SHARDS)]
     elif suite in SPLITS and shard:
-        tests = [t for ts, _ in SPLITS[suite] for t in ts]
-        if sorted(tests) != sorted(script_names(suite, "TESTS") or ()):
+        ents = [(e[0], e[1], e[2] if len(e) > 2 else {}) for e in SPLITS[suite]]   # (tests, est s[, env])
+        plain = [t for ts, _, env in ents if not env for t in ts]
+        tests = sorted(set(plain) | {t for ts, _, env in ents if env for t in ts})   # an env shard repeats its test (ms pagekeys)
+        if len(plain) != len(set(plain)) or tests != sorted(script_names(suite, "TESTS") or ()):
             notes.append(f"{suite} not sharded: SPLITS[{suite!r}] in suites.py misses {suite}_emu.py's TESTS")
         else:
-            return [(f"{suite}.{i + 1}", ts, {}, est) for i, (ts, est) in enumerate(SPLITS[suite])]
+            return [(f"{suite}.{i + 1}", ts, env, est) for i, (ts, est, env) in enumerate(ents)]
     est = SUITES.get(suite, {}).get("est", DEFAULT_EST) if suite != "rled" else 1700   # rled unsharded (estimate)
     return [(suite, None, {}, est)]
 

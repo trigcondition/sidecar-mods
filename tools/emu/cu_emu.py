@@ -11,6 +11,8 @@ short name), descriptors 0x419a4888 + 84 r (+32 the value text). The kit's P1..P
 """
 import json
 import os
+import re
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -63,7 +65,8 @@ def ms(e):
 
 
 WT_SRC = ["TBL", "POS", "WARP", "AMT", "UNI", "SUB", "CUT", "RES"]
-WT_P2 = ["ATK", "DEC", "SUS", "ENV", "CHD", "INV", "SPR", "VOI"]
+WT_P2 = ["ATK", "DEC", "SUS", "ENV", "TBLB", "POSB", "MIX", "FTYP"]   # 0.5.2: P13..P16 were CHD INV SPR VOI
+WT_P2_LONG = ["Attack", "Decay", "Sustain", "Env>Pos", "Table B", "Position B", "Mix A-B", "Filter Type"]
 WT_DEFAULTS = [1, 0, 0, 0, 0, 0, 64, 0]   # 1043: TBL 1 (A001; was 0)
 GR_SRC = ["SRC", "POS", "SPRY", "SIZE", "DENS", "PRND", "REV", "WIN"]
 GR_P2 = ["ATK", "REL", "HOLD", "ANIM", "CHD", "INV", "SPR", "VOI"]
@@ -120,15 +123,54 @@ def t_nm(e, m, name, short, flag, src_labels, p2_labels, defaults, downs, p2_def
     return s0
 
 
+def find(e, snap, data):
+    """The addresses where the bytes occur in the snapshot's memory (dtpeek find)."""
+    r = subprocess.run([os.path.join(PC.EMU, "target/release/dtpeek"), os.path.abspath(snap), "find", data.hex()],
+                       cwd=PC.EMU, env=dict(os.environ, DTEMU_FW=e.fw), capture_output=True, text=True)
+    return [int(x, 16) for x in r.stdout.split() if re.fullmatch(r"[0-9a-f]{8}", x)]
+
+
+def tab(words, w):
+    """A char[N][w] text table as the build lays it out."""
+    return b"".join(x.encode().ljust(w, b"\0") for x in words)
+
+
 def t_wt(e):
-    """1034 WAVETABLE (46, flag 0x28): labels on both pages, defaults, ids, the 0x04; WARP (C on SRC) stepped in 4 zones:
-    turned up = a zone's low end (32 / 64 / 96), its text a PNG."""
+    """1034 WAVETABLE (46, flag 0x28): labels on both pages, defaults, ids, the 0x04; WARP (C on SRC) stepped in 9 zones
+    since 0.5.2 (was 4): turned up = a zone's low end (15 / 29 / 43 ...), its text a PNG. 0.5.2: P13..P16 are TBLB POSB
+    MIX FTYP (long Table B, Position B, Mix A-B, Filter Type) in place of the chord's CHD INV SPR VOI."""
     s0 = t_nm(e, 46, "wt", "WTBL", 0x28, WT_SRC, WT_P2, WT_DEFAULTS, 26)
+    longs = [label(e, s0[0], x, 0x28) for x in P2]
+    check("wt: SMPL records' long names (Table B, Position B, Mix A-B, Filter Type for P13..P16)", longs == WT_P2_LONG, longs)
     ev = [(300, "press", "SRC"), (900, "turn", "2:5", 8, 40)]
     r = e.run("cu_wtwarp", 2500, ev, snap=s0, usb=False)
     k = kit16(e, r["snap"][0])
-    check("wt: WARP turned up: a zone's low end (32, 64 or 96)", k[2] in (32, 64, 96), k[:8])
-    print(f"  look at build/emu/{e.tag}/pc_cu_wtwarp.png: WARP reads SYNC / PWM / FM")
+    lows = [-(-128 * z // 9) for z in range(1, 9)]
+    check("wt: WARP turned up: a zone's low end (15, 29 ... 114: nine zones)", k[2] in lows, k[:8])
+    mx = u32(e, r["snap"][0], rec(SRC[2]) + 12) >> 8
+    check("wt: WARP's stepped list has 9 entries (range 0..8)", mx == 8, mx)
+    print(f"  look at build/emu/{e.tag}/pc_cu_wtwarp.png: WARP reads one of SYNC PWM FM FRMT QNT BEND SQZE RM")
+    r = e.run("cu_wtftyp", 2500, [(300, "press", "SMPL"), (900, "turn", "7:5", 8, 40)], snap=s0, usb=False)
+    k = kit16(e, r["snap"][0])
+    mx = u32(e, r["snap"][0], rec(P2[7]) + 12) >> 8
+    check("wt: FTYP (H on SMPL) is a stepped list of 8 (range 0..7)", mx == 7, mx)
+    check("wt: FTYP turned up: a zone's low end (16, 32 ... 112)", k[15] in range(16, 128, 16), k[8:])
+    mx = u32(e, r["snap"][0], rec(P2[4]) + 12) >> 8
+    check("wt: TBLB (E on SMPL) is the banked list (range 0x7fe0, as TBL)", u32(e, r["snap"][0], rec(P2[4]) + 12) == 0x7fe0,
+          hex(u32(e, r["snap"][0], rec(P2[4]) + 12)))
+    check("wt: TBLB has the fine flag (the bank survives a saved lock)", u32(e, r["snap"][0], rec(P2[4]) + 0x14) == 1,
+          u32(e, r["snap"][0], rec(P2[4]) + 0x14))
+
+
+def t_wttext(e):
+    """0.5.2: the value texts. WARP's nine zones (OFF SYNC PWM FM FRMT QNT BEND SQZE RM) and FTYP's eight (DJ LP12 LP24
+    BP12 BP24 HP12 HP24 LDR) are tables in the build (checked in the snapshot's memory); the zone arithmetic is bk_emu's
+    wtwarp / wtftyp (the screens)."""
+    s = nm(e, 46, 26)[0]
+    check("wttext: WARP's nine texts are in the build", bool(find(e, s, tab(["OFF", "SYNC", "PWM", "FM", "FRMT", "QNT", "BEND",
+          "SQZE", "RM"], 5))))
+    check("wttext: FTYP's eight texts are in the build", bool(find(e, s, tab(["DJ", "LP12", "LP24", "BP12", "BP24", "HP12",
+          "HP24", "LDR"], 5))))
 
 
 def t_gr(e):
@@ -669,7 +711,7 @@ def t_smplprobe(e):
     check("smplprobe: the index survives a page change (SRC, SMPL: still 1)", st1["idx"] == 1, st1)
 
 
-TESTS = dict(smplpage_flash=t_smplpage_flash, smplpage_fm=t_smplpage_fm, smplpage_sampler=t_smplpage_sampler, smplpage_ms=t_smplpage_ms, smplpage_wt=t_smplpage_wt, smplpage_gr=t_smplpage_gr, smplpage_mem=t_smplpage_mem, smplpage_cover=t_smplpage_cover, smplpage_first=t_smplpage_first, smplprobe=t_smplprobe, sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, gr=t_gr, swap=t_swap, li=t_li,
+TESTS = dict(smplpage_flash=t_smplpage_flash, smplpage_fm=t_smplpage_fm, smplpage_sampler=t_smplpage_sampler, smplpage_ms=t_smplpage_ms, smplpage_wt=t_smplpage_wt, smplpage_gr=t_smplpage_gr, smplpage_mem=t_smplpage_mem, smplpage_cover=t_smplpage_cover, smplpage_first=t_smplpage_first, smplprobe=t_smplprobe, sa=t_sa, saknobs=t_saknobs, sakeep=t_sakeep, sadsps=t_sadsps, sarestore=t_sarestore, sasound=t_sasound, fm=t_fm, fmtext=t_fmtext, ms=t_ms, msknobs=t_msknobs, back=t_back, wt=t_wt, wttext=t_wttext, gr=t_gr, swap=t_swap, li=t_li,
              cp=t_cp)
 
 

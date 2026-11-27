@@ -1737,6 +1737,120 @@ access, USB and Overbridge connections, SysEx transfers, error paths, factory an
 test modes, and the OS upgrade.
 """
 
+# ------------------------------------------------------- the Sidecar's DDR block
+#
+# A `kind = "ddr"` pool is not in the image: it is RAM the bundle reserves with `resources.regions` (tools/build.py
+# bundle_regions), and its claims are [[buffer]] tables (owner, name, addr, size, optional gate): a buffer of a mod's UI
+# or MIDI task, zeroed by that mod in its first tick. The build gives the mod the assembler symbols RAM_<NAME> (the
+# address) and RAM_<NAME>_SIZE; name is lower case and unique, address and size are multiples of 16 and the size is
+# above 0 (tools/layout.py). Its addresses are the same on every OS, so tools/ostarget.py does not translate them: each
+# re/os/<os>.toml has its own [pool.sidecar_buffers] (the same bounds, and that OS's status and evidence), and a build
+# refuses an OS without it or with other bounds.
+
+[[pool]]
+name   = "sidecar_buffers"
+kind   = "ddr"
+start  = 0x47c00000
+end    = 0x47f00000          # exclusive; 3 MB
+status = "probably-verified"
+note   = """
+The 3 MB block of elekloader's `big` area (0x47938000-0x47FFF000) just above elekloader's own 128 KB area
+(0x47BE0000-0x47C00000, where the core and our mods' code and .bss are linked), below the last 1 MB before the stack.
+The bundle declares it as the region "sidecar buffers", so the builder refuses any other mod that claims a byte of it.
+
+Why here and not 0x47938000-0x47BE0000: core-ar2 0.11 and later keep their step-tag tables at 0x47938000-0x47B10000
+(fixed), the OS clears a block at 0x479372E0 at boot, and sample memory ends at about 0x47937290. The stack is the last
+4 KB below 0x48000000; the block ends 1 MB under it, at 0x47F00000.
+
+Only buffers of the UI task or the MIDI task belong here, never one the audio interrupt reads: DDR holds noise at
+power-on and nothing zeroes this block, so each mod zeroes its buffers itself in its first UI tick, before it
+publishes them (0026 in its mailbox, 0029 by its tick's init) and its init flag, which stays in .bss, says so.
+
+Evidence, per OS in re/os/<os>.toml [pool.sidecar_buffers]. Upstream (elekloader docs/DEVICES.md, Rytm profile `big`):
+a hardware canary over the whole area on stock 1.74, 2026-11-05, boot to project setup, playback, sample memory filled to
+its limit, heavy MIDI, kit dumps, Overbridge streaming and a power cycle: stock never wrote 0x47938000-0x47BE0000 or
+0x47C00000-0x47FFF000. Ours: tools/emu/el_area.py puts a canary (1 word in 128) and a read/write watch over this block
+(bounds from the manifest), in a normal session and with sample memory 93% full and the USB host attached: no CPU (and
+probably eDMA) access, canary intact.
+"""
+
+# The claims, in the pool's order. 0026's four frame buffers and three text buffers (the MIDI task writes the staging
+# ones and commits them under the seqlock sh_seq, the UI task composes from the committed ones), its source names
+# (ux: the MIDI task writes them, the UI task's key handler, the value text and wr_tick read them) and 0029's sfu_x and sfu_p (the
+# parameter-set wrappers, the page key's handler and the UI tick; the MIDI task writes the label lists and the names). None is read by the audio interrupt:
+# pmo, the interrupt's modulation state, stays in elekloader's .bss, with every init flag. Each mod zeroes its buffers in
+# its first UI tick (mods/0026-remote-ui/design.md and 0029-sendfx-ui/design.md, "big-ram"). Based on twwwy's #34.
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_shadow"
+addr  = 0x47c00000
+size  = 0x400
+note  = "shadow: the committed frame (1024 B, 128 x 64 bits)"
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_staging"
+addr  = 0x47c00400
+size  = 0x400
+note  = "staging: the frame being received (MIDI task)"
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_comp"
+addr  = 0x47c00800
+size  = 0x400
+note  = "comp: the shadow with the text drawn over it (UI task); the bitmap st.bm is built over it"
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_comp_in"
+addr  = 0x47c00c00
+size  = 0x400
+note  = "comp_in: the shadow's copy, taken when the seqlock held (UI task)"
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_txt_st"
+addr  = 0x47c01000
+size  = 0xb00
+note  = "txt_st: the text slots being received, 64 x 44 B (MIDI task)"
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_txt_sh"
+addr  = 0x47c01b00
+size  = 0xb00
+note  = "txt_sh: the committed text slots, with the shadow (same seqlock)"
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_txt_tl"
+addr  = 0x47c02600
+size  = 0xb00
+note  = "txt_tl: compose's copy of the committed text slots (UI task; it was a static in compose)"
+
+[[buffer]]
+owner = "0026-remote-ui"
+name  = "rui_ux"
+addr  = 0x47c03100
+size  = 0xf80
+note  = "ux: the SRC view's source names and the write queue (MIDI task writes, UI task reads)"
+
+[[buffer]]
+owner = "0029-sendfx-ui"
+name  = "sfu_x"
+addr  = 0x47c04080
+size  = 0x1f10
+note  = "sfu_x: the label lists, caches, full names and counters of the send FX pages (7940 B used)"
+
+[[buffer]]
+owner = "0029-sendfx-ui"
+name  = "sfu_p"
+addr  = 0x47c05f90
+size  = 0x1280
+note  = "sfu_p: the names and state of the extra send FX pages (4736 B: P5..P16's short and full names for 16 TYPEs, the page, the values; its ovl word at +4704 = 0x47c071f0 is written by 0026-remote-ui (its SFU_OVL): its page or splash is the screen; tools/build.py check_buffer_ties fails a build in which the two disagree)"
+
 # ------------------------------------------------------------ 0012-slice-loop
 
 [[cave]]
@@ -7091,6 +7205,35 @@ expect_sha256 = "d873d650b04387286cced72cc37d746a941154014abc97e9e2584b1d73558b0
 entry     = "pmo_lfo_det"
 rejoin    = 0x40120fb4
 
+# ms (morph v2, P2 Task 9): param_apply_delta at +0x1c, `moveal %a2@,%a0; pea 0xffffffff` (6 B, nothing pc-relative),
+# where 0013's hpf_delta rejoins (DELTA_RESUME): the track resolved in d0, the lookup's argument still pushed
+# [code; P0 padword]. ms_pad_det: ms_pad(view, id, track, delta, func) - with PAGE + T15 / T16 held a lockable turn is
+# reported to the host (2D 01 12) and param_apply_delta returns through its own epilogue (no kit write, no lock);
+# otherwise d0 back, both displaced instructions, 0x400378c8. Chains after 0002 / 0003 / 0004 / 0013's gates.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x400378c2
+size      = 6
+expect_len = 6
+expect_sha256 = "9eddd7afd21e58a5d7861e1750db11875692e71363091d68100ac64517b6af69"
+entry     = "ms_pad_det"
+rejoin    = 0x400378c8
+
+# ms (knob clear): the stock page key handler 0x4003a544 (every page class has it at vtable +12), where a DATA ENTRY
+# knob's press (PUSH_A..H, 0x70..0x77) has its param id (d4: the page's vtable +156 with the knob's index) and the
+# record's word (d0), `movel %d0,%fp@(-20); tstl %d4` (6 B, nothing pc-relative; the beqw behind it takes the flags)
+# [code; measured: ms_emu.py edclr]. ms_knob_det: ms_knob(view a2, event d2, id d4): with PAGE + T15 / T16 held the
+# press is eaten and a lockable parameter reported (2D 01 14: that parameter's scene lock removed), jmp to the handler's
+# end with d3 = 1; otherwise the two displaced instructions, back at 0x4003a602.
+[[detour]]
+owner     = "0026-remote-ui"
+addr      = 0x4003a5fc
+size      = 6
+expect_len = 6
+expect_sha256 = "5cb2061dc8e4b71f74f2b6b6ddf6db701a4167e0047a6e5fced6fac9948bc766"
+entry     = "ms_knob_det"
+rejoin    = 0x4003a602
+
 # pm (0.5.0): the trig velocity. trig_fire where the velocity is final, `movel %sp@(60),%d0; addal %a2,%a3` (6 B,
 # nothing pc-relative); the track at 92(sp), the step's own velocity << 8 at 72(sp) (-1: none) [code]. pmo_vel_det:
 # d0 = pmo_vel(track, velocity), 72(sp) rewritten when not -1, the addal, back at 0x4009afa6. The site unreleased
@@ -7204,6 +7347,61 @@ expect_sha256 = "97460265e256e92dd5434e4764e9521f99e9f9e2e268a7a3b8cf53ec96b268d
 entry     = "sfu_title"
 rejoin    = 0x4003ab9c
 elek_size = 8
+
+# 0.5.2 fxfull-refuse round 2 (owner 2026-11-25): any new lock the save would drop (past stock's 71 rows) is refused.
+# track_lock_set (0x400c0520; its only callee lock_pool_set 0x400ac670 has no other caller) is the one lock-set of the
+# sound / FX parameter sets (0x400a9938 / 0x400a9a90), live record (0x400af7ca), trig paste (0x400c3b94) and FREEZE TRACK
+# (0x400c4036) [disasm 1.73 / 1.74]: its entry `lea %sp@(-12),%sp; moveml %d2-%d3/%a2,%sp@` (8 B, nothing pc-relative,
+# the bytes of page_get_value's entry above); sfu_tls_det re-emits them and rejoins 0x400c0528.
+[[detour]]
+owner     = "0029-sendfx-ui"
+addr      = 0x400c0520
+size      = 6
+expect_len = 8
+expect_sha256 = "d43e64e0210fdd98e9dd8476d7cea57c93492ec611d50eddcbf6fd90ea80cef7"
+entry     = "sfu_tls_det"
+rejoin    = 0x400c0528
+elek_size = 8
+
+# PASTE TRIGS (0x400c396a; its entry is 0026's ed_rpaste_det) past its loop that turns the clipboard's steps into the
+# target's: `movel %fp@(-72),%a0; clrl %d2` (6 B, nothing pc-relative; only the loop's own bras returns to 0x400c39c8,
+# nothing branches into 0x400c39e6..0x400c39e9). Refused: d2 = 0 and the function's exit 0x400c3bf6 (the clipboard's
+# reference released, and the first record's copy's lock vector at -12(%fp) freed first: only the normal end frees it),
+# nothing pasted.
+[[detour]]
+owner     = "0029-sendfx-ui"
+addr      = 0x400c39e4
+size      = 6
+expect_len = 6
+expect_sha256 = "6d455e3d0b2a775df2e522478dae7a1f1693641b34b2ca4de91f4e98360ac3a9"
+entry     = "sfu_tg_det"
+rejoin    = 0x400c39ea
+
+# PASTE PAGE (0x400c3342; its entry is 0026's ed_gpaste_det) after the clipboard's data is fetched and tested (the beqw
+# at 0x400c3448), before its first write (0x400c349e): `movel %a0@(6596),%d3; moveal %d5,%a0` (6 B, nothing
+# pc-relative, nothing branches into 0x400c344e..0x400c3451). Refused: its failure exit 0x400c35dc (d2 = 0, the
+# clipboard and the undo copy released), nothing pasted, no undo record.
+[[detour]]
+owner     = "0029-sendfx-ui"
+addr      = 0x400c344c
+size      = 6
+expect_len = 6
+expect_sha256 = "7e3b3396caba0dd25d7605d0c5da86cb4e0e5eefa9cef815e23d7102735f59c6"
+entry     = "sfu_pg_det"
+rejoin    = 0x400c3452
+
+# Track paste (0x400c4754; its entry is 0026's ed_tpaste_det) after the clipboard's data is fetched and tested (the
+# beqw at 0x400c4836), before it copies: `moveal %a2@,%a0; moveq #1,%d2; movel %a2,%sp@-` (6 B, nothing pc-relative,
+# nothing branches into 0x400c483c..0x400c483f). Refused: its failure exit 0x400c4922 (d2 = 0, the clipboard and the undo
+# copy released), nothing pasted, no undo record.
+[[detour]]
+owner     = "0029-sendfx-ui"
+addr      = 0x400c483a
+size      = 6
+expect_len = 6
+expect_sha256 = "e0b8f4a63b94ccda70bb9e7586dad8aeb88bf2d2535f8ebad42aacc14b7cac4b"
+entry     = "sfu_tk_det"
+rejoin    = 0x400c4840
 
 # SoundParameterSet (0x401dcb74) and FxParameterSet (0x401dcbf0) vtables: read +0x28, write +0x70,
 # lock get +0x3c, lock set +0x40 wrapped (records 14..27 -> their half of the word; others unchanged).

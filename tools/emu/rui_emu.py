@@ -52,6 +52,17 @@ def check(name, ok, detail=""):
         FAILS.append(name)
 
 
+class EmuTimeout(Exception):
+    """a dtboot run exceeded its wall-clock limit (Emu.run has already recorded the FAIL)"""
+
+
+def run_limit(ms):
+    """wall-clock seconds one dtboot run may take: RUI_EMU_TIMEOUT when set, else 120 s + 20 ms per emulated ms
+    (a 11.5 s cold boot takes 23 s: this is about 15 times that, for a loaded Mac)"""
+    env = os.environ.get("RUI_EMU_TIMEOUT")
+    return float(env) if env else 120 + ms / 50
+
+
 class Emu:
     def __init__(self, tag):
         self.tag = tag
@@ -100,21 +111,34 @@ class Emu:
             cmd += ["--save", snap]
         en = dict(os.environ, DTEMU_STRICT="1", DTBOOT_OLED="1", **(env or {}))
         log = os.path.join(self.out, f"{name}.jsonl")
-        sp = None
+        sp = so = None
         if script is not None:
             if os.path.exists(log):
                 os.remove(log)
+            so = open(os.path.join(self.out, f"{name}.script.txt"), "w")
             sp = subprocess.Popen([sys.executable, os.path.join(TEENSY, "sim/remote_ui.py"), "--link",
                                    f"127.0.0.1:{port}", "--secs", "900", "--log", log,
                                    "--frame", os.path.join(self.out, f"{name}.frame"), *script],
-                                  stdout=open(os.path.join(self.out, f"{name}.script.txt"), "w"),
-                                  stderr=subprocess.STDOUT)
-        r = subprocess.run(cmd, cwd=EMU, env=en, capture_output=True, text=True)
+                                  stdout=so, stderr=subprocess.STDOUT)
+        limit = run_limit(ms)
+        try:
+            r = subprocess.run(cmd, cwd=EMU, env=en, capture_output=True, text=True, timeout=limit)
+        except subprocess.TimeoutExpired as ex:   # a hung firmware (a loop that never ends) is a FAIL, not a hang
+            if sp:
+                sp.kill()
+                sp.wait()   # (no zombie, no open script file after a timeout)
+                so.close()
+            out = "".join(x.decode(errors="replace") if isinstance(x, bytes) else x or "" for x in (ex.stdout, ex.stderr))
+            open(os.path.join(self.out, f"{name}.dt.txt"), "w").write(out)
+            check(f"{name}: dtboot finished within {limit:g} s of wall-clock (RUI_EMU_TIMEOUT)", False, "timed out, killed")
+            raise EmuTimeout(f"{name}: dtboot timed out after {limit:g} s")
         if sp:
             try:
                 sp.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 sp.kill()
+                sp.wait()
+            so.close()
         open(os.path.join(self.out, f"{name}.dt.txt"), "w").write(r.stdout + r.stderr)
         res = dict(out=r.stdout + r.stderr, snap=snap, events=[], rc=r.returncode)
         if os.path.exists(log):
@@ -703,6 +727,115 @@ def t_host_cmd_ack(e):
     check("host_cmd_ack: the hello's caps have bit 4 (16: the host command)", h and h[0]["caps"] & P.HOST_CMD_CAPS, h)
 
 
+def t_rehello(e):
+    """Step 4 (re-hello): the Rytm is up long after its port-up hellos (3 within ~2.5 s) and the host sends 3C 01 (the
+    keepalive with flags bit 0). Exactly one hello comes back, the same caps / caps2 as at port-up (caps2 has bit 4,
+    16: this Rytm answers a re-hello); a second request within 1 s gets none; one after a second does."""
+    ex = []
+    for t in (4000, 4400, 5300):
+        ex += usb(e.at(t), P.rui_rehello())
+    r = e.run("rehello", 6500, [], script=[], extra=ex)
+    h = evs(r, "hello")
+    first = [x for x in h if x["t"] < 3.5]
+    late = [x for x in h if x["t"] >= 3.5]
+    print(f"    hellos at {[round(x['t'], 2) for x in h]}")
+    check("rehello: the port-up hellos came (1..3) and say caps2 with bit 4 (16) and bit 0", first and
+          all(x["caps2"] & P.RUI_CAPS2_REHELLO and x["caps2"] & 1 for x in first), first)
+    check("rehello: the hellos' caps2 has bit 5 (32, the P13 list: kCaps2ListP13) too; with morph v2's bits 1..3 (2 | 4 | 8): "
+          "1 | 2 | 4 | 8 | 16 | 32 = 63", first and all(x["caps2"] & 32 and x["caps2"] == 63 for x in first), first)
+    check("rehello: after the first request one hello, none for the second (400 ms later), one for the third (1.3 s later)",
+          len(late) == 2, late)
+    if len(late) == 2 and first:
+        # (L4: relative to the requests: the sim's clock is not the emulator's; the requests are 4000 and 5300 ms: 1.3 s apart)
+        check("rehello: the answers are the port-up hello's bytes (caps, caps2), the second 1.3 s (+- 0.3) after the first",
+              all((x["caps"], x["caps2"]) == (first[0]["caps"], first[0]["caps2"]) for x in late) and
+              abs(late[1]["t"] - late[0]["t"] - 1.3) < 0.3, [(x["t"], x["caps"], x["caps2"]) for x in late])
+
+
+GONE = "--usb-host-gone"
+
+
+def have_gone():
+    hp = subprocess.run([DTBOOT, "--help"], capture_output=True, text=True)
+    if GONE not in hp.stdout + hp.stderr:
+        print("    skipped (no --usb-host-gone in this dtboot; RUI_DTBOOT)")
+        return False
+    return True
+
+
+def t_rehello_early(e):
+    """A request inside HELLO_TICKS of the port-up (0.5 s) is ignored and consumed: one hello (the port-up's) by 1.2 s,
+    not two; a request at 1.5 s is answered (the ignoring did not break it)."""
+    r = e.run("rehello-early", 2500, [], script=[], extra=usb(e.at(100), P.rui_rehello()) + usb(e.at(1500), P.rui_rehello()))
+    h = evs(r, "hello")
+    print(f"    hellos at {[round(x['t'], 2) for x in h]}")
+    check("rehello_early: the request 0.1 s after the port-up is ignored: one hello until the second request, then two",
+          len(h) == 2 and h[0]["t"] < 0.6 and h[1]["t"] - h[0]["t"] > 0.9, h)
+
+
+def t_rehello_drop(e):
+    """The port drops: a request pending at the drop is cleared (not answered after the re-plug), and the 1 s limit of
+    the last answer is the old link's (L2): a request 0.65 s after the re-plug, 0.9 s after the last answer, is answered."""
+    if not have_gone():
+        return
+    for d in (5, 30):
+        r = e.run(f"rehello-pend{d}", 6500, [(4000 + d, "gone", 4400)], script=[], extra=usb(e.at(4000), P.rui_rehello()))
+        h = [x for x in evs(r, "hello") if x["t"] > 4.4]
+        print(f"    request, drop {d} ms later: hellos after the re-plug at {[round(x['t'], 2) for x in h]}")
+        check(f"rehello_drop: a request {d} ms before the drop is not answered after the re-plug (the port-up hello only)",
+              len(h) == 1, h)
+    r = e.run("rehello-limit", 6500, [(4100, "gone", 4250)], script=[],
+              extra=usb(e.at(4000), P.rui_rehello()) + usb(e.at(4900), P.rui_rehello()))
+    h = [x for x in evs(r, "hello") if x["t"] > 4.4]
+    print(f"    answers at 4.0 s, drop 4.1..4.25 s, request 4.9 s: hellos after the re-plug at {[round(x['t'], 2) for x in h]}")
+    check("rehello_drop: the 1 s limit does not survive the drop: the re-plug's hello and the answer to the request after it",
+          len(h) == 2, h)
+
+
+def msgs_after_last_hello(path):
+    b = open(path, "rb").read() if os.path.exists(path) else b""
+    ms = [m.group(0) for m in re.finditer(rb"\xf0[^\xf0\xf7]*\xf7", b)]
+    idx = [i for i, m in enumerate(ms) if m[:5] == b"\xf0\x7d\x52\x54\x35"]
+    return ms, idx
+
+
+def t_rehello_owed(e):
+    """The reports a hello owes arrive after a re-hello as after the port-up: the machines' snapshot (33, t0 0, 12), the kit
+    (3B), the arpeggiator code of each of the 12 sounds (45), the host's 2D 0F and 2D 0E."""
+    uo = os.path.join(e.out, "rehello-owed.usb")
+    if os.path.exists(uo):
+        os.remove(uo)
+    r = e.run("rehello-owed", 5500, [], script=[], extra=usb(e.at(4000), P.rui_rehello()), env=dict(DTBOOT_USB_OUT=uo))
+    ms, idx = msgs_after_last_hello(uo)
+    print(f"    {len(ms)} messages, hellos at message {idx}")
+    check("rehello_owed: a port-up hello and the re-hello", len(idx) == 2, idx)
+    if len(idx) == 2:
+        after = ms[idx[1] + 1:]
+        kind = lambda m: m[4]   # noqa: E731
+        snap = [m for m in after if kind(m) == 0x33 and len(m) >= 9 and m[6] == 0 and m[7] == 12]
+        kit = [m for m in after if kind(m) == 0x3b]
+        arp = sorted(m[6] for m in after if kind(m) == 0x45)
+        check("rehello_owed: the machines' snapshot (33, 12 tracks) after the re-hello", len(snap) == 1, len(snap))
+        check("rehello_owed: the kit (3B) after the re-hello", len(kit) == 1, len(kit))
+        check("rehello_owed: the arpeggiator code of all 12 sounds (45) after the re-hello", arp == list(range(12)), arp)
+        late = [x for x in evs(r, "state") if x["kind"] in (0x0e, 0x0f) and x["t"] > 3.5]
+        check("rehello_owed: the sequencer reports 2D 0F and 2D 0E (QPERF, scene) after the re-hello",
+              sorted({x["kind"] for x in late}) == [0x0e, 0x0f], late)
+
+
+def t_rehello_old(e):
+    """An older build (rui1043: its 3C reads no payload) gets 3C 01 01: no rx_bad, no reply (the hellos are those of the
+    run without the request), the same state otherwise."""
+    o = Emu("rui1043")
+    r0 = o.run("rehello-old0", 3500, [], script=[])
+    r1 = o.run("rehello-old1", 3500, [], script=[], extra=usb(o.at(1500), P.rui_rehello()) + usb(o.at(2000), P.rui_rehello()))
+    bad = [int.from_bytes(o.peek(r["snap"], o.sym("rx_bad"), 4), "big") for r in (r0, r1)]
+    h = [len(evs(r, "hello")) for r in (r0, r1)]
+    print(f"    rx_bad {bad}, hellos {h}")
+    check("rehello_old: rui1043 counts no rx_bad for 3C 01 01", bad[0] == bad[1], bad)
+    check("rehello_old: and sends no hello for it", h[0] == h[1], h)
+
+
 def t_save_kit_while_held(e):
     """Task 46 Step 4 as a regression (the owner decides on it: design.md "0.5.0"): SCENE 3 and PERF 1 = 100 by the
     host, SAVE KIT (YES + PLAY MODE), SCENE 0 and PERF 1 = 0, RELOAD KIT (NO + PLAY MODE): the scene comes back (SAVE
@@ -822,7 +955,8 @@ TESTS = dict(frame=t_frame, kill=t_kill, escape=t_escape, noread=t_noread, full=
              scene_report=t_scene_report, host_cmd_mute_toggles_only_differing=t_host_cmd_mute,
              host_cmd_scene=t_host_cmd_scene, host_cmd_perf=t_host_cmd_perf, host_cmd_ack=t_host_cmd_ack,
              save_kit_while_held=t_save_kit_while_held, host_cmd_perf_8bit=t_host_cmd_perf_8bit,
-             qperf_replug_waits_hello=t_qperf_replug_waits_hello,
+             qperf_replug_waits_hello=t_qperf_replug_waits_hello, rehello=t_rehello,
+             rehello_early=t_rehello_early, rehello_drop=t_rehello_drop, rehello_owed=t_rehello_owed, rehello_old=t_rehello_old,
              boot=t_boot)
 EXTRA = dict(survey=t_survey)   # not in "all": 3 runs a key
 
@@ -835,7 +969,10 @@ def main():
     for n in names:
         n = "pass_" if n == "pass" else n
         print(f"== {n.rstrip('_')}", flush=True)
-        (TESTS.get(n) or EXTRA[n])(e)
+        try:
+            (TESTS.get(n) or EXTRA[n])(e)
+        except EmuTimeout as ex:
+            print(f"  {ex} (the test is abandoned)", flush=True)
     print("ALL PASS" if not FAILS else f"FAILED: {FAILS}")
     sys.exit(1 if FAILS else 0)
 
