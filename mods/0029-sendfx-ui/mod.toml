@@ -26,14 +26,18 @@ TYPE shows the Sidecar's names (host-link 21) and !NAME for a missing effect (22
 P2..P5 and numbers. The ASK never waits on USB (try-lock). Needs
 0025-sendfx-report (FX 38..41 storage) and 0022 sfx=1 for the names. 0.5.0: knobs G / H are
 BASE / WID, each send FX's return filter, held by the Sidecar (host-link 22 ver 2 both ways,
-records 1..4, never stored in the kit, no locks). Emulator only. design.md.
+records 1..4, never stored in the kit, no locks). Full names in the upper left (51). A user
+effect with P5..P16 gets pages 2 / 3 (a further press of SRC / SMPL on SEND FX 1 / 2; held by the
+Sidecar, 22 ver 3, no locks; the page's own records switched while shown). Based on twwwy's #18
+and #19. Emulator only. design.md.
 """
 
 [sources]
 stub = "stub.s"      # generated from sfu.c by build.sh
 
 [elek]
-subscribe = [{ event = "ev_tick", fn = "sfu_tick", order = 60 }]
+subscribe = [{ event = "ev_tick", fn = "sfu_tick", order = 60 },
+             { event = "ev_key", fn = "sfu_key", order = 5 }]   # sendfx-pages: SRC / SMPL's further press, before 0026 (10)
 
 [requires]
 shared = false

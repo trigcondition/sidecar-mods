@@ -1762,8 +1762,12 @@ def t_smpcpu(e):
         print(f"    {nm}: BD/SD machines {mach}, {nb} blocks: voices {vo:.2f}, resampler {mac:.2f} ({mac / 64:.2f} voices), "
               f"filter {flt:.2f} ({flt / 16:.2f} voices) a block")
         ck(f"smpcpu {nm}: the player's voice loop visits 8 voices a block", abs(vo - 8) < 0.05, vo)
-        ck(f"smpcpu {nm}: the resampler runs for {want} voices a block", abs(mac - 64 * want) < 2, mac)
-        ck(f"smpcpu {nm}: the filter runs for {want} voices a block", abs(flt - 16 * want) < 1, flt)
+        # (totals over the window, a whole-block tolerance: 512 / 128 for the 8-voice player; a voice less is 64 / 16 a block, so
+        # the counts of 7 / 6 / 8 voices stay apart over 300 blocks: see smpshared)
+        ck(f"smpcpu {nm}: the resampler runs for {want} voices a block", abs(mac * nb - 64 * want * nb) <= 512,
+           f"{mac * nb:.0f} for {nb} blocks ({64 * want} a block)")
+        ck(f"smpcpu {nm}: the filter runs for {want} voices a block", abs(flt * nb - 16 * want * nb) <= 128,
+           f"{flt * nb:.0f} for {nb} blocks ({16 * want} a block)")
 
 
 def t_smpref(e):
@@ -1880,7 +1884,10 @@ def t_smpshared(e):
        mach[0] == 44 and mach[1] != 44 and own == 11 and eng == elek_sym(e, "rytm-0021-ext:ext_render"), (mach, own, hex(eng)))
     ck("smpshared: CB's sample-only trig plays its sample (S of voice 6 not zero)", lv > 0x1000, hex(lv))
     nb, vo, mac, flt = player_rate(e, "smpsh-cpu", s, e.clock + end, length=4)
-    ck("smpshared: the player runs for all 8 voices (voice 6 not skipped)", abs(mac - 512) < 2, mac)
+    # (totals over the window, a whole-block tolerance (512 resampler iterations): the mix counter can visit one block more
+    # than the resampler at a window edge [measured: sf0's smpcpu stock is 153,600 for 301 counted blocks; sf1 514.03 a block])
+    ck("smpshared: the player runs for all 8 voices (voice 6 not skipped)", abs(mac * nb - 512 * nb) <= 512,
+       f"{mac * nb:.0f} for {nb} blocks (512 a block)")
 
 
 def t_smplong(e):

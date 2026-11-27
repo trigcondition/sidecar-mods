@@ -284,7 +284,7 @@ def expect_key(addr: int, n: int, sha173: str) -> str:
 def port_registry(text: str, m: Map, doc: dict, tr: Translator) -> str:
     target = doc["meta"]["os"]
     text = text.replace('target = "OS1.73"', f'target = "OS{target}"', 1)
-    parts = re.split(r"(?m)^(?=\[\[(?:pool|cave|detour|patch)\]\])", text)
+    parts = re.split(r"(?m)^(?=\[\[(?:pool|cave|detour|patch|buffer)\]\])", text)
     out = [parts[0]]
     expects, pools = doc.get("expect", {}), doc.get("pool", {})
     gone = {(u["owner"], u["addr"]): u.get("note", "") for u in doc.get("unavailable", [])}
@@ -295,6 +295,9 @@ def port_registry(text: str, m: Map, doc: dict, tr: Translator) -> str:
             # a claim with no room on this OS: left out, so a build that needs it fails ("no cave"), never misplaced
             tr.log.append((f"registry cave {_get(t, 'owner')} 0x{_get(t, 'addr'):08x} UNAVAILABLE on {target}",
                            _get(t, "addr"), _get(t, "addr")))
+            continue
+        if kind == "buffer":   # a DDR range of the bundle's region: the same on every OS, not in the image
+            out.append(t)
             continue
         if kind == "pool":
             name, st, en = _get(t, "name"), _get(t, "start"), _get(t, "end")
@@ -683,6 +686,14 @@ def derive(os_ver: str, from_syx: Path, to_syx: Path) -> int:
     padpool = doc.get("pool_override", {})
     for p in reg.get("pool", []):
         name, s, e = p["name"], p["start"], p["end"]
+        if p.get("kind") == "ddr":
+            # RAM, not in the image: the same bounds on every OS. They live in the hand-written head
+            # ([pool.NAME] with this OS's status and evidence), which derive keeps; it only checks them
+            q = doc.get("pool", {}).get(name)
+            if q is None or (q.get("start"), q.get("end")) != (s, e) or not q.get("status") or not q.get("evidence"):
+                problems.append(f"pool {name}: re/os/{os_ver}.toml needs [pool.{name}] with start 0x{s:08x}, "
+                                f"end 0x{e:08x}, status and evidence")
+            continue
         if name in padpool:
             q = dict(padpool[name])
             q.setdefault("end", e)

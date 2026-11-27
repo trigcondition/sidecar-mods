@@ -83,6 +83,9 @@ def sample_pokes():
 
 
 WAVS = [("KICK", 0.5), ("SNARE", 0.7), ("HAT", 0.3), ("PAD", 3.0), ("LOOP", 2.0), ("NOISE", 1.0)]
+# LAG_WAV_SEC=N: every file N seconds long (tools/emu/el_area.py --samples-host fills the sample memory with large files)
+if os.environ.get("LAG_WAV_SEC"):
+    WAVS = [(n, float(os.environ["LAG_WAV_SEC"])) for n, _ in WAVS]
 
 
 def write_wavs(d):
@@ -117,7 +120,7 @@ def write_wavs(d):
         w.close()
 
 
-def load_events(at, n=len(WAVS), step=150):
+def load_events(at, n=len(WAVS), step=int(os.environ.get("LAG_LOAD_STEP", 150))):
     """The stock UI loading the card's /incoming files into slots 1..n of track BD (selected, a stock machine): SMPL page, D
     turned to slot k (the first turn opens the list, every fourth moves a step), FUNC + YES opens the file browser at the
     root, DOWN to incoming, YES, DOWN k times to file k, YES loads it (the row shows >k), NO out of browser and list."""

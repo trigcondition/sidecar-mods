@@ -13,7 +13,14 @@ EFT_REV := a5bce9a6af644386d900924082993a805e812874
 # checks this same commit (ELEK_REV). Its core-ar2 0.1 is built from the source at
 # ELEK_CORE_REV in build.py. mods/0027-elekloader/design.md.
 ELEK_URL := https://github.com/irpina/elekloader
-ELEK_REV := c150ac583a4b7e6d64680d5592f4a40f409193f7
+ELEK_REV := 2bcafa17c5ebd9a00f33b0e74d6993f37ab18266
+ELEK_SHORT := $(shell echo $(ELEK_REV) | cut -c1-7)
+# the builder's checkout; ELEK_DIR=<path> in the environment (build.py and release_check.py read it too) for a
+# checkout of ELEK_REV that is not the shared vendor/elekloader
+# ELEK_DIR must be an absolute path without spaces (make -C changes the directory; the Makefile does not quote it).
+# Never run `make setup` where vendor is a symlink to a shared checkout: it would check ELEK_REV out in that shared
+# repository and break every worktree pinned to its HEAD. Give such a worktree its own checkout (ELEK_DIR).
+ELEK_DIR ?= vendor/elekloader
 
 setup:
 	python3 -m venv .venv
@@ -21,8 +28,8 @@ setup:
 	test -d vendor/elektron-firmware-tool/.git || git clone $(EFT_URL) vendor/elektron-firmware-tool
 	git -C vendor/elektron-firmware-tool checkout --quiet $(EFT_REV)
 	$(MAKE) -C vendor/elektron-firmware-tool
-	test -d vendor/elekloader/.git || git clone $(ELEK_URL) vendor/elekloader
-	git -C vendor/elekloader checkout --quiet $(ELEK_REV)
+	test -e $(ELEK_DIR)/.git || git clone $(ELEK_URL) $(ELEK_DIR)
+	git -C $(ELEK_DIR) checkout --quiet $(ELEK_REV)
 
 symbols:
 	$(PY) tools/symbols.py
@@ -87,13 +94,13 @@ release: symbols layout
 		$(REL)/rytm-sidecar-$(VERSION)$(BUNDLE_SUFFIX).elemod
 	cp LICENSE NOTICE $(REL)/
 	# GPL-2.0 section 3: the corresponding source of the core elemod (and the builder) beside it
-	git -C vendor/elekloader archive --format=tar.gz --prefix=elekloader-$(CORE_SHORT)-core-ar2/ \
+	git -C $(ELEK_DIR) archive --format=tar.gz --prefix=elekloader-$(CORE_SHORT)-core-ar2/ \
 		$(CORE_REV) mods/core mods/core-ar2 LICENSE NOTICE \
 		> $(REL)/elekloader-$(CORE_SHORT)-core-ar2-src.tar.gz
-	git -C vendor/elekloader archive --format=tar.gz --prefix=elekloader-c150ac5/ \
-		c150ac583a4b7e6d64680d5592f4a40f409193f7 > $(REL)/elekloader-c150ac5-src.tar.gz
+	git -C $(ELEK_DIR) archive --format=tar.gz --prefix=elekloader-$(ELEK_SHORT)/ \
+		$(ELEK_REV) > $(REL)/elekloader-$(ELEK_SHORT)-src.tar.gz
 	{ echo "release $(VERSION) for OS $(TREE_OS), built from sidecar-mods $$(git rev-parse HEAD)$$([ -z "$$(git status --porcelain)" ] || echo ' (uncommitted changes)')"; \
-	  echo "elekloader $$(git -C vendor/elekloader rev-parse HEAD) (builder), core-ar2 from $(CORE_REV)"; \
+	  echo "elekloader $$(git -C $(ELEK_DIR) rev-parse HEAD) (builder), core-ar2 from $(CORE_REV)"; \
 	  m68k-elf-as --version | head -1; $(PY) --version; uname -sm; } > $(REL)/TOOLCHAIN.txt
 	cd $(REL) && { command -v sha256sum > /dev/null && SUM="sha256sum" || SUM="shasum -a 256"; \
 		$$SUM *.elemod *.tar.gz LICENSE NOTICE TOOLCHAIN.txt > SHA256SUMS; } && cat SHA256SUMS
@@ -110,14 +117,26 @@ release-all:
 	$(MAKE) release release-check
 	$(MAKE) release release-check OS=1.74
 
-# The GitHub release's one asset folder, build/release/$(VERSION)-assets/, from the two folders release-all writes:
-# all of the 1.73 folder, the 1.74 folder's own files, its TOOLCHAIN.txt as TOOLCHAIN-os1.74.txt, one SHA256SUMS
-# over the lot. It refuses while an UNRELEASED mark is left in the tree, when a shared file (LICENSE, NOTICE, the
-# builder's archive) differs between the two folders, or when a folder does not match its own SHA256SUMS.
+# The GitHub release's one asset folder, build/release/$(VERSION)-assets/, from the folders `make release` (1.73, the
+# tree's own) and `make release OS=1.74` write. RELEASE_OSES names the OSes the release builds: 1.74 (the default;
+# 0.5.x ships no 1.73 build) gives that folder's files with one TOOLCHAIN.txt and one SHA256SUMS; "1.73 1.74" (0.4.x:
+# `make release-all` first) all of the 1.73 folder, the 1.74 folder's own files, its TOOLCHAIN.txt as
+# TOOLCHAIN-os1.74.txt, one SHA256SUMS over the lot. It refuses while an UNRELEASED mark is left in the tree, when a
+# shared file (LICENSE, NOTICE, the builder's archive) differs between two folders, or when a folder does not match
+# its own SHA256SUMS.
+RELEASE_OSES ?= 1.74
+osdir = build/release/$(VERSION)$(if $(filter $(1),$(TREE_OS)),,-os$(1))
 release-assets:
 	python3 tools/check_unreleased.py
-	python3 tools/combine_release.py build/release/$(VERSION) build/release/$(VERSION)-os1.74 \
-		build/release/$(VERSION)-assets --os-a $(TREE_OS) --os-b 1.74
+ifeq ($(words $(RELEASE_OSES)),1)
+	python3 tools/combine_release.py $(call osdir,$(RELEASE_OSES)) build/release/$(VERSION)-assets \
+		--os-a $(RELEASE_OSES)
+else ifeq ($(words $(RELEASE_OSES)),2)
+	python3 tools/combine_release.py $(call osdir,$(word 1,$(RELEASE_OSES))) $(call osdir,$(word 2,$(RELEASE_OSES))) \
+		build/release/$(VERSION)-assets --os-a $(word 1,$(RELEASE_OSES)) --os-b $(word 2,$(RELEASE_OSES))
+else
+	$(error RELEASE_OSES names one or two OSes, not $(words $(RELEASE_OSES)))
+endif
 
 layout:
 	$(PY) tools/layout.py

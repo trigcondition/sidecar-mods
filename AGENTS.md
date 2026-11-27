@@ -305,8 +305,9 @@ make release-check OS=1.74   # the published files through elekloader's own code
 
 Both are the maintainer's. A contributor builds with `tools/build_rui.sh <tag>`, which makes a local `.syx` for the
 emulator. That `.syx` stays on your machine. The release target builds the `.elemod` with
-`tools/build.py --tag <tag> --elek-bundle --mods ...`; whether `build_rui.sh <tag> --elek-bundle` gives you one for a
-tester **(not verified)**. If a tester needs your build, offer the `.elemod` only, and say the tag and its sha256.
+`tools/build.py --tag <tag> --elek-bundle --mods ...`. A build with a claiming mod (0026, 0029) is bundle-only: it makes
+the bundle elemod and no per-mod elemods, and `build_rui.sh <tag>` always builds that bundle, so it gives you the
+elemod to hand to a tester (`build/elek/<tag>/mods/rytm-sidecar/out/`). If a tester needs your build, offer the `.elemod` only, and say the tag and its sha256.
 
 **Hardware tests, by your human, not you.** Flashing carries risk (`docs/HAZARDS.md`, `docs/FLASHING.md`). A report
 from hardware says the OS version, the build tag, the Pi model and the Sidecar version. A problem seen on hardware is

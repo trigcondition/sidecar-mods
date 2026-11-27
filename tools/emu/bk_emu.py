@@ -226,8 +226,8 @@ def host(link, log, frame, answer, stop_at, secs=900, sends=None):
                 ev(ev="key", code=m[6] << 7 | m[7], down=m[8])
             elif c == 0x48 and len(m) == 10:
                 ev(ev="w48", track=m[6], param=m[7], status=m[8])
-            elif c == 0x4A and len(m) == 12:
-                ev(ev="ls", track=m[6], on=m[7], v=m[8] << 7 | m[9], why=m[10])
+            elif c == 0x4A and len(m) in (12, 13):
+                ev(ev="ls", track=m[6], on=m[7], v=m[8] << 7 | m[9], why=m[10], p=m[11] if len(m) == 13 else None)
             elif c == 0x32 and len(m) == 10:
                 ev(ev="enc", enc=m[6], delta=m[7] - 64, func=m[8])
             elif c == 0x49 and len(m) >= 9:
@@ -264,6 +264,74 @@ def w48(v, bank, *extra):
 
 def word(v, bank):
     return v << 8 | bank << 5
+
+
+def w48k(k, v, lo=0):
+    """48 0 <param k> <hi> <lo>: BD's P(k + 1) = hi << 8 | lo << 1 (the host's pick / write)."""
+    return sx(0x48, 0, k, v, lo)
+
+
+def zone_frames(e, sn, name, k, vals, smpl):
+    """The screen with BD's P(k + 1) written to each value (SRC page, or SMPL when smpl): {value: frame}."""
+    out = {}
+    for v in vals:
+        ev = [(700, "press", "SMPL")] if smpl else []
+        r = e.run(f"{name}-{v}", 1800, ev, snap=sn, sends=[(300, w48k(k, v))])
+        out[v] = r["oled"]
+        check(f"{name} {v}: the word was written", e.kword(r["snap"][0], 0, k) == bytes([v, 0]), e.kword(r["snap"][0], 0, k).hex())
+    return out
+
+
+def t_wtwarp(e):
+    """0.5.2: WARP (P3) has nine zones, zone = (v * 9) >> 7 (OFF SYNC PWM FM FRMT QNT BEND SQZE RM): the nine zones' lows
+    read nine different texts, a zone's high end the same as its low (the screens; cu_emu wttext has the strings)."""
+    sn = machine(e, "wt")
+    lows = [0, 15, 29, 43, 57, 72, 86, 100, 114]
+    highs = {0: 14, 1: 28, 4: 71, 7: 113, 8: 127}
+    f = zone_frames(e, sn, "wtwarp", 2, lows + list(highs.values()), False)
+    check("wtwarp: the nine zones' lows read nine different screens", len({f[v] for v in lows}) == 9,
+          len({f[v] for v in lows}))
+    for z, h in highs.items():
+        check(f"wtwarp: {h} is zone {z}'s high end: the screen of {lows[z]}", f[h] == f[lows[z]], S.diff(f[h], f[lows[z]]))
+
+
+def t_wtftyp(e):
+    """0.5.2: FTYP (P16, SMPL H) has eight zones, zone = v >> 4 (DJ LP12 LP24 BP12 BP24 HP12 HP24 LDR): the eight lows read
+    eight different texts, a zone's high end the same as its low."""
+    sn = machine(e, "wt")
+    lows = list(range(0, 128, 16))
+    highs = {0: 15, 3: 63, 7: 127}
+    f = zone_frames(e, sn, "wtftyp", 15, lows + list(highs.values()), True)
+    check("wtftyp: the eight zones' lows read eight different screens", len({f[v] for v in lows}) == 8,
+          len({f[v] for v in lows}))
+    for z, h in highs.items():
+        check(f"wtftyp: {h} is zone {z}'s high end: the screen of {lows[z]}", f[h] == f[lows[z]], S.diff(f[h], f[lows[z]]))
+
+
+def t_wtbank(e):
+    """0.5.2: TBLB (P13, SMPL E) is a 14-bit row word like TBL: the host's 48 writes index 5 bank F (0x05a0); knob E steps one
+    index a detent and keeps the bank (0x06a0 / 0x04a0, 0029's banked list); the host's 47 names (list 1, the WAVETABLES)
+    with the bank byte name it on the SMPL page (bank F's names change the screen, bank A's do not), index 0 reads OFF."""
+    sn = machine(e, "wt")
+    r = e.run("wtb-set", 1500, snap=sn, sends=[(300, w48k(12, 5, 5 << 4))])
+    check("wtbank: 48 P13 5 <F> -> word 0x05a0, answered 0", e.kword(r["snap"][0], 0, 12) == bytes([5, 0xa0]) and
+          [x["status"] for x in evs(r, "w48")] == [0], (e.kword(r["snap"][0], 0, 12).hex(), evs(r, "w48")))
+    for d, want in (("+8", bytes([6, 0xa0])), ("-8", bytes([4, 0xa0]))):
+        r = e.run(f"wtb{d}", 3500, [(700, "press", "SMPL"), (1200, "turn", f"4:{d}", 3, 100)], snap=sn,
+                  sends=[(300, w48k(12, 5, 5 << 4))])
+        w = e.kword(r["snap"][0], 0, 12)
+        check(f"wtbank knob E {d}: one index a detent, the bank kept ({want.hex()})", w == want, w.hex())
+    smpl = [(700, "press", "SMPL")]
+    nmf = names47(1, 1, 4, 5, 0, ["OFF", "SAW F1", "ORGAN F2", "VOX F3"])
+    nma = names47(1, 1, 4, None, 0, ["OFF", "SAW", "A-TWO", "A-THREE"])
+    a = e.run("wtb-none", 1800, smpl, snap=sn, sends=[(300, w48k(12, 2, 5 << 4))])
+    f = e.run("wtb-f", 1800, smpl, snap=sn, sends=[(200, nmf), (300, w48k(12, 2, 5 << 4))])
+    o = e.run("wtb-a", 1800, smpl, snap=sn, sends=[(200, nma), (300, w48k(12, 2, 5 << 4))])
+    z = e.run("wtb-off", 1800, smpl, snap=sn, sends=[(200, nmf), (300, w48k(12, 0, 5 << 4))])
+    check("wtbank: bank F's names change TBLB's text (the screen differs from no names)", f["oled"] != a["oled"])
+    check("wtbank: bank A's names leave a bank F word as without names", o["oled"] == a["oled"], S.diff(o["oled"], a["oled"]))
+    check("wtbank: index 0 of bank F differs from index 2", z["oled"] != f["oled"])
+
 
 
 def t_knob(e):
@@ -1039,6 +1107,179 @@ def t_dsplistlock(e):
           l1 == 0x0940 and l3 == 0x0940 and l2 == 0xffff and w == 0x0540, (hex(l1), hex(l2), hex(l3), hex(w)))
 
 
+# ---- TBLB (P13, word 12, SMPL E) gets TBL's pool list on the SMPL page of a WAVETABLE track (the host's 4A 7D 1 announce,
+# the 4A frame's 6th byte 12, knob E = encoder 4) --------------------------------------------------------------------
+P_TBLB = 12
+ANN = sx(0x4A, 0x7D, 1)                # the host's announce: it draws the P13 list (after each hello)
+SMPL = [(700, "press", "SMPL")]
+TB0 = 5 << 7 | 0x50                    # P13's word 5 . F as the 4A carries it
+
+
+def w48b(v, bank, *extra):
+    """48 0 12 <index> <bank << 4> [flags]: BD's P13 (TBLB) = index << 8 | bank << 5."""
+    return sx(0x48, 0, P_TBLB, v, bank << 4, *extra)
+
+
+def lsp(r):
+    return [x.get("p") for x in evs(r, "ls")]
+
+
+def t_tblblist(e):
+    """TBLB's list: WAVETABLE (BD), the SMPL page, the host announced (4A 7D 1) and drawing: knob E's first turn opens it
+    (4A 0 1 <P13 = 5 . F> 0 with the 6th byte 12, the word unmoved); 29 0 1 turns the view on over the SMPL page; further
+    turns reach the host on encoder 4; YES closes it (why 1, byte 12), the view goes (29 0 0); the host's 48 0 12 9 <B> 1
+    writes P13 (0x0920, answered 0) and P1 stays."""
+    sn = machine(e, "wt", True)
+    ev = SMPL + [(1200, "turn", "4:+8", 1, 50), (1500, "turn", "4:+8", 3, 100), (2300, "press", "YES", 100)]
+    r = e.run("tblblist", 3600, ev, snap=sn, answer=True, sends=[(300, w48b(5, 5)), (350, ANN), (2800, w48b(9, 1, 1))])
+    ls_, en, k = lsev(r), evs(r, "enc"), [(x["code"], x["down"]) for x in evs(r, "key")]
+    v29 = [(x["track"], x["on"]) for x in evs(r, "v29")]
+    w = int.from_bytes(e.kword(r["snap"][0], 0, P_TBLB), "big")
+    print(f"  4A {ls_} p {lsp(r)}; 29 {v29}; turns {[(x['enc'], x['delta']) for x in en]}; keys {k}; word {w:#06x}; 48 {evs(r, 'w48')}")
+    check("tblblist: opened by knob E (4A on, P13 = 5 . F, why 0), closed by YES (why 1)", ls_ == [(1, TB0, 0), (0, TB0, 1)], ls_)
+    check("tblblist: both frames carry the 6th byte 12", lsp(r) == [12, 12], lsp(r))
+    check("tblblist: the view comes on over the SMPL page (29 0 1) and goes with the list (29 0 0 last)",
+          (0, 1) in v29 and v29[-1] == (0, 0), v29)
+    check("tblblist: the turns after the opening one reach the host on encoder 4",
+          bool(en) and all(x["enc"] == 4 for x in en) and sum(x["delta"] for x in en) > 0, en)
+    check("tblblist: YES never goes to the host as a 31", not k, k)
+    check("tblblist: the host's 48 0 12 9 <B> 1 wrote P13: 0x0920, answered 0",
+          w == 0x0920 and [x["status"] for x in evs(r, "w48")][-1:] == [0], (hex(w), evs(r, "w48")))
+    check("tblblist: P1 (TBL) untouched", e.kword(r["snap"][0], 0, 0) == e.kword(sn[0], 0, 0),
+          (e.kword(r["snap"][0], 0, 0).hex(), e.kword(sn[0], 0, 0).hex()))
+
+
+def t_tblbbrowse(e):
+    """The open P13 list as TBL's: RIGHT down / up reach the host (31); NO closes it (why 2, the word unchanged); knob F
+    closes it (why 3); FUNC + YES on the open list -> 4A 0 3 <P13> 0 with the byte 12 (the host's browser); FUNC + YES on the
+    SMPL page of a WAVETABLE track opens the list with the browser at once (4A on, then 4A 3 why 6)."""
+    sn = machine(e, "wt", True)
+    send = [(300, w48b(5, 5)), (350, ANN)]
+    r = e.run("tblbbrowse-keys", 3000, SMPL + [(1200, "turn", "4:+8", 1, 50), (1600, "press", "RIGHT", 100),
+                                                (2000, "press", "NO")], snap=sn, answer=True, sends=send)
+    k = [(x["code"], x["down"]) for x in evs(r, "key")]
+    check("tblbbrowse: RIGHT down / up reaches the host, NO closes (why 2), P13 unchanged (0x05a0)",
+          k == [(0x41, 1), (0x41, 0)] and lsev(r)[-1:] == [(0, TB0, 2)] and
+          e.kword(r["snap"][0], 0, P_TBLB) == bytes([5, 0xa0]), (k, lsev(r)))
+    r = e.run("tblbbrowse-knob", 3000, SMPL + [(1200, "turn", "4:+8", 1, 50), (1600, "turn", "5:+8", 6, 50)], snap=sn,
+              answer=True, sends=send)
+    check("tblbbrowse: knob F closes it (why 3)", lsev(r)[-1:] == [(0, TB0, 3)], lsev(r))
+    ev = SMPL + [(1200, "turn", "4:+8", 1, 50), (1500, "press", "FUNC", 150), (1550, "press", "YES", 50)]
+    r = e.run("tblbbrowse-fy", 3000, ev, snap=sn, answer=True, sends=send + [(2200, sx(0x4A, 0, 1))])
+    check("tblbbrowse: FUNC + YES on the open list -> 4A on 3 with the byte 12", lsev(r) == [(1, TB0, 0), (3, TB0, 0)] and
+          lsp(r) == [12, 12], (lsev(r), lsp(r)))
+    ev = SMPL + [(1200, "press", "FUNC", 150), (1250, "press", "YES", 50)]
+    r = e.run("tblbbrowse-smpl", 3000, ev, snap=sn, answer=True, sends=send + [(2200, sx(0x4A, 0, 1))])
+    check("tblbbrowse: FUNC + YES on the SMPL page: the list with the browser (4A on 0, 4A 3 why 6), byte 12",
+          lsev(r)[:2] == [(1, TB0, 0), (3, TB0, 6)] and lsp(r)[:2] == [12, 12], (lsev(r), lsp(r)))
+
+
+def t_tblblock(e):
+    """GRID REC, T1 and T3 held, the P13 list opened by knob E and YES pressed while they are held: the host's 48 0 12 9 <C> 1
+    locks P13 on steps 1 and 3 (answered 4) at 0x0940 (fine), step 2 not, the kit word stays 0x05a0, P1 not locked."""
+    sn = machine(e, "wt", True)
+    ev = [(600, "press", "RECORD"), (700, "press", "SMPL"), (900, "press", "T1", 1500), (950, "press", "T3", 1450),
+          (1200, "turn", "4:+8", 1, 50), (1500, "turn", "4:+8", 2, 100), (1900, "press", "YES"), (2800, "press", "RECORD")]
+    r = e.run("tblblock", 3500, ev, snap=sn, answer=True, sends=[(300, w48b(5, 5)), (350, ANN), (2100, w48b(9, 2, 1))])
+    s = r["snap"][0]
+    k = 9 + P_TBLB
+    l1, l3, l2 = (e.live_lock(s, i, k=k) for i in (0, 2, 1))
+    p1 = e.live_lock(s, 0, k=9)
+    w = int.from_bytes(e.kword(s, 0, P_TBLB), "big")
+    print(f"  4A {lsev(r)}; 48 {evs(r, 'w48')}; locks {l1:#06x} {l2:#06x} {l3:#06x}; P1 lock {p1:#06x}; word {w:#06x}")
+    check("tblblock: 4A open then YES", [x[2] for x in lsev(r)] == [0, 1], lsev(r))
+    check("tblblock: answered 48 1 0 12 4 (locked)", [x["status"] for x in evs(r, "w48")][-1:] == [4], evs(r, "w48"))
+    check("tblblock: steps 1 and 3 locked to 0x0940, step 2 not, the kit word still 0x05a0",
+          l1 == 0x0940 and l3 == 0x0940 and l2 == 0xffff and w == 0x05a0, (hex(l1), hex(l2), hex(l3), hex(w)))
+    check("tblblock: P1 not locked on step 1", p1 == 0xffff, hex(p1))
+    fl = e.peek(s, LIVE_LOCKS_BD + 5632 + k, 1)[0]
+    check("tblblock: the track's fine flag for P13 is set (the saved lock keeps the bank)", fl == 1, fl)
+
+
+def t_tblbold(e):
+    """An old host (no 4A 7D 1): knob E on the SMPL page is the banked step as before (0x05a0 -> 0x06a0 / 0x04a0), no 4A, no
+    view (no 29 0 1 after the page change), the host drawing or not."""
+    sn = machine(e, "wt", True)
+    for d, want in (("+8", bytes([6, 0xa0])), ("-8", bytes([4, 0xa0]))):
+        r = e.run(f"tblbold{d}", 3500, SMPL + [(1200, "turn", f"4:{d}", 3, 100)], snap=sn, answer=True,
+                  sends=[(300, w48b(5, 5))])
+        v29 = [(x["track"], x["on"]) for x in evs(r, "v29") if x["t"] > 1.0]
+        w = e.kword(r["snap"][0], 0, P_TBLB)
+        check(f"tblbold knob E {d}: no announce: one index a detent, the bank kept ({want.hex()}), no 4A, no 29 1",
+              w == want and not lsev(r) and (0, 1) not in v29, (w.hex(), lsev(r), v29))
+
+
+def t_tblbguard(e):
+    """The announce alone opens nothing: a GRANULAR and a DSP SAMPLE track's knob E on its SMPL page, and a WAVETABLE track's
+    knob E on the SRC page (that is P5, not P13), give no list; the P13 list is for WAVETABLE's SMPL page only."""
+    for key, page, enc in (("gr", SMPL, "4"), ("ds", SMPL, "4"), ("wt", [], "4")):
+        sn = machine(e, key)
+        r = e.run(f"tblbguard-{key}", 2800, page + [(1200, "turn", f"{enc}:+8", 1, 50), (1500, "turn", f"{enc}:+8", 3, 100)],
+                  snap=sn, answer=True, sends=[(350, ANN)])
+        check(f"tblbguard {key}: knob E after the announce opens no list", not lsev(r), lsev(r))
+
+def t_tblbgate(e):
+    """The announce lives for one hello (M1): after a re-hello answer (3C with flags bit 0) with no new announce knob E on the
+    SMPL page is the banked step again (0x06a0), no 4A; announced again after the re-hello it opens the list; a port drop
+    clears it too (the host gone 1.0..1.6 s, no announce after the re-plug)."""
+    sn = machine(e, "wt", True)
+    turn = [(2600, "turn", "4:+8", 3, 100)]
+    r = e.run("tblbgate-rehello", 3800, SMPL + turn, snap=sn, answer=True,
+              sends=[(300, w48b(5, 5)), (350, ANN), (900, sx(0x3C, 1))])
+    w = e.kword(r["snap"][0], 0, P_TBLB)
+    hh = [round(x["t"], 2) for x in evs(r, "hello")]
+    check("tblbgate: a re-hello answered (a hello went out) and no new announce: knob E is the banked step (0x06a0), no 4A",
+          bool(hh) and w == bytes([6, 0xa0]) and not lsev(r), (hh, w.hex(), lsev(r)))
+    r = e.run("tblbgate-again", 3800, SMPL + [(2600, "turn", "4:+8", 1, 50)], snap=sn, answer=True,
+              sends=[(300, w48b(5, 5)), (350, ANN), (900, sx(0x3C, 1)), (1500, ANN)])
+    check("tblbgate: announced again after the re-hello: knob E opens the list", lsev(r)[:1] == [(1, TB0, 0)], lsev(r))
+    base = sn[1]
+    r = e.run("tblbgate-drop", 6500, SMPL + [(5000, "turn", "4:+8", 3, 100)], snap=sn, answer=True,
+              sends=[(300, w48b(5, 5)), (350, ANN)], extra=["--usb-host-gone", f"{base + 1000 / 5:g}M:{base + 1600 / 5:g}M"])
+    w = e.kword(r["snap"][0], 0, P_TBLB)
+    check("tblbgate: a port drop clears it: after the re-plug (no announce) knob E is the banked step, no 4A",
+          w == bytes([6, 0xa0]) and not lsev(r), (w.hex(), lsev(r)))
+
+
+def t_tblbnodraw(e):
+    """A host that announced but does not draw (M2): its 4A open is dropped (no frame): the list closes after ~1 s (why 5);
+    the next knob E turn is the banked step (0x06a0), no second list, until the next hello. A host that went silent after the
+    announce (stopped at 0.6 s, idle 1 s): knob E is the banked step too."""
+    sn = machine(e, "wt", True)
+    ev = SMPL + [(1200, "turn", "4:+8", 1, 50), (3500, "turn", "4:+8", 3, 100)]
+    r = e.run("tblbnodraw", 4500, ev, snap=sn, answer=False, sends=[(300, w48b(5, 5)), (350, ANN)])
+    w = e.kword(r["snap"][0], 0, P_TBLB)
+    ons = [x for x in lsev(r) if x[0] == 1]
+    check("tblbnodraw: one open (why 5 close after ~1 s), then knob E is the banked step (0x06a0) and opens nothing",
+          len(ons) == 1 and lsev(r)[-1:] == [(0, TB0, 5)] and w == bytes([6, 0xa0]), (lsev(r), w.hex()))
+    r = e.run("tblbidle", 4500, SMPL + [(3000, "turn", "4:+8", 3, 100)], snap=sn, answer=True, stop_at=0.6,
+              sends=[(300, w48b(5, 5)), (350, ANN)])
+    w = e.kword(r["snap"][0], 0, P_TBLB)
+    check("tblbnodraw: a host silent for over a second: knob E is the banked step, no 4A", w == bytes([6, 0xa0]) and not lsev(r), (w.hex(), lsev(r)))
+    r = e.run("tblbnodraw-hello", 4500, SMPL + [(1200, "turn", "4:+8", 1, 50), (3000, "turn", "4:+8", 1, 50)], snap=sn,
+              answer=False, sends=[(300, w48b(5, 5)), (350, ANN), (2500, sx(0x3C, 1)), (2700, ANN)])
+    hh = [round(x["t"], 2) for x in evs(r, "hello")]
+    check("tblbnodraw: a later hello clears the lock (review L-C): after the non-drawing close, a re-hello (3C 1) and a new "
+          "announce, knob E opens the list again (a second open, closed again why 5: still no frame)",
+          bool(hh) and [x[0] for x in lsev(r)] == [1, 0, 1, 0] and lsev(r)[2][1] == TB0 and lsev(r)[3][2] == 5, (hh, lsev(r)))
+
+
+def t_tblbcover(e):
+    """Every other list's frames stay as they were, the announce seen: WAVETABLE's TBL (knob A, SRC page) and GRANULAR's SRC:
+    12-byte 4A frames, open and close; DSP SAMPLE's SMP on its SRC page the same; and a P13 list does not open when a BANK key
+    is held over the SMPL page (the page covered)."""
+    for key, name in (("wt", "TBL"), ("gr", "SRC"), ("ds", "SMP")):
+        sn = machine(e, key, True)
+        r = e.run(f"tblbcover-{key}", 3000, [(800, "turn", "0:+8", 1, 50), (1100, "turn", "0:+8", 3, 100),
+                                             (2000, "press", "YES", 100)], snap=sn, answer=True, sends=[(350, ANN)])
+        check(f"tblbcover {name}: its list opens and closes with 12-byte frames (no 6th byte)",
+              [x[0] for x in lsev(r)] == [1, 0] and lsp(r) == [None, None], (lsev(r), lsp(r)))
+    sn = machine(e, "wt", True)
+    r = e.run("tblbcover-bank", 2800, SMPL + [(1000, "press", "BANK_A", 1500), (1200, "turn", "4:+8", 1, 50)], snap=sn,
+              answer=True, sends=[(350, ANN)])
+    check("tblbcover: a BANK key held over the SMPL page: knob E opens no list", not lsev(r), lsev(r))
+
+
 def t_preset(e):
     """0.4.0: JUNO's and 6-OP FM's PAT as the bank list, the host drawing: knob A's first turn opens it (4A 0 1 <P1> 0) with
     PAT unmoved, YES closes it (why 1), the host's 48 0 0 <row> 0 1 sets PAT, answered 0; NO closes with why 2, PAT unchanged
@@ -1246,10 +1487,95 @@ def t_uplrlist(e):
           lsev(r)[:1] == [(1, v0, 0)] and 16 not in pages and (0x41, 1) in k and (0x41, 0) in k, (lsev(r), pages, k))
 
 
-TESTS = dict(preset=t_preset, knob=t_knob, range=t_range, text=t_text, lock=t_lock, list=t_list, browse=t_browse, browsefunc=t_browsefunc, browseknob=t_browseknob, salist=t_salist, saopen=t_saopen, sa2a=t_sa2a, sabusy=t_sabusy, listlock=t_listlock, upt=t_upt,
+MS_ARM = sx(0x5A, 0x0B, 1)   # ms_emu.py's ARM (5A 01 0B 1), sent at 140 ms as there
+MS_NOLOCK = 248                # ms_emu.py's MS_OFF
+
+
+def t_srcside(e):
+    """0.5.2 rc4 (owner, rc3 on hardware): SAMPLER's SRC view drawn by the host, armed, PAGE + T15 held (side A). Knob A
+    (SMP, the source) opens no list (no 4A), moves nothing (the word as before) and is NOT LOCKABLE (ms.nolock), no
+    2D 01 12 for it; knob B: a 2D 01 12 0 0 <w> (side A, BD, a P word, not SMP's 19) and the host's readout (5A 01 08)
+    drawn over the view: the header's field (rows 0..8, columns 0..69) is not the host's frame, the rest is. Without the
+    side: knob A opens the list as before (4A on, why 0)."""
+    sn = machine(e, "sa", True)
+    w0 = smp(e, sn[0])
+    side = [(600, "press", "PAGE", 1800), (650, "press", "T15", 1700)]
+    r = e.run("srcside-a", 2600, side + [(1200, "turn", "0:+8", 3, 100)], snap=sn, answer=True, sends=[(140, MS_ARM)])
+    s = r["snap"][0]
+    nl = int.from_bytes(e.peek(s, e.sym("ms") + MS_NOLOCK, 4), "big")
+    d12 = [x["body"] for x in evs(r, "s2d") if x["kind"] == 0x12]
+    print(f"  knob A under the side: 4A {lsev(r)}; word {w0:#06x} -> {smp(e, s):#06x}; nolock {nl}; 2D 12 {d12}")
+    check("srcside: knob A under the side opens no list (no 4A)", not lsev(r), lsev(r))
+    check("srcside: knob A under the side leaves the source (SMP word unchanged)", smp(e, s) == w0, (hex(w0), hex(smp(e, s))))
+    check("srcside: knob A under the side is NOT LOCKABLE (ms.nolock, no 2D 01 12)", nl >= 1 and not d12, (nl, d12))
+    rd = sx(0x5A, 0x08, 8, *b"A TUN 64")
+    r = e.run("srcside-b", 1900, side + [(1200, "turn", "1:+8", 3, 100)], snap=sn, answer=True,
+              sends=[(140, MS_ARM), (1500, rd)])
+    d12 = [x["body"] for x in evs(r, "s2d") if x["kind"] == 0x12]
+    print(f"  knob B under the side: 2D 12 {d12}")
+    check("srcside: knob B under the side: 2D 01 12 side A, track 0, a P word (9..24, not SMP 19)",
+          bool(d12) and all(b[0] == 0 and b[1] == 0 and 9 <= b[2] <= 24 and b[2] != 19 for b in d12), d12)
+    o, f = r["oled"] or b"", r["frame"] or b""
+
+    def bits(fb, x, y):
+        return fb[8 * x + 7 - (y >> 3)] >> (y & 7) & 1
+    inf = [(x, y) for x in range(70) for y in range(9)]
+    out = [(x, y) for x in range(128) for y in range(64) if not (x < 70 and y < 9)]
+    check("srcside: the readout drawn over the view (the header field is not the host's frame)",
+          bool(o) and bool(f) and any(bits(o, x, y) != bits(f, x, y) for x, y in inf))
+    check("srcside: the rest of the glass is the host's frame", bool(o) and bool(f) and
+          all(bits(o, x, y) == bits(f, x, y) for x, y in out))
+    r = e.run("srcside-late", 3200, side + [(1200, "turn", "1:+8", 3, 100)], snap=sn, answer=True,
+              sends=[(140, MS_ARM), (1500, rd)])
+    check("srcside: 1.7 s after the readout the whole glass is the host's frame again", r["oled"] == r["frame"],
+          S.diff(r["oled"], r["frame"]))
+    g = machine(e, "gr", True)
+    r = e.run("srcside-gr", 2600, side + [(1200, "turn", "0:+8", 3, 100)], snap=g, answer=True,
+              sends=[(140, MS_ARM), (300, w48(5, 5))])
+    print(f"  GRANULAR knob A under the side: 4A {lsev(r)}; word {e.word0(r['snap'][0]):#06x}")
+    check("srcside: GRANULAR's SRC under the side: no list, the word the host's 5 . F (0x05a0)",
+          not lsev(r) and e.word0(r["snap"][0]) == 0x05a0, (lsev(r), hex(e.word0(r["snap"][0]))))
+    r = e.run("srcside-none", 2000, [(1200, "turn", "0:+8", 1, 50)], snap=sn, answer=True, sends=[(140, MS_ARM)])
+    check("srcside: armed, no side: knob A opens the list as before (4A on, why 0)", lsev(r)[:1] == [(1, w0 >> 1, 0)],
+          (lsev(r), hex(w0)))
+    # fix round 1 (review MED 1, LOW 2, LOW 3): the other ways to the list and the other source knobs, all under side A
+    r = e.run("srcside-funcyes", 2600, side + [(1200, "press", "FUNC", 500), (1400, "press", "YES", 100)], snap=sn,
+              answer=True, sends=[(140, MS_ARM)])
+    nl = int.from_bytes(e.peek(r["snap"][0], e.sym("ms") + MS_NOLOCK, 4), "big")
+    k = [(x["code"], x["down"]) for x in evs(r, "key")]
+    print(f"  FUNC + YES under the side: 4A {lsev(r)}; keys {k}; nolock {nl}; word {smp(e, r['snap'][0]):#06x}")
+    check("srcside: FUNC + YES under the side opens no list and no browser (no 4A), YES not sent, NOT LOCKABLE",
+          not lsev(r) and (0x44, 1) not in k and nl >= 1 and smp(e, r["snap"][0]) == w0, (lsev(r), k, nl))
+    r = e.run("srcside-push", 2600, side + [(1200, "press", "PUSH_A", 100)], snap=sn, answer=True, sends=[(140, MS_ARM)])
+    d14 = [x["body"] for x in evs(r, "s2d") if x["kind"] == 0x14]
+    print(f"  PUSH_A under the side: 2D 14 {d14}; 4A {lsev(r)}")
+    check("srcside: the knob press on SMP under the side: 2D 01 14 0 0 19 (the Pi answers NOT LOCKABLE: core test), no list,"
+          " the source unchanged", d14 == [[0, 0, 19]] and not lsev(r) and smp(e, r["snap"][0]) == w0, (d14, lsev(r)))
+    up = [(300, "press", "FLTR"), (600, "press", "PAGE", 900), (650, "press", "T15", 850), (900, "press", "UP", 300),
+          (1000, "press", "SRC")]
+    r = e.run("srcside-upsrc", 2800, up, snap=sn, answer=True, sends=[(140, MS_ARM)])
+    print(f"  UP + SRC under the side, the side let go 0.5 s later: 4A {lsev(r)}")
+    check("srcside: UP + SRC asked under the side opens no list, also after the side let go (the ask dropped)",
+          not lsev(r), lsev(r))
+    cases = [("wt", "TBL knob A", [], "0:+8", [], 0), ("ds", "DSP SAMPLE SMP knob A", [], "0:+8", [], P_SMP),
+             ("jn", "JUNO preset knob A", [], "0:+8", [(300, sx(0x4A, 0x7F, 1))], 0),
+             ("wt", "TBLB knob E (SMPL page)", [(400, "press", "SMPL")], "4:+8", [(350, ANN)], P_TBLB)]
+    for key, what, pre, knob, snd, k in cases:
+        m = machine(e, key, True)
+        wk = e.kword(m[0], 0, k)
+        r = e.run(f"srcside-{key}{k}", 2600, pre + side + [(1200, "turn", knob, 3, 100)], snap=m, answer=True,
+                  sends=[(140, MS_ARM)] + snd)
+        nl = int.from_bytes(e.peek(r["snap"][0], e.sym("ms") + MS_NOLOCK, 4), "big")
+        print(f"  {what} under the side: 4A {lsev(r)}; word {wk.hex()} -> {e.kword(r['snap'][0], 0, k).hex()}; nolock {nl}")
+        check(f"srcside: {what} under the side: no list, the word unchanged, NOT LOCKABLE",
+              not lsev(r) and e.kword(r["snap"][0], 0, k) == wk and nl >= 1, (lsev(r), nl))
+
+
+TESTS = dict(srcside=t_srcside, wtwarp=t_wtwarp, wtftyp=t_wtftyp, wtbank=t_wtbank, preset=t_preset, knob=t_knob, range=t_range, text=t_text, lock=t_lock, list=t_list, browse=t_browse, browsefunc=t_browsefunc, browseknob=t_browseknob, salist=t_salist, saopen=t_saopen, sa2a=t_sa2a, sabusy=t_sabusy, listlock=t_listlock, upt=t_upt,
              nrpn=t_nrpn, scale=t_scale, popups=t_popups, banka=t_banka, tbldef=t_tbldef,
              dspknob=t_dspknob, dsplist=t_dsplist, dspbrowse=t_dspbrowse, dsptext=t_dsptext, dsplock=t_dsplock,
              dspold=t_dspold, dsplistlock=t_dsplistlock,
+             tblblist=t_tblblist, tblbbrowse=t_tblbbrowse, tblblock=t_tblblock, tblbold=t_tblbold, tblbguard=t_tblbguard, tblbcover=t_tblbcover, tblbgate=t_tblbgate, tblbnodraw=t_tblbnodraw,
              dspnrpn=t_dspnrpn, upsrc=t_upsrc, latehost=t_latehost, polymenu=t_polymenu, uplrlist=t_uplrlist)
 
 

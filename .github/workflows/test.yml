@@ -51,6 +51,13 @@ jobs:
         run: pip install -r requirements.txt
       - name: Registry holds no stock bytes
         run: python tools/hash_expect.py --check
+      - name: Elekloader at the pinned commit (the builder's own region check, tools/test_elek_region.py)
+        run: |
+          rev=$(sed -n 's/^ELEK_REV := //p' Makefile)
+          git init -q "$RUNNER_TEMP/elekloader"
+          git -C "$RUNNER_TEMP/elekloader" fetch -q --depth 1 https://github.com/irpina/elekloader "$rev"
+          git -C "$RUNNER_TEMP/elekloader" checkout -q FETCH_HEAD
+          echo "ELEK_DIR=$RUNNER_TEMP/elekloader" >> "$GITHUB_ENV"
       - name: Build tool tests
         run: |
           python tools/test_build_excludes.py
@@ -58,6 +65,8 @@ jobs:
           python tools/test_cavescan.py
           python tools/test_ostarget.py
           python tools/test_combine_release.py
+          python tools/test_elek_region.py
+          python tools/test_buffer_ties.py
       - name: Calibration self-tests (mod 0006)
         run: |
           python tools/comp/calib_tables.py --check
