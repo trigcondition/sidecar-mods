@@ -17,11 +17,14 @@ So each test below pins one of those failures:
   - dead_regions   must find 0x4002905e AND must not offer 0x4013d0de.
 """
 
+import os
 import struct
+import sys
 import unittest
 from pathlib import Path
 
-import cavescan
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cavescan  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = ROOT / "build" / "stock_mainos.bin"

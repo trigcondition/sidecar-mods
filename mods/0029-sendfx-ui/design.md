@@ -74,7 +74,9 @@ one, else the base); turning the other knob with that step held updates it. Clea
   0025 reports) and the project copy's 0x816..0x81D (0025's storage).
 - **Locks:** the stock path (view +0x74 -> set +0x40 -> `track_lock_set` 0x400c0520) with the merged word; the
   incremental save follows. For FX 38..41 it takes 0025's `sfx_incr` branch (a full rebuild, types 42..49) - the
-  branch the storage spec's next step 2 asked to exercise [measured: below].
+  branch the storage spec's next step 2 asked to exercise [measured: below]. Since 0.5.2 any new lock (this mod's or
+  stock's, any track, live record, a track or trig paste) that would take the pattern past the 71 rows the save keeps
+  is refused, with stock's LOCK MEM FULL! popup (section 14).
 - **core-ar2 events:** `ev_tick` for the init and the ASK. No key hook: the page key's repeat press is the stock
   cycle; no new key or encoder detour (0022/core-ar2's key rules untouched).
 - Registry: 6 patches (3 counts, 3 vectors), 8 vtable `ptr` patches, 1 record patch (728 B), 3 detours (page_info,
@@ -440,3 +442,301 @@ after the turn and dropped a host value then.
   (inside the stale window for any send between 330 and 380 ms) is taken, and the hold reads 0.
 - **Results:** it fails on sbw4 (the value is dropped; the hold is still 0x30f4ac77) and passes on sbw5 [measured].
 - **Build:** sbw5, .syx 6dc37d77d6eaf4e1b14c39cbd91b05ef347037659154d0b13a9b49d23ae2b244.
+
+## big-ram: sfu_x in the bundle's DDR region (next build, A3)
+
+Based on twwwy's #34 (sidecar-mods). `sfu_x` (6,706 B: the label lists, caches and counters of the send FX pages) moves from
+elekloader's `.bss` to the registry claim `sfu_x` (`[[buffer]]`, pool `sidecar_buffers`, 0x47C04080, 6,720 B) in the bundle's
+DDR region. Only the UI task and the MIDI task touch it ("Audio ISR: nothing", measured, as above). The symbol and every
+`X.field` access stay: `DDR(struct sfu_x sfu_x, sfu_x, SFU_X)` (an absolute symbol of the same name, `RAM_SFU_X` from the
+registry); to put it back, replace that line by `struct sfu_x sfu_x;` and drop the zeroing at the top of `tick_body`.
+
+**Zeroing.** The first call of `tick_body` (`st.ticks == 0`, in `.data`, so the boot copier's image sets it) zeroes the claim,
+before anything of this mod reads it; the assembler refuses a claim smaller than the struct. What can run before that first
+tick: the parameter-set wrappers, which the OS calls during the project load. `xmode()` already returns 0 while `!st.init`,
+`sfu_f_read`'s host-held BASE / WIDTH read returns 0 until `st.ticks` (as the zeroed `.bss` did), `sync()` already ran only
+after `st.init`, and the OURS-id paths of the F-set wrappers (`sfu_f_read` / `sfu_f_lget`: the stored half without the knob
+mapping; `sfu_f_write`: no write, returns 1; `sfu_f_lset`: no lock, returns 0), which reach `X` through `to_knob` / `to_half`
+(`tcache` loops over `X.un`, junk before the zeroing), return those fallbacks until `st.ticks`. So do the BASE / WIDTH write (`sfu_f_write`
+returns 1 and keeps nothing; the host's 2 s refresh sends BASE / WIDTH again) and `see_fxset` (returns before its compare): nothing of
+`X` is read or written before the zeroing by an F-set wrapper. `sfu_emu pretick` calls the four wrappers, the BASE write and `see_fxset`
+by hand with `st.ticks` 0 (tools/emu/sfu_pretick.s, poked over `sfu_tick`), against a control with the tick run. A host message before the
+first tick is not expected [inferred]: the host talks after a Rytm hello, which 0026 sends after its own first tick (and 0029's
+`ev_tick` order 60 runs before 0026's 70 in each tick).
+`ram_emu.py` (suite `ram`) checks the zeroing over junk; the features run on a dirty base (see 0026's design.md).
+
+**Step 6 (full names and extra pages): `sfu_x` grew and `sfu_p` was added.** `sfu_x` is 7,940 B now (claim `sfu_x`
+0x47C04080, 7,952 B): A3's 6,706 B plus the full names (`lng`, `lname`, section 12). `sfu_p` (4,736 B, claim `sfu_p`, after fix round 1; was 4,704 B
+0x47C05F90) holds section 13's names (`xsh`, `xlng`: 4,224 B for 16 TYPEs) and state. Both are zeroed together in the first
+`tick_body` (the assembler checks both claims), and `sfu_p` is read before that by nothing: `pq()` returns "not paged"
+until `st.ticks`, `sfu_get` leaves `fxview` alone until then, `key_body` returns while `!st.init`, and the MIDI task's
+handlers (`sysex_body`: 51, 22 ver 3) only run after the mailbox is published, after the zeroing. What the two features
+add to elekloader's area (`.run`/`.bss`): no `.bss`; the code and constants (3,592 B in all with `sfu_pages`, measured: the area spare went from
+35,908 B to 32,316 B) and `sfu_pages` (108 B; it is written at run time now, the OS reads it before the first tick). The
+tables would have cost 5.3 KB more in the area (the PR: 9,652 B in all).
+
+## 12. sfx-full-names (issue #14): the effect's full name in the upper left while turning P2..P5
+
+Based on twwwy's #18. Before this, the upper left showed "Send FX 1" / "Send FX 2" for P2..P5 whatever the TYPE. It now
+shows the effect's own name for the knob ("Pre-delay", "High decay"), as the stock DELAY / REVERB pages do.
+
+- **Message: 51 SENDFX FULL NAMES (host -> Rytm).** The host sends it right after each TYPE's 24, on the same triggers:
+  `F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7`.
+  - `first p` counts the effect's own P1..P16, so the Rytm's P2..P5 are `first p` 1, n 4. Names from P5 on are the pages of
+    section 13.
+  - The 24 is left alone: `take_labels` drops a 24 of any other length, so an older 0029 would lose the labels too.
+  - An older 0029 ignores 51 (and an older 0022 does not route it). An older Sidecar never sends it. Either way P2..P5
+    keep "Send FX n".
+- **0022:** its sfx router also passes 51 to 0029's mailbox (`looper.c`, one more compare in the `LP_SFX` build).
+- **0029, appended to `struct sfu_x`** (the emulator tests' offsets stay as they were): `lng[NLT][4][17]` the full names
+  beside `lab[]`, `lng_ok` (bit k: `lng[k]` belongs to `lab[k]`'s TYPE), `lname[2][4][17]` P2..P5's record long names now,
+  `lng_rx`, `lng_drop` (counters).
+- **MIDI task:** `take_names` needs the TYPE's 24 first, since its entry holds the names. It fills `lng[k]` with bit k
+  clear, then sets the bit and bumps `gen`; trailing spaces are trimmed. A 51 whose first P is past P16 is dropped whole
+  (review L6: no `lng_ok`, no `gen`; `lng_drop` counts it). A 21 replace frees the entries, which takes the names with it.
+  A 24 for a TYPE the table has not got clears `lng_ok` bit k (its 51 follows); a 24 sent again for a TYPE it has keeps
+  them (review L3, section 13).
+- **UI task:** `relabel` (on a TYPE or `gen` change) copies the names into `lname` and points records `ID0 + 4 + 6k + j`
+  field 10 (the long name) at `lname[k][j]`; with no name it points at `l_fx1` / `l_fx2` as before.
+- **Tests:** `sfu_emu.py TAG fullnames`: RINGS on SEND FX 1 names P2..P5 Pitch / Model / Brightness / Decay and keeps its
+  labels PTCH MODL BRIT DCY; SEND FX 2 on OFF keeps "Send FX 2"; STUTTER on SEND FX 2 names "Decay / pitch" (13
+  characters); without any 51 "Send FX 1"; a 51 before its 24 is not used. The screen `fullnames-rings.png` shows PITCH in
+  the upper left while P2 turns. Hardware: reported by the contributor (a 16-control user effect, OS 1.74 + Pi 4), not
+  checked here.
+
+## 13. sfx-pages (issue #15): a user effect's P5..P16 on SEND FX pages 2 and 3
+
+Based on twwwy's #19, with the owner's key cycle (no SRC + DOWN gesture, no held-back press). A user effect (API 3) can
+have P1..P16; SEND FX showed P1..P4 only (as P2..P5). Now an effect with more has pages:
+
+| page | A | B | C | D | E | F | G | H |
+|---|---|---|---|---|---|---|---|---|
+| 1 (as before) | TYPE | ROUT | P2 | P3 | P4 | P5 | BASE | WID |
+| 2 | P5 | P6 | P7 | P8 | P9 | P10 | P11 | P12 |
+| 3 | P13 | P14 | P15 | P16 | - | - | - | - |
+
+(P = the effect's own; the Rytm's P2..P5 are its P1..P4.) The title says the page: `SEND FX 1 2/3`. An effect with only
+P1..P4 (every built-in) has one page and nothing changes: no title suffix, no press taken.
+
+- **Keys: a further press of the page key.** On the FX track SRC cycles DELAY -> SEND FX 1 -> DELAY and SMPL REVERB ->
+  SEND FX 2 -> REVERB. For a user effect with more pages SRC cycles DELAY -> SEND FX 1 (page 1) -> page 2 -> page 3 ->
+  DELAY (SMPL the same for SEND FX 2). On page 1 or 2 the press steps to the next page and is **eaten**; on the last page it
+  is stock's, which returns to DELAY / REVERB. An `ev_key` subscriber, order 5 (before 0026's 10):
+  - the press is taken only when SEND FX k is the screen **as worked out at the key** (`top_page(PG.ctrl)`, not the
+    tick's `ontop`: review M1), FUNC and UP are up (0026 binds UP held, then SRC, the source list, 1046: it stays
+    stock's and 0026's, as before; FUNC + page key likewise), and the effect has a page left;
+  - a taken press's repeats and its release are taken too (`kdn` = the key is down, `ate` = its press was taken, both per
+    key; a lost release leaves `kdn` up, so the key's next press is taken for a repeat: after an eaten press it is eaten
+    without a step, after a passed one it is passed, and its own release then clears `kdn`: one press is wasted, then it
+    heals [review L1; the first version of this text said a press of its own was never eaten]);
+  - `PG.mods` follows FUNC and UP (down / up) only to know that they are held; they are never taken.
+  There is no held-back press, no replay of a key through stock and no arrow takeover (review L1 and L2 are moot).
+- **Always page 1.** Leaving the SEND FX page - to any other page or track, a menu, a pop-up, a kit change (the TYPE words
+  another), a project load, a host 21 replace (the labels and names gone) or the port going down (the host dropped) -
+  puts that FX back on page 1 and its real records back (`page_set(k, 0)`: `restore_recs`, `relabel`, `sync`; the tick does
+  it when `top_page` is not that FX's page, `PORT_STATE != 1` or the kit changed (below), `page_count` when the TYPE changed
+  or the page count fell below the page). Coming back shows page 1. The paged values are the Sidecar's per FX, not the
+  kit's.
+- **Fix round 1 (review of the step, 2026-11-24).**
+  - **H1, the port down:** `key_body` passes SRC / SMPL to stock while `PORT_STATE != 1` (a paged effect's `np` is not
+    touched when the host goes, so the key used to step to page 2 and the tick put it back 50 ms later: SRC could never
+    leave the page), and `page_count` counts no pages while the port is down (title and key agree: `SEND FX 1`). The tick
+    runs `relabel` when the port goes or comes back (`PG.up`), so the pages return with it, on page 1.
+  - **M1, a kit change that keeps the TYPE:** when a page past 1 is entered (`page_set`, from page 1) the tick's reset has
+    two more witnesses: `PG.kit[k]`, `ACTIVE_KIT` (0x800067b8, the kit number: 0025 and 0026 read it as well) and
+    `PG.ksig[k]`, a fold of the FX k's six FX words read with the raw `F_READ` of the set (the kit's, never a lock). A
+    page cannot change either (every write is routed to `pv` by the wrappers), so a difference is a kit load: another
+    kit number, or the same slot loaded again with other words. Either resets to page 1.
+  - **M2, 0026's page or splash over a stock SEND FX page:** 0026's host page and its splash are overlays; they push no view,
+    so `top_page` still said SEND FX 1 and the press paged the hidden stock page (and, with SRC in the host's catch mask,
+    the host never got the key). Guard: `sfu_p.ovl` (offset 4704 = 0x47C071F0), nonzero while `st.active | st.splash_on`
+    of 0026; 0026 writes it at each change (`ovl_pub`), only once 0029's mailbox magic `SFXU` is up (set after the first
+    tick's zeroing of `sfu_p`), and `key_body` passes the key on when it is set (FUNC / UP are still followed). Why not the
+    other option, subscribing at order 15 after 0026: 0026 takes UP and FUNC itself (the combos, seq mode, a mask naming
+    them), so 0029 would no longer see them held and UP + SRC would page; and a key 0026 passes while its page is open
+    would still reach 0029, which pages the hidden stock page again. The order stays 5.
+  - **L3:** a reset the tick or `page_count` makes while SEND FX k is the screen pushes its title again (`PG.rt`, worked
+    in the tick), so `2/3` never stays on the glass. **L2:** `sfu_key` returns before `timed()` when `st.init` is 0 (sfu_x
+    is zeroed by the first tick). **O1:** `take_labels` no longer sets `idp1` to 0 while it rewrites an entry in use (a
+    24 sent again for the TYPE on the screen): a relabel in that window saw no entry, `np` 0, and reset the page; the
+    copies are bounded and the `gen` bump redoes them. (Not showable in the emulator: it needs the MIDI task between two
+    stores.) `sfu_p` is 4,736 B (4,726 B and a 10 B pad: the claim is 16-byte aligned and `ram_emu first` wants every claimed word zeroed).
+- **A 24 sent again** (a reconnect, an ASK) for a TYPE the table has keeps the page (review L3): `take_labels` only clears
+  `lng_ok` bit k and the page count `np[k]` for a TYPE new to the table; the 51s that follow the 24 write the same names
+  and the page count is `np` alone, not `lng_ok`, so a name being rewritten never shortens it.
+- **Which page is the screen** (`top_page`): the view the SEND FX knobs were read through (`sfu_get` keeps it) is in the
+  controller's view list (ctrl + 28) before SamplerLedView, nothing but a pad mode's view after that, and its knob A is
+  TYPE's record. [measured, rytm-emu 1.74, class names by RTTI: MainScreenView TransportView PatternGridView KeyboardView
+  **FxPageView** PatternSelectionView HelpBubbleView QuickPerformanceView SamplerLedView on SEND FX 1; REVERB is another
+  FxPageView object; GLOBAL leaves one menu view alone] A pop-up over the page (FUNC + RECORD's COPY PATTERN, TRK held +
+  FUNC + STOP's PASTE FX SETTINGS) is not that list: it counts as leaving.
+- **No free parameter records** [measured: the 1.74 record table (469 records) read from a booted base: 0 is the
+  sentinel, 1..4 BASE / WID, 5 7 11 12 13 carry stock CC fields, 6 8 9 10 are live (TYP, Solo, Mute, LEV), 14..27 are
+  0029's, the rest stock or 0021's]. So the FX's own 8 records switch while a page past 1 shows (`apply_page`): the FX
+  set's wrappers take `pq()` first - read answers `pv[fx][q] << 8`, write keeps it and marks it to send, lock-get -1,
+  lock-set refused (no p-locks, as BASE / WIDTH) - plain dials 0..127, the 51's names (short; long in the upper left,
+  else "Send FX n"), and page 3's E..H get id 0 in the page descriptor (stock draws REVERB's gaps the same way: empty).
+  Page 1 again (`restore_recs`): `set_rec`, the value texts, TYPE / ROUT's looks, `set_bw_rec`, the ids; then `relabel`.
+  The kit's words are never touched: the switch is in the wrappers, before any word.
+- **Protocol** (both sidecar-firmware `sim/protocol.py`):
+  - 51 SENDFX FULL NAMES chunks P5..P8, P9..P12, P13..P16 (first p 5 / 9 / 13), each with the short name too; the page
+    count is the highest P named (`np`). Built-ins send none.
+  - **22 ver 3 SENDFX XKNOBS**, both ways: `F0 7D 52 54 22 03 <fx> <first p 5..16> <n 1..12> <values> F7`. The tick
+    sends a turned FX's P5..P(4 + nx) with try_send; a host value is taken unless a turn is pending or was sent within
+    `BW_HOLD` (the crossing rule of section 11). An older 0029 drops ver 3 (its ver checks); 0022 routes 0x22 already.
+  - The key cycle needs nothing new from the host: it is all on the Rytm. The host must keep sending the 51s after each 24
+    and the values (22 ver 3) after a TYPE change, as before.
+- **State**: `struct sfu_p` (its own symbol, so sfu_x's offsets stay): names (`xsh`, `xlng`, `np` per label entry),
+  `pg` / `npg` / `nx` / `pv` / `pv_tx` / `pv_hold` per FX, `kdn` / `ate` / `mods`, `fxview`, `ctrl`, the paged names and
+  titles, counters (`pv_sent`, `pv_got`, `steps`, `resets`, `retitles`). `sfu_pages` is writable (the title and page 3's
+  empty ids): 108 B of `.data` in the area, the one thing of this feature that must stay there (the OS reads the page
+  descriptors before the first tick).
+- **Where it lives (the owner's step 6):** every table and the state of this section and of section 12 sit in the bundle's
+  DDR region with `sfu_x`: `sfu_x` grew to 7,940 B (claim 7,952) and `sfu_p` is its own claim (4,704 B, 4,736 B after fix round 1), zeroed in the first
+  `tick_body` and guarded until `st.ticks` as `sfu_x` is (section "big-ram": `pq()` answers "not paged" and `sfu_get` leaves
+  `sfu_p` alone before it; the key handler returns while `!st.init`; the MIDI task's handlers run only after the mailbox is
+  published, which is after the zeroing). No ISR code in this mod: only the UI task and the MIDI task touch them. The
+  PR's tables cost 9,652 B of the area (35.9 KB spare became 4.2 KB on its tree); here the tables cost none.
+- **Tests** [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py TAG xpages xreset xkeys xlock xmisc xcopy fullnames`:
+  - `xpages`: FX16 (a user TYPE 66 with P1..P16: its 24, 51 x 4, 22 ver 3) gives SEND FX 1 three pages, FX 2 one; SRC
+    pressed on SEND FX 1: page 2, title `SEND FX 1 2/3`, A..H named X5..X12 (upper left Extra P5..), the host's values; a turn
+    of C goes out as 22 ver 3 and the kit's FX words stay; SRC again: page 3 (A..D X13..X16, E..H id 0); once more: stock's
+    DELAY (TIM turns) and SEND FX 1 is page 1 with its records back; a trig held on page 2 locks nothing; a host 22 ver 3
+    lands on E..H; SMPL on SEND FX 2 the same (REVERB -> SEND FX 2 -> 2 -> 3 -> REVERB); CHORUS: one page, SRC stock's.
+  - `xreset`: AMP, FLTR, TRK + BD, SMPL, a kit change (to CHORUS, to another user effect), a host 21 replace (and the 24 / 51
+    again), a project load and the host gone each put SEND FX 1 back on page 1 with its records restored; coming back shows
+    page 1; a 24 (and its 51s) sent again keeps page 2.
+  - `xfix` (fix round 1): the host gone on page 2 then SRC (stock's DELAY), no pages and a plain title while it is down, the
+    pages back after; another kit number and other FX words with the same TYPE reset the page (control: nothing changed,
+    page 2 stays); a reset by the tick pushes the title again; 0026's page open over SEND FX 1 (TRK + YES, keepalives): SRC
+    pages nothing, with SRC in the host's catch mask the host gets the key, and with the page closed SRC pages again.
+  - `xkeys`: UP held then SRC, FUNC held then SRC: stock's, no step; FLTR and SRC 2M instructions apart: no step (M1 smoke: the race itself cannot be made in the emulator); SRC
+    held 300M: one step, nothing booked after; a built-in with one page on SEND FX 1 / 2: SRC / SMPL cycle as before.
+  - `xlock`: a trig held + PUSH_C on page 2 leaves the lock and the real word alone (control: on page 1 it clears it).
+  - `xmisc`: a 51 past P16 and a 51 for a TYPE without a 24 are dropped; `xcopy`: see Q1 below.
+  Screens `xpages-2.png`, `xpages-3.png` (E..H drawn empty), `xcopy-*.png`.
+- **Q1 (the review's open question), probed in `xcopy`:** with nothing held FUNC + RECORD / STOP copy / paste the PATTERN
+  (screens: COPY / PASTE PATTERN); with TRK held on the FX track they copy / paste the FX SETTINGS (the sound of the FX
+  track = the kit's FX words); stock has no page copy. While page 2 shows, neither path touched the paged records: the
+  copied FX words are the kit's (not the host's values), the paste puts them back, the host's P5..P16 (`pv`) are
+  unchanged, nothing faults. (The overlay also makes `top_page` 0, so the page goes back to 1 within a tick.)
+- **Hardware:** the contributor reports checking #14 and #15 on a Rytm MKII OS 1.74 + Pi 4 with a 16-control user effect;
+  the owner's unit has not run this version (the key cycle is new). To test: a user effect with 16 controls: SRC cycle
+  (DELAY, SEND FX 1, pages 2 and 3, DELAY), the knobs change the sound, leaving and coming back shows page 1, SMPL the same
+  on SEND FX 2, a built-in unchanged, 0026's UP combos as before.
+
+## 14. fxfull-refuse (0.5.2): a lock the save would drop is refused, with stock's LOCK MEM FULL!
+
+**The loss (F1 of the track-B B2 review, `sfx_emu.py fxfull`, `sfu_emu.py fxfull`).** Stock's full pattern rebuild
+(SAVE PROJECT; 0x40009216, the same address on 1.73 and 1.74) writes at most **71** lock rows a pattern, not the pool's 72
+(0x400092a2: `moveq #71,%d4; cmpl %d6,%d4; bltw 0x40009330`) [code]. It walks lock index 0..41 outer, track 0..12 inner;
+a (track, index) is a row when a step locks it (word >= 0 on a step whose lock count, the step's long at +84, is > 0) and
+two rows when the track's fine flag for the index (+5632) is set; a pair that would pass 71 is skipped whole (pair-atomic),
+later smaller rows can still fit. FX words 38..41 (0025's types 42..49) come last and every FX lock made here has the fine
+flag (2 rows), so on a pattern with 70 other rows an FX lock was made, played, and was gone after the next save and load,
+with nothing on the screen [measured on rc1 and 0.5.1.1].
+
+**The rule (round 2, owner 2026-11-25).** Any new lock that would not be saved is refused: a Send FX lock, a stock lock
+of any track and page, a lock recorded live, FREEZE TRACK's, and a track, page or trig paste as a whole. UNDO (track /
+page) and RELOAD TRACK are not checked (below). "Would not be saved" is
+counted as the rebuild counts: the pattern's rows (13 tracks x 64 steps, the per-track fine flags) after the lock pass
+71. A lock that adds no row (a lock replacing the step's own, another step of an index the track already locks) is made
+as before, even on a full pattern; it is found from the lock's own track (the other 12 are only counted for a new row).
+Removing locks, and anything with room, is unchanged.
+
+**Where.** Four detours (registry, owner 0029; elek area):
+- `track_lock_set` (0x400c0520 1.73 / 0x400c058c 1.74) at its entry, `sfu_tls_det` -> `sfu_tls`. It is stock's one
+  lock-set: its only callee `lock_pool_set` (0x400ac670) has no other caller, and its callers are the Sound / FX parameter
+  sets' lock-set (+0x40: every page's knob lock, this mod's pages through the wrapped vtables), live
+  record (0x400af6f6, from the sets' +0x30), trig paste's lock loop and FREEZE TRACK [disasm 1.73 / 1.74].
+  The lock's row is `1 + fine` with the flag the caller passes; a refusal returns 0 as stock's own refusals do (nothing
+  set: the words, the fine flag, the step's count; no incremental save). The call from inside trig paste is not
+  counted again (its return address): the paste was counted whole.
+- PASTE TRIGS (0x400c396a, entry 0026's `ed_rpaste_det`) past the loop that turns the clipboard's steps into the
+  target's, `sfu_tg_det` -> `sfu_tgpaste`: the track's rows as the paste will leave them (each pasted step cleared, then
+  its locks set with their flags; an entry with a negative value sets nothing, not even the flag, as `lock_pool_set`).
+  PASTE TRACK (0x400c4754, `ed_tpaste_det`) with the clipboard's data in hand, `sfu_tk_det` -> `sfu_tkpaste`: the
+  clipboard's 64 steps x 88 B over the track (the paste copies those, the track keeps its fine flags). PASTE PAGE
+  (0x400c3342, `ed_gpaste_det`; round 3, review H1) with the clipboard's data tested, `sfu_pg_det` -> `sfu_pgpaste`:
+  the clipboard's page (+6596) of 16 steps over the selected page's 16 steps (it clears each and copies the 88 B; the
+  flags stay). Refused when the pattern would pass 71 and the paste adds rows: the function leaves by its own failure
+  exit (the clipboard's reference released; track / page paste: the undo copy freed, no undo record; trig paste: the
+  first record's copy's lock vector at -12(%fp), which only the normal end frees, freed first - review M1), so nothing
+  is pasted, the handler shows no PASTE message and LOCK MEM FULL! shows. A paste that fits is pasted as before.
+- Pattern copy / paste needs nothing: it replaces the target pattern whole with the source's rows and flags (fix round
+  1's probe: 71 -> 71 with 45 / 49 kept), so it is over 71 only if the source pattern is, which takes one of the
+  unchecked paths below.
+
+**The fine flag (B).** The FX track's Send FX words 38..41 always take the fine flag (their lo half is P3 / P5):
+`sfu_tls` sets it on every set of those words (trig paste passed 0, and stock's set writes the flag it gets), and
+`sfu_tkpaste` sets it for the Send FX indexes the clipboard brings (track paste does not copy the flags). Before, a pasted
+Send FX lock kept only its hi half's row: the save dropped P3 / P5 even with room.
+
+**The message.** Stock's own: `LOCK MEM FULL!` in a popup window over the page, the one stock shows when its lock mirror
+(PatternParamLocks::updateMirror) fails. 0029 calls the handler stock registers for that (0x400acb66 1.73 / 0x400acbd2
+1.74, with ok = 0); it builds the popup (popup_ctor, a shared_ptr, view_show_popup on the app's view manager) and keeps
+stock's guards. Shown at most once every 500 ms (`sfu_st.full_t`, DTCN0, cleared by `sfu_tick` 500 ms later so the
+32-bit count's wrap never hides one): a knob turn calls the lock-set every detent, live record every played trig.
+`sfu_st.full_n` counts the refusals. Round 4: the popup is only ever shown from `sfu_tick` (UI task, ~20 Hz). A CC
+recorded live reaches `track_lock_set` in the MIDI task [measured: `fxlivecc`], and the popup builds a window and pushes
+it on the UI's view stack, so a refusal never calls it: `refuse()` (every refusal: the lock-set and the three pastes)
+counts and, while no popup is held, stores `sfu_st.full_p = 1`, one byte store. `sfu_tick` alone clears it and writes
+`full_t`: when `full_p` is set and `full_t` is 0 it writes `full_t`, clears `full_p` and shows the popup. No
+read-modify-write is shared: the refusing side only stores 1 (and reads `full_t`, one aligned long); a request that
+races a show stays set and shows once the 500 ms are over. `full_n++` is a read-modify-write in two tasks (a count for
+the tests only; a lost count changes nothing). A paste refusal (UI task) goes the same way: its popup shows at the next
+tick, at most ~50 ms later. On a refused stock lock stock shows no popup of its own (`fxstock71`: 1 popup).
+
+**Live record.** Recording a stock knob (FX track, DELAY knob A) while playing locks every trig it passes; on a full
+pattern each of those sets is refused (`fxlive71`: 6 sets, 6 refusals, 6 popups 500 ms or more apart, the run goes on
+to STOP; no hang). SEND FX 1 / 2's P2..P5 are not recorded live at all: their knobs write through the set's +0x70 (this
+mod's wrapper), never the +0x30 path live record hangs on (`fxlive-p4-*`: live record's lock path not entered) - on
+hardware too, presumably; a known limit, unchanged.
+
+**Not covered (owner 2026-11-25: documented for 0.5.2, a fix in the next release).** Paths that restore lock words
+wholesale, without `track_lock_set` [disasm 1.74; review M2]: UNDO after a track paste / clear (0x400c3808 1.73 / 0x400c3874 1.74: 917 B trig data, then 88 B a
+step from the undo copy), UNDO after a page paste / clear (0x400c35fa / 0x400c3666: 16 steps x 88 B), RELOAD TRACK
+(0x400af64a / 0x400af6b6: the track's 917 B and its whole 5674 B lock block, flags included, from the stored pattern).
+Each puts back locks that fitted when they were taken, but other tracks may have grown since (CLEAR TRACK, 8 new rows
+elsewhere, UNDO: over 71, the save drops the Send FX rows). Pattern UNDO (0x400abec0 / 0x400abf2c) and RELOAD PATTERN
+(0x400af5e0) put back a whole pattern as it was, so they are over 71 only if it was. Also SysEx dumps and a pattern
+loaded with more than 71 rows. A FREEZE TRACK onto a full pattern is refused lock by lock (the locks made before the
+pattern is full stay): it calls the lock-set per lock, not counted as a whole.
+
+**Cost.** The four detours run in the callers' context: the knob / record handlers of the UI task, the MIDI task for a
+CC recorded live (`track_lock_set` only; no UI call there, above), and the paste / freeze key handlers; nothing in the audio interrupt (0025's ISR hook and its other stubs are unchanged;
+0029 has no ISR hook). Each lock-set counts the lock's own track first (64 step tests plus 42 word reads per locked
+step) and returns when the lock adds no row; only a new row counts the other 12 tracks. A paste counts the pattern once.
+Area (the release bundle): 23,352 B spare (23,384 on ffx4, 23,828 on ffx3, 24,656 on ffx2, 25,132 on rc1).
+
+**Tests** [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py TAG fxfull fxstock fxpaste fxlive fxpage fxpaste2 fxlivecc` (named only):
+- `fxfull40` (control, room): the FX 41 lock is made (4a00, fine), no popup, saved as rows 45 / 49, back after LOAD.
+- `fxfull69` (the boundary): 69 stock rows + the new FX lock = exactly 71: made, saved with 45 / 49. Fails with `< 71`.
+- `fxfull70`: 70 stock rows: the FX 41 lock is refused, LOCK MEM FULL! on top, the live arrays unchanged, the save keeps
+  the 70 rows.
+- `fxfull71`: 69 + FX 41 (71, full): a replacing lock and a lock on step 2 of index 41 made, all 71 rows saved.
+- `fxfull72`: 72 stock rows: FX 41 refused; a stock BD lock on a new row refused too (round 2; made on ffx2).
+- `fxstock71` (review rvw71bd): 69 + FX 41 (71) + a new BD LFO knob A lock: refused, nothing changed, LOCK MEM FULL!, the
+  save keeps all 71 rows with 45 / 49 (on ffx2: made, 72 live, the save dropped 45 / 49).
+- `fxstock69`: 69 + a new 2-row stock lock (BD LFO knob H, fine) = 71: made; turned again on the full pattern (replacing):
+  made; 71 rows saved.
+- `fxpaste-track40 / track69 / trig40`: the paste with room is made with the fine flag; the save keeps 45 and 49, LOAD
+  PROJECT brings 3020 back with the flag (on ffx2: no flag, row 45 only, 3000 after the load).
+- `fxpaste-track70 / track71 / trig70 / trig71`: refused, A01's trig data and locks byte for byte unchanged, LOCK MEM
+  FULL!, the save keeps the stock rows (on ffx2: pasted, 71 / 72 live, the lo half or the whole lock lost).
+- `fxlive40 / fxlive71`: above.
+- `fxpage` (round 3): `fxpaste-page40 / page69` made with the flag, both halves saved and loaded; `page70 / page71`
+  refused, A01 unchanged, LOCK MEM FULL! (on ffx3: pasted without the flag, lost at the save).
+- `fxpaste2` (round 3): `multi71` a two-trig paste replacing both FX 41 locks on a full pattern is made; `neg` a
+  clipboard entry with a negative value (poked) counts as nothing, the paste onto 71 is made (refused on ffx3);
+  `leak` operator new minus delete the same over 1 and 4 refused trig pastes (one block kept a refusal on ffx3).
+- `fxpage` (round 3b): A01 32 steps long, A02's page 1 pasted onto A01's page 2: made on step 17 with room, refused onto 70
+  rows, made when it replaces locks already there on a full pattern.
+- `fxlivecc` (round 4): a CC sweep over USB MIDI in live record on 71 rows: refused, 71 rows, LOCK MEM FULL! 500 ms or
+  more apart; live record's `track_lock_set` in another task than the knob's (the MIDI task), LOCK MEM FULL! in the
+  knob's (the UI task; on ffx4 it ran in the MIDI task).
+`sfx_emu.py TAG fxfull` (the stored-row cases) unchanged. `sfu_emu.py TAG fxpaths` (fix round 1's probe) kept.
+
+**Only hardware shows:** the popup's look and timing on the real screen while a knob turns or live record runs, the
+screen after a refused paste (no PASTE message, LOCK MEM FULL!), and that nothing else in the lock path (the step's LED,
+the knob's value text) looks odd when a lock is refused.

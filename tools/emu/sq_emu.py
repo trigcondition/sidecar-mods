@@ -662,6 +662,27 @@ def t_edits(e):
     check("edits: none dropped", int.from_bytes(d, "big") == 0, d.hex())
 
 
+def t_bankcopy(e):
+    """The BANK menu's pattern copy / paste (a 0.4.4 user's way: BANK + trig + REC copies, BANK + trig + STOP pastes)
+    reports 2D 0A as FUNC + REC / STOP do, with the pattern the menu acted on, not the working one (A01): a COPY of
+    A03 (op 1, pattern 2, ok 1), then a PASTE onto A02 (op 2, pattern 1, ok 1). The paste asks PASTE PATTERN? and runs
+    while STOP is held (the squares fill) with the trig still held: the selection is the held trigs [measured, mv0:
+    the confirm 0x4003f296 runs, its loop pastes only while T2 is down]. Without the report the Sidecar never copies
+    the poly tracks; with the working pattern in it, it copies the wrong one."""
+    ev = ([(300, "usb", mask2e(())), (350, "press", "BANK_A", 120), (380, "press", "T3", 80), (420, "press", "RECORD")] +
+          [(600, "press", "BANK_A", 120), (630, "press", "T2", 1000), (670, "press", "STOP", 900)])
+    r = e.run("ed_bank", 1800, ev)
+    ed = edits(r)
+    print(f"  bank menu: {ed}")
+    cp = [x for x in ed if x[0] == 1]
+    ps = [x for x in ed if x[0] == 2]
+    check("bankcopy: BANK + T3 + REC reports a COPY of A03 (op 1, pattern 2, ok 1)",
+          len(cp) == 1 and cp[0][1] == 2 and cp[0][3] == 1, ed)
+    check("bankcopy: BANK + T2 + STOP (held) reports a PASTE onto A02 (op 2, pattern 1, ok 1)",
+          len(ps) == 1 and ps[0][1] == 1 and ps[0][3] == 1, ed)
+    check("bankcopy: the working pattern stays A01", e.peek(r["snap"], 0x405c8d04, 1)[0] == 0, e.peek(r["snap"], 0x405c8d04, 1))
+
+
 def t_savereload(e):
     """1042: the PATTERN menu's RELOAD / SAVE (FUNC + SCNE) and the TRACK menu's RELOAD / SAVE TRACK (FUNC + CHRO; UP x 10
     to its top, then DOWN 3 / 4) report 2D 0A ops 16 / 17 (pattern 0, track 7F) and 18 / 19 (track 0, BD), src 0."""
@@ -1845,7 +1866,7 @@ def t_otherfm(e):
 
 
 TESTS = dict(recleds=t_recleds, savereload=t_savereload, jump=t_jump, fill=t_fill, ticks=t_ticks, switch=t_switch, pause=t_pause, mode=t_mode, stock=t_stock, rec=t_rec, state=t_state, solo=t_solo,
-             hello=t_hello, pin=t_pin, pinvel=t_pinvel, edits=t_edits, seqedit=t_seqedit, scale=t_scale, dirty=t_dirty,
+             hello=t_hello, pin=t_pin, pinvel=t_pinvel, edits=t_edits, bankcopy=t_bankcopy, seqedit=t_seqedit, scale=t_scale, dirty=t_dirty,
              fetch=t_fetch, fetchrace=t_fetchrace, freezeprobe=t_freezeprobe, noreload=t_noreload, yestime=t_yestime, trktrig=t_trktrig, trkfx=t_trkfx, trkyes=t_trkyes, playmode=t_playmode, lockkeys=t_lockkeys, yes=t_yes, disp=t_disp,
              seqpage=t_seqpage, trigkey=t_trigkey, trkpad=t_trkpad, upcombo=t_upcombo, upseq=t_upseq, fillwrite=t_fillwrite, fillpersist=t_fillpersist, fillqueue=t_fillqueue,
              otherplay=t_otherplay, otherplay_live=t_otherplay_live, otherprobe=t_otherprobe, otherfm=t_otherfm)

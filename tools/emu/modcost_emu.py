@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""F4 follow-up: the mods' own instruction cost while a pattern plays (the profile of dtboot does not cover the mods' area at 0x47be0000..).
+"""F4 follow-up: the mods' own instruction cost while a pattern plays (the profile of dtboot does not cover the mods' area: elekloader's area, bounds in the manifest's elek.area).
 
     RYTM_EMU=... RYTM_TEENSY=... .venv/bin/python tools/emu/modcost_emu.py TAG [--secs N]
 

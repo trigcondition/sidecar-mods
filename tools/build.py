@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -261,8 +262,10 @@ def check_linked_params(mods, enabled):
 # Upstream's main has moved core-ar2 to 0.6, OS 1.74 only; 0.2 (storage) collides with our
 # sound and kit bytes (mods/0027-elekloader/design.md section 8). The current builder makes
 # from that source the same core-0.1.elemod 8972d70 made (sha256 33de51c0..., measured).
-ELEK_DIR = ROOT / "vendor" / "elekloader"
-ELEK_REV = "c150ac583a4b7e6d64680d5592f4a40f409193f7"
+# ELEK_DIR in the environment: a checkout of ELEK_REV elsewhere, for a worktree whose shared vendor/elekloader is
+# at another commit (never check a shared one out: other worktrees are pinned to its HEAD)
+ELEK_DIR = Path(os.environ.get("ELEK_DIR") or ROOT / "vendor" / "elekloader").resolve()
+ELEK_REV = "2bcafa17c5ebd9a00f33b0e74d6993f37ab18266"
 ELEK_CORE_REV = OS["core_rev"]
 ELEK_CORE_VERSION = OS["core_version"]
 ELEK_MOD = "0027-elekloader"
@@ -301,7 +304,7 @@ def elek_pinning(meta):
         raise SystemExit(f"{ELEK_DIR} missing: make setup")
     rev = run(["git", "-C", ELEK_DIR, "rev-parse", "HEAD"]).strip()
     if rev != ELEK_REV:
-        raise SystemExit(f"vendor/elekloader is at {rev}, build.py is pinned to {ELEK_REV}")
+        raise SystemExit(f"{ELEK_DIR} is at {rev}, build.py is pinned to {ELEK_REV}")
     sys.path.insert(0, str(ELEK_DIR))
     try:
         from elekloader.devices import analog_rytm_mk2 as prof
@@ -319,7 +322,7 @@ def elek_pinning(meta):
             raise SystemExit(f"elekloader's Rytm {OS['os']} {what} is {theirs}, ours {mine}")
     if prof.DEVICE.main_load != meta["base"]:
         raise SystemExit(f"elekloader's load address 0x{prof.DEVICE.main_load:08x} != ours")
-    return rev, prof.DEVICE.ddr
+    return rev, prof.DEVICE.ddr, prof.DEVICE
 
 
 def change_runs(a: bytes, b: bytes, base: int, mine=lambda va: True):
@@ -377,8 +380,50 @@ def elek_source(mod, dst):
     objdir = BUILD / "obj"
     objdir.mkdir(parents=True, exist_ok=True)
     defs = [x for k, v in sorted(mod["_params"].items()) for x in ("--defsym", f"P_{k.upper()}={int(v)}")]
+    defs += [x for k, v in sorted(mod.get("_ram", {}).items()) for x in ("--defsym", f"{k}=0x{v:x}")]
     run(["m68k-elf-as", "-mcpu=5475", "-I", BUILD, "-I", ROOT, *defs, "-o",
          objdir / f"{mod['id']}.elf", mod["_dir"] / mod["_sources"]["stub"]])
+
+
+def buffer_symbols(reg, mods, enabled, bundle):
+    """Each enabled mod's [[buffer]] claims (registry pool sidecar_buffers) as assembler symbols in mod["_ram"], as its
+    params: RAM_<NAME> (the claim's address) and RAM_<NAME>_SIZE. The block is the bundle's region, so a build with
+    claims is a bundle build: a per-mod elemod declares no region, and nothing would refuse another mod's overlap."""
+    for mid in enabled:
+        mods[mid]["_ram"] = {}
+    for c in reg.get("buffer", []):
+        if c["owner"] not in enabled or layout.gated_out(c.get("gate"), mods[c["owner"]]["_params"], c["owner"]):
+            continue
+        if not bundle:
+            raise SystemExit(f"{c['owner']} claims the buffer {c['name']} in the bundle's DDR region: build with "
+                             f"--elek-bundle (a per-mod elemod declares no region)")
+        n = c["name"].upper()
+        mods[c["owner"]]["_ram"].update({f"RAM_{n}": c["addr"], f"RAM_{n}_SIZE": c["size"]})
+
+
+# A literal address in one mod that points into another mod's registry buffer: (reader mod, its source, the #define's
+# name, buffer owner, buffer, offset in it). The offset is also a _Static_assert in the owner's C (0029's sfu.c): the
+# three agree or the build fails (F1, review of the send FX pages).
+BUFFER_TIES = [("0026-remote-ui", "rui.c", "SFU_OVL", "0029-sendfx-ui", "sfu_p", 4704)]
+
+
+def check_buffer_ties(reg, enabled, ties=BUFFER_TIES, root=None):
+    """Errors for a tie whose two mods are both in the build: the reader's #define is not the buffer's claim base + offset."""
+    errs = []
+    for reader, src, macro, owner, buf, off in ties:
+        if reader not in enabled or owner not in enabled:
+            continue
+        claim = [c for c in reg.get("buffer", []) if c["owner"] == owner and c["name"] == buf]
+        text = ((root or ROOT) / "mods" / reader / src).read_text()
+        m = re.search(rf"^#define\s+{macro}\s+(0x[0-9a-fA-F]+)u?\b", text, re.M)
+        if len(claim) != 1:
+            errs.append(f"{reader} {macro}: the registry has no [[buffer]] {owner} {buf}")
+        elif not m:
+            errs.append(f"{reader} {src}: no '#define {macro} 0x...' (check_buffer_ties)")
+        elif int(m.group(1), 16) != claim[0]["addr"] + off:
+            errs.append(f"{reader} {src}: {macro} = {m.group(1)}, but {owner}'s buffer {buf} (registry 0x{claim[0]['addr']:x}) "
+                        f"+ {off} is 0x{claim[0]['addr'] + off:x}: move the literal or the claim together")
+    return errs
 
 
 def read_version():
@@ -421,8 +466,47 @@ def defined_labels(mid):
     return {f[2] for f in (l.split() for l in out.splitlines()) if len(f) == 3 and f[1] not in "aAU"}
 
 
+BUFFER_POOL = "sidecar_buffers"      # registry pool (kind = "ddr"); re/os/<os>.toml [pool.sidecar_buffers]
+BUFFER_REGION = "sidecar buffers"    # the name the bundle declares it by
+BUFFER_FLOOR = 0x47C00000            # the block starts at elekloader's area's end or above, never below (bundle_regions)
+
+
+def bundle_regions(reg, os_doc, os_ver, dev):
+    """The bundle's resources.regions: the Sidecar's DDR block (registry pool sidecar_buffers), as elekloader
+    wants them ({name, lo, hi}, hex strings). Refuses when: the registry has no such pool; this OS's file
+    (re/os/<os>.toml [pool.sidecar_buffers]) has none, other bounds, or no status or evidence; the block is not
+    wholly in the profile's `big` area; it touches elekloader's own area (dev.ddr), where the linker puts the core
+    and our code; or it starts below BUFFER_FLOOR (0x47BE0000-0x47C00000 is the area; below it 0x47938000-0x47BE0000
+    holds the OS's boot-cleared block and, with core 0.11 and later, the step tags and the linker's own area).
+    elekloader itself compares regions only with regions, so the last two checks are ours."""
+    pool = next((p for p in reg.get("pool", []) if p["name"] == BUFFER_POOL and p.get("kind") == "ddr"), None)
+    if pool is None:
+        raise SystemExit(f"registry/allocations.toml has no ddr pool {BUFFER_POOL}")
+    lo, hi = pool["start"], pool["end"]
+    mine = os_doc.get("pool", {}).get(BUFFER_POOL)
+    if mine is None:
+        raise SystemExit(f"re/os/{os_ver}.toml has no [pool.{BUFFER_POOL}]: the Sidecar's DDR block "
+                         f"0x{lo:08x}-0x{hi:08x} is not established on OS {os_ver}")
+    if (mine.get("start"), mine.get("end")) != (lo, hi):
+        raise SystemExit(f"the registry's {BUFFER_POOL} (0x{lo:08x}-0x{hi:08x}) and re/os/{os_ver}.toml's "
+                         f"(0x{mine.get('start', 0):08x}-0x{mine.get('end', 0):08x}) differ")
+    if not mine.get("status") or not mine.get("evidence"):
+        raise SystemExit(f"re/os/{os_ver}.toml [pool.{BUFFER_POOL}] needs its status and evidence")
+    big = dev.areas.get("big")
+    if big is None or not (big[0] <= lo and hi <= big[1]):
+        raise SystemExit(f"{BUFFER_POOL} 0x{lo:08x}-0x{hi:08x} is outside elekloader's `big` area "
+                         f"({'none' if big is None else f'0x{big[0]:08x}-0x{big[1]:08x}'})")
+    if lo < dev.ddr[1] and dev.ddr[0] < hi:
+        raise SystemExit(f"{BUFFER_POOL} 0x{lo:08x}-0x{hi:08x} overlaps elekloader's area "
+                         f"0x{dev.ddr[0]:08x}-0x{dev.ddr[1]:08x}")
+    if lo < BUFFER_FLOOR:
+        raise SystemExit(f"{BUFFER_POOL} 0x{lo:08x}-0x{hi:08x} starts below 0x{BUFFER_FLOOR:08x}, where elekloader's "
+                         f"area and the OS's own memory are")
+    return [{"name": BUFFER_REGION, "lo": f"0x{lo:08x}", "hi": f"0x{hi:08x}"}]
+
+
 def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, reg_claims,
-               elek_patches, cave_spans, bundle):
+               elek_patches, cave_spans, bundle, reg=None):
     """Hand the patched image to elekloader: every byte build.py changed becomes a site
     (its stock bytes pinned by sha256 again), the area = "elek" mods' sources code, their
     elek detours `jmp` sites; elekloader links that code into its DDR area with its core
@@ -430,7 +514,9 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
     rytm-mods mod (rytm-<id>, version = the tag), or with `bundle` one for the whole set
     (BUNDLE_ID, version = VERSION). Returns the manifest's "elek" record, plus "_mainos"
     (the depacked MAIN OS)."""
-    rev, ddr = elek_pinning(meta)
+    rev, ddr, dev = elek_pinning(meta)
+    # a bundle reserves the Sidecar's DDR block (the build refuses an OS that has no evidence for it)
+    regions = bundle_regions(reg, ostarget.load(OS["os"]), OS["os"], dev) if bundle else []
     base = meta["base"]
     core = mods[ELEK_MOD].get("_elek", {}).get("core", "core-ar2")
     work = BUILD / "elek" / tag
@@ -541,6 +627,7 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                 continue
             subscribe += mods[mid].get("_elek", {}).get("subscribe", [])
             prm = {f"P_{k.upper()}": int(v) for k, v in mods[mid]["_params"].items()}
+            prm.update(mods[mid].get("_ram", {}))   # its buffer claims' symbols (buffer_symbols)
             if bundle:
                 # several stubs in one mod: each gets its own params as .set lines, as
                 # elekloader's defsym would give every source all of them
@@ -582,7 +669,8 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
                                        f" Built for this set only (tag {tag}). {HOMEPAGE}")}
         modjson.update({"device": "analog-rytm-mk2", "os": OS["os"], "requires": requires,
                         "conflicts": conflicts,
-                        "resources": {"core": ELEK_CORE_VERSION} if sources else {},
+                        "resources": {**({"core": ELEK_CORE_VERSION} if sources else {}),
+                                      **({"regions": list(regions)} if bundle and regions else {})},
                         "sources": sources, "subscribe": subscribe, "sites": sites,
                         "defsym": defsym})
         (mdir / "mod.json").write_text(json.dumps(modjson, indent=1) + "\n")
@@ -684,6 +772,8 @@ def elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, 
             "refs": {mid: {o: sorted(f"0x{w:08x}" for w in ws) for o, ws in found[mid].items()}
                      for mid in members if found[mid]},
             "version": version, "layout": lay, "area": list(ddr),
+            "regions": [{"name": g["name"], "lo": int(g["lo"], 16), "hi": int(g["hi"], 16), "area": g["area"]}
+                        for m in man["mods"] for g in m["regions"]],
             "mods": elek_mods, "detours": detours, "patches": patches,
             "symbols": {k: v for k, v in smap.items()
                         if k.startswith((ELEK_ID, "core:"))},
@@ -725,6 +815,12 @@ def main():
     layout.resolve_expect(reg, stock_img, base)   # the registry's expects, from this image (tools/hash_expect.py)
 
     reg_pools = reg.get("pool", [])
+    # a DDR pool's status on this OS is its re/os/<os>.toml entry's (a pool the OS has no evidence for stays what the
+    # registry says; bundle_regions then refuses the build)
+    for p in reg_pools:
+        mine = ostarget.load(OS["os"]).get("pool", {}).get(p["name"], {})
+        if p.get("kind") == "ddr" and mine.get("status"):
+            p["status"] = mine["status"]
 
     def pool_for(c):
         """The pool a claim sits wholly inside, or None. layout.py already proved one
@@ -788,6 +884,13 @@ def main():
     if problems:
         for p in problems:
             print("ERROR:", p)
+        raise SystemExit(1)
+
+    buffer_symbols(reg, mods, enabled, args.elek_bundle)
+    ties = check_buffer_ties(reg, enabled)
+    if ties:
+        for t in ties:
+            print("ERROR:", t)
         raise SystemExit(1)
 
     symmod.emit_inc(syms, BUILD / "symbols.inc")
@@ -1004,7 +1107,10 @@ def main():
                       if c["owner"] in enabled and
                       not layout.gated_out(c.get("gate"), mods[c["owner"]]["_params"], c["owner"])]
         elek = elek_build(img, stock_img, mods, enabled, elek_detours, tag, meta, syx_out, claims,
-                          elek_patches, cave_spans, args.elek_bundle)
+                          elek_patches, cave_spans, args.elek_bundle, reg)
+        elek["buffers"] = [{"owner": c["owner"], "name": c["name"], "lo": c["addr"], "hi": c["addr"] + c["size"]}
+                           for c in reg.get("buffer", []) if c["owner"] in enabled and
+                           not layout.gated_out(c.get("gate"), mods[c["owner"]]["_params"], c["owner"])]
         detours_applied += elek["detours"]
         img = bytearray(elek.pop("_mainos"))   # stock length + the appended .boot and blob
     else:

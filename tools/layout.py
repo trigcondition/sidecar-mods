@@ -6,9 +6,11 @@ import tomllib
 from pathlib import Path
 
 # claim table -> the pattern of the pool names a claim may live in; each claim must fit
-# wholly in one. Every pool named cave, cave2, cave3, ... holds cave claims.
+# wholly in one. Every pool named cave, cave2, cave3, ... holds cave claims; [[buffer]] claims are DDR ranges.
 POOL_OF = {"cave": r"cave\d*",
-           "ram": r"patch_ram"}
+           "ram": r"patch_ram",
+           # the bundle's DDR region in elekloader's `big` area (kind = "ddr"; tools/build.py bundle_regions)
+           "buffer": r"sidecar_buffers"}
 
 # A pool at status "candidate" has not been proven on hardware, so the only thing
 # allowed to claim it is the mod that does the proving. Without this the pools would
@@ -286,6 +288,31 @@ def validate(reg: dict, enabled: set[str] | None = None, params: dict | None = N
                 f"Name the stub label it jumps to, so the target is resolved from the "
                 f"linked ELF rather than assumed to be the start of the cave block."
             )
+    errors += buffer_problems([c for c in reg.get("buffer", []) if active(c)])
+    return errors
+
+
+def buffer_problems(claims: list) -> list[str]:
+    """The [[buffer]] claims' own rules (the pool fit and the overlaps are validate's, as for caves): a name (lower
+    case, one claim each: build.py gives its mod the assembler symbols RAM_<NAME> and RAM_<NAME>_SIZE, so a name that is
+    another's plus `_size` would make the same symbol twice), a size above 0, and address and size multiples of 16
+    (the cache line)."""
+    errors: list[str] = []
+    names: dict = {}
+    for c in claims:
+        who = f"buffer claim {c.get('name') or '?'} by {c['owner']} (0x{c['addr']:08x}+{c['size']:#x})"
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", c.get("name") or ""):
+            errors.append(f"{who}: needs a `name` (lower case letters, digits, _), the RAM_<NAME> symbol")
+        elif c["name"] in names:
+            errors.append(f"buffer: {c['owner']} and {names[c['name']]} both name a claim {c['name']!r}")
+        names.setdefault(c.get("name"), c["owner"])
+        if c["size"] <= 0:
+            errors.append(f"{who}: the size must be above 0")
+        elif c["addr"] % 16 or c["size"] % 16:
+            errors.append(f"{who}: address and size must be 16-byte aligned")
+    for n in sorted(x for x in names if x and f"{x}_size" in names):
+        errors.append(f"buffer: the claims {n!r} ({names[n]}) and '{n}_size' ({names[n + '_size']}) would both give the "
+                      f"assembler symbol RAM_{n.upper()}_SIZE: rename one")
     return errors
 
 

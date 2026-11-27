@@ -1106,7 +1106,10 @@ slot points at a silence buffer, so SMP 0 plays silence. A trig starts the voice
 
 Test: `us_emu.py <tag> smplayer` fills slots 1..127 with a square wave (pokes into the browser preview's buffer
 0x4b8372c0) and turns SMPL D up: on a stock BD machine S (voice 0) is nonzero 2M after a BD trig (the control); on
-PLAITS it is zero. mv0 (before): PLAITS 0x12d8a492, the same as stock; mv2: 0.
+PLAITS it is zero. mv0 (before): PLAITS 0x12d8a492, the same as stock; mv2: 0. Since the flash review it also reads
+the mixer's output (0x80000000, 4 slots of 2 KB, the slot index at 0x42f92124 & 3, voice v at +4v of each 64-byte
+frame): voice 0's column must be the same with the slots filled or empty on PLAITS (mv0: all 128 frames differ; mv4:
+none) and differ on the stock control; and a kept layer (U1 with the sample page, flag 0) still plays (S and the mixer).
 
 ## 0.5.2: the sample player skips Sidecar voices (slots=1 only, emulator only)
 

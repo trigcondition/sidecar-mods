@@ -19,7 +19,7 @@ def make_folder(d, os_name, suffix, core, extra=None, toolchain=None, version="0
         f"core-0.1{suffix}.elemod": f"core {os_name}",
         f"rytm-sidecar-{version}{suffix}.elemod": f"bundle {os_name}",
         f"elekloader-{core}-core-ar2-src.tar.gz": f"core source {core}",
-        "elekloader-c150ac5-src.tar.gz": "builder source",
+        "elekloader-2bcafa1-src.tar.gz": "builder source",
         "LICENSE": "GPL",
         "NOTICE": "notice",
         "TOOLCHAIN.txt": toolchain or f"release {version} for OS {os_name}, built from sidecar-mods {SHA}\nas 2.47\n",
@@ -60,7 +60,7 @@ class Combine(unittest.TestCase):
         self.assertEqual(names, sorted([
             "core-0.1.elemod", "rytm-sidecar-0.4.0.elemod", "core-0.1-os1.74.elemod", "rytm-sidecar-0.4.0-os1.74.elemod",
             "elekloader-8972d70-core-ar2-src.tar.gz", "elekloader-13fa795-core-ar2-src.tar.gz",
-            "elekloader-c150ac5-src.tar.gz", "LICENSE", "NOTICE", "TOOLCHAIN.txt", "TOOLCHAIN-os1.74.txt",
+            "elekloader-2bcafa1-src.tar.gz", "LICENSE", "NOTICE", "TOOLCHAIN.txt", "TOOLCHAIN-os1.74.txt",
             "SHA256SUMS"]))
         self.assertIn("for OS 1.73,", open(os.path.join(self.out, "TOOLCHAIN.txt")).read())
         self.assertIn("for OS 1.74,", open(os.path.join(self.out, "TOOLCHAIN-os1.74.txt")).read())
@@ -83,7 +83,7 @@ class Combine(unittest.TestCase):
         self.assertFalse(os.path.exists(self.out))
 
     def test_shared_file_differs(self):
-        for shared in ("LICENSE", "NOTICE", "elekloader-c150ac5-src.tar.gz"):
+        for shared in ("LICENSE", "NOTICE", "elekloader-2bcafa1-src.tar.gz"):
             with self.subTest(shared):
                 self.tearDown(); self.setUp()
                 make_folder(self.a, "1.73", "", "8972d70")
@@ -162,6 +162,63 @@ class Combine(unittest.TestCase):
         make_folder(self.a, "1.73", "", "8972d70")
         make_folder(self.b, "1.74", "", "13fa795")
         self.assert_refused()
+
+
+class OneOS(unittest.TestCase):
+    """A release that builds one OS (0.5.x: 1.74 only): the asset folder is that OS's folder, checked, with one
+    SHA256SUMS and one TOOLCHAIN.txt."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.a = os.path.join(self.tmp.name, "0.5.2-os1.74")
+        self.out = os.path.join(self.tmp.name, "0.5.2-assets")
+        self.expect = SHA
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_it(self, os_a="1.74"):
+        return combine_release.main([self.a, self.out, "--os-a", os_a, "--expect-commit", self.expect])
+
+    def test_one_folder(self):
+        make_folder(self.a, "1.74", "-os1.74", "13fa795", version="0.5.2")
+        self.assertEqual(self.run_it(), 0)
+        self.assertEqual(sorted(os.listdir(self.out)), sorted([
+            "core-0.1-os1.74.elemod", "rytm-sidecar-0.5.2-os1.74.elemod", "elekloader-13fa795-core-ar2-src.tar.gz",
+            "elekloader-2bcafa1-src.tar.gz", "LICENSE", "NOTICE", "TOOLCHAIN.txt", "SHA256SUMS"]))
+        self.assertIn("for OS 1.74,", open(os.path.join(self.out, "TOOLCHAIN.txt")).read())
+        combine_release.read_folder(self.out)
+        self.assertEqual(len(open(os.path.join(self.out, "SHA256SUMS")).read().splitlines()), 7)
+
+    def assert_refused(self, os_a="1.74"):
+        self.assertEqual(self.run_it(os_a), 1)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_wrong_os(self):
+        make_folder(self.a, "1.74", "-os1.74", "13fa795", version="0.5.2")
+        self.assert_refused("1.73")
+
+    def test_uncommitted(self):
+        make_folder(self.a, "1.74", "-os1.74", "13fa795", version="0.5.2",
+                    toolchain=f"release 0.5.2 for OS 1.74, built from sidecar-mods {SHA} (uncommitted changes)\n")
+        self.assert_refused()
+
+    def test_not_head(self):
+        make_folder(self.a, "1.74", "-os1.74", "13fa795", version="0.5.2")
+        self.expect = OTHER
+        self.assert_refused()
+
+    def test_syx_refused(self):
+        make_folder(self.a, "1.74", "-os1.74", "13fa795", version="0.5.2",
+                    extra={"Analog-Rytm_MKII_OS1.74_rel0-5-2.syx": "firmware"})
+        self.assert_refused()
+
+    def test_out_not_empty(self):
+        make_folder(self.a, "1.74", "-os1.74", "13fa795", version="0.5.2")
+        os.makedirs(self.out)
+        open(os.path.join(self.out, "old"), "w").close()
+        self.assertEqual(self.run_it(), 1)
+        self.assertEqual(os.listdir(self.out), ["old"])
 
 
 if __name__ == "__main__":

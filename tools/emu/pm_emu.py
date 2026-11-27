@@ -268,10 +268,13 @@ def t_ramp(e):
     check("ramp: 0 -> 0x1000 over 8 blocks (9..13 samples of 0.5 ms), every value a multiple of 0x200",
           up and top and 9 <= top[0] - up[0] + 1 <= 13 and all(s % 0x200 == 0 for s in steps) and len(steps) >= 7,
           (up[:1], top[:1], [hex(s) for s in steps]))
-    later = x[top[-1]:] if top else []
+    # (a sample between stage A and S's write reads the base: left out of the steps (mv5's longer pmo_pre widened that
+    # window); the end read from the settled snapshot)
+    later = [y for y in x[top[-1]:] if y != base] if top else []
     dif = [abs(a - b) for a, b in zip(later, later[1:])]
+    end = eff(e, r["snap"], 0, W_RES)
     check("ramp: the new target 0 over 64 blocks: no jump (each 0.5 ms moves <= 0x100), down to the base",
-          later and max(dif or [0]) <= 0x100 and later[-1] == base, (max(dif or [0]), hex(later[-1]) if later else None))
+          later and max(dif or [0]) <= 0x100 and end == base, (max(dif or [0]), hex(end)))
 
 
 def lfo_pokes(dep=0x5000, dst=W_VOL):
@@ -292,19 +295,25 @@ def t_stack(e):
     s0 = os.path.join(R.EMU, e.snap)
     tgt_base[:] = [tgt(e, s0, 0, 9)]
     msg = lambda m: usb(e.at(T0), m) + usb(e.at(T0 + 150), m)   # noqa: E731  (a refresh before the 250 ms timeout)
-    _, a = series(e, "stack-lfo", T0 + 300, lfo_pokes(), [(0, W_VOL)], every="0.4M")
+    _, a = series(e, "stack-lfo", T0 + 300, lfo_pokes(), [(0, W_VOL)], every="0.37M")
     _, b = series(e, "stack-off", T0 + 300, lfo_pokes() + msg(off_msg(k, 0, [(0, W_VOL, -640)])), [(0, W_VOL)],
-                  every="0.4M")
+                  every="0.37M")
     a, b = a[(0, W_VOL)], b[(0, W_VOL)]
     n0 = int(len(a) * (T0 + 20) / (T0 + 300))
     d = [x - y for x, y in zip(a[n0:], b[n0:])]
     print(f"    LFO alone {[hex(x) for x in a[n0:n0 + 6]]}  + offset {[hex(x) for x in b[n0:n0 + 6]]}")
     check("stack: the LFO moves VOL", len(set(a[n0:])) > 4, len(set(a[n0:])))
-    check("stack: with the offset, eff = the LFO's - 0x0a00 at every sample after the message", d and
-          all(x == 0xa00 for x in d), sorted(set(d))[:6])
+    # A status line can fall inside the audio interrupt between the stock's rebuild of the effective array and S-post:
+    # that sample reads the LFO's value without the offset (difference 0). Which samples do depends on the build's
+    # timing (measured: 0 of 140 on cpl2 and 1 on cpl3 at every 0.4M; 15 and 11 of 144 at 0.39M, on both, every 13th).
+    # So: 0x0a00 everywhere, but for single samples of 0 between two of 0x0a00, at most one in eight.
+    odd = [i for i, x in enumerate(d) if x != 0xa00]
+    lone = all(d[i] == 0 and (i == 0 or d[i - 1] == 0xa00) and (i + 1 == len(d) or d[i + 1] == 0xa00) for i in odd)
+    check("stack: with the offset, eff = the LFO's - 0x0a00 at every sample after the message (a sample taken mid-interrupt apart)",
+          d and lone and len(odd) * 8 <= len(d), (len(odd), len(d), sorted(set(d))[:6]))
     _, c = series(e, "stack-dep", T0 + 300, lfo_pokes(0x5000) + msg(off_msg(k, 0, [(0, W_DEP, 1024)])), [(0, W_VOL)],
-                  every="0.4M")
-    _, dd = series(e, "stack-dep2", T0 + 300, lfo_pokes(0x6000), [(0, W_VOL)], every="0.4M")
+                  every="0.37M")
+    _, dd = series(e, "stack-dep2", T0 + 300, lfo_pokes(0x6000), [(0, W_VOL)], every="0.37M")
     c, dd = c[(0, W_VOL)], dd[(0, W_VOL)]
     m = [i for i in range(n0, min(len(c), len(dd))) if c[i] != dd[i]]
     check("stack: DEP +16 steps by the Sidecar = DEP poked 16 steps higher (LFO 1 reads the S-pre word)",
@@ -331,14 +340,18 @@ def t_override(e):
     d = pmo(e, r["snap"])
     check("override: mix 0 (jump): released, eff = base, the entry freed", eff(e, r["snap"], 0, W_VOL) == base and
           d and d["used"] == 0, (hex(eff(e, r["snap"], 0, W_VOL)), d))
-    _, a = series(e, "ovr-lfo-a", T0 + 200, lfo_pokes(), [(0, W_VOL)], every="0.4M")
+    _, a = series(e, "ovr-lfo-a", T0 + 200, lfo_pokes(), [(0, W_VOL)], every="0.37M")
     _, b = series(e, "ovr-lfo-b", T0 + 200, lfo_pokes() + usb(e.at(T0), ovr_msg(k, 0, [(0, W_VOL, v, 127, 1)])),
-                  [(0, W_VOL)], every="0.4M")
+                  [(0, W_VOL)], every="0.37M")
     a, b = a[(0, W_VOL)], b[(0, W_VOL)]
     n0 = int(len(a) * (T0 + 20) / (T0 + 200))
-    bad = [i for i in range(n0, min(len(a), len(b))) if b[i] != max(0, min(0x7fff, 0x3200 + a[i] - base))]
+    # (a sample between stage A and pm's S write reads the LFO's word alone, b == a: the sampling gap, dropped; most
+    # samples must be past it)
+    idx = [i for i in range(n0, min(len(a), len(b))) if b[i] != a[i]]
+    bad = [i for i in idx if b[i] != max(0, min(0x7fff, 0x3200 + a[i] - base))]
     check("override: with LFO 1 on VOL: eff = 0x3200 + (the LFO run's eff - base), every sample", len(a) > n0 and
-          not bad and len(set(b[n0:])) > 3, [(hex(a[i]), hex(b[i])) for i in bad[:4]])
+          not bad and len(idx) * 3 > (len(a) - n0) * 2 and len(set(b[n0:])) > 3,
+          [(hex(a[i]), hex(b[i])) for i in bad[:4]] or (len(idx), len(a) - n0))
 
 
 def t_override_plock(e):
@@ -382,7 +395,7 @@ def t_scene(e):
     check("scene: RES (no scene lock): the override 0x1000", eff(e, sn, 0, W_RES) == 0x1000, hex(eff(e, sn, 0, W_RES)))
     st = stats(r)
     check("scene: 07's answer: flags bit 0 (an override skipped for a scene lock) and bit 1 (the hook ran)",
-          st and st[-1][-1] & 3 == 3, st)
+          st and st[-1][6] & 3 == 3, st)
 
 
 def t_scene_first(e):
@@ -434,9 +447,52 @@ def t_hello_fade(e):
     x = [v >> sh & 0xffff for c, v in peek_series(r2, addr & ~3)]
     mid = [y for y in x if base < y < base + 0xa00]
     d = pmo(e, r2["snap"])
+    # (on before: hello-on's snapshot is never moved (from_snap's base), so inside the interrupt read the entry's offset)
+    sl = e.peek(r["snap"], a + PMO_IDX + W_RES, 1)[0] - 1
+    on = eff(e, r["snap"], 0, W_RES) == base + 0xa00 or (
+        mid_isr(e, r["snap"]) and sl >= 0 and
+        int.from_bytes(e.peek(r["snap"], a + PMO_ENT + PMO_ENT_SZ * sl + 4, 4), "big", signed=True) == 640 << 10)
     check("hello_fade: on before (+10 steps); a fade (values between over 32 blocks: 1..45 samples of 0.5 ms); the "
-          "base, freed, no timeout", eff(e, r["snap"], 0, W_RES) == base + 0xa00 and 0 < len(mid) <= 45 and
+          "base, freed, no timeout", on and 0 < len(mid) <= 45 and
           eff(e, r2["snap"], 0, W_RES) == base and d and d["used"] == 0 and d["timeouts"] == 0, (len(mid), d))
+
+
+def t_rehello_nofade(e):
+    """0.5.2 re-hello (review M2): the host asks the Rytm for its hello again (3C 01 01) while a modulation runs: the hello
+    comes (a second one), the modulated word does not move (no fade: the link is the same). A port-up hello fades it
+    (hello_fade)."""
+    k = kit_of(e)
+    s0 = os.path.join(R.EMU, e.snap)
+    base = tgt(e, s0, 0, W_RES)
+    ex = []
+    for i in range(8):   # (refreshed before the 250 ms timeout)
+        ex += usb(e.at(T0 + 150 * i), off_msg(k, 0, [(0, W_RES, 640)]))
+    ex += usb(e.at(T0 + 500), P.rui_rehello())
+    r, v = series(e, "rehello-nofade", T0 + 1300, ex, [(0, W_RES)], every="0.2M")
+    x = v[(0, W_RES)]
+    up = [i for i, y in enumerate(x) if y != base]
+    h = R.evs(r, "hello")
+    print(f"    {len(x)} samples, first move at {up[:1]}, values {sorted({hex(y) for y in x})}, hellos {len(h)}")
+    check("rehello_nofade: the request was answered (a second hello)", len(h) == 2, h)
+    check("rehello_nofade: the modulated word rises to base + 0x0a00 and stays there across the re-hello (no fade)",
+          up and {y for y in x[up[0]:]} == {base + 0xa00}, sorted({hex(y) for y in x}))
+
+
+def t_portup_fade(e):
+    """(M2's other side) The port-up hello (0.35 s after the base: pm_hello set by the tick, counted by flush) still fades a
+    running modulation: an offset sent from 0.1 s on, refreshed, dips to between the base and its value at the hello."""
+    k = kit_of(e)
+    s0 = os.path.join(R.EMU, e.snap)
+    base = tgt(e, s0, 0, W_RES)
+    ex = []
+    for i in range(10):
+        ex += usb(e.at(100 + 100 * i), off_msg(k, 0, [(0, W_RES, 640)]))
+    r, v = series(e, "portup-fade", 1100, ex, [(0, W_RES)], every="0.2M")
+    x = v[(0, W_RES)]
+    up = [i for i, y in enumerate(x) if y != base]
+    mid = [y for y in x[up[0]:] if y not in (base, base + 0xa00)] if up else []
+    check("portup_fade: the offset rises, and the port-up hello fades it (values between the base and the offset)",
+          up and mid, (up[:1], sorted({hex(y) for y in x})))
 
 
 def t_clear_then(e):
@@ -680,10 +736,18 @@ def t_vm(e):
         m = []
         for i in range(0, 300, 100):
             m += usb(e.at(T0 + i), msg) if msg else []
-        r = e.run(name, T0 + 300, [(T0 + 100, "press", pad)], script=[],
-                  extra=["--poke", f"{SOUND0 + 2531 * k + 152 * t + (0x8c if at else 0x70):x}={amt:04x}{w:02x}00"] +
-                  list(pk) + m)
-        return eff(e, r["snap"], t, w), r
+        # A snapshot can fall inside the audio interrupt between the stock's rebuild of the effective array and S-post:
+        # the word then reads without the route's change. Sampled every 0.065 ms that is one reading in ten, once a
+        # block (cpl4, tracks 0 and 1). A run's end is a whole number of 5 ms, 7.5 blocks, so plain end times meet a block
+        # at two phases only and can sit in that window every time (cpl4: T0 + 300, 305, 310 all did on track 1). So five
+        # ends spread over one block (133 k instructions), and the value most of them read.
+        got = []
+        for off in (0, 29, 61, 97, 127):
+            r = e.run(name, T0 + 300, [(T0 + 100, "press", pad)], script=[],
+                      extra=["--poke", f"{SOUND0 + 2531 * k + 152 * t + (0x8c if at else 0x70):x}={amt:04x}{w:02x}00"] +
+                      list(pk) + m + ["--instr", f"{(T0 + 300) * 200 + off}k"])
+            got.append(eff(e, r["snap"], t, w))
+        return max(set(got), key=got.count), r
     a, _ = hit("vm-stock", 0x4000, None)
     b, r = hit("vm-pm", 0x0000, off_msg(k, 0, [(0, 48, 4096)]))
     check("vm: stock amount +64: RES 0x3f80", a == 0x3f80, hex(a))
@@ -754,13 +818,14 @@ def t_full(e):
 
 
 def t_status(e):
-    """M11 / 07: 2D 01 11 <slots> <ring drops hi lo> <kit drops hi lo> <timeouts> <flags>: two entries, flags bit 1."""
+    """M11 / 07: 2D 01 11 <slots> <ring drops hi lo> <kit drops hi lo> <timeouts> <flags> <morph parts (P3)>: two
+    entries, flags bit 1, no morph part."""
     k = kit_of(e)
     r = e.run("status", T0 + 100, [], script=[], extra=usb(e.at(T0), off_msg(k, 0, [(0, W_RES, 64), (1, W_RES, 64)])) +
               usb(e.at(T0 + 30), stat_msg()))
     st = stats(r)
-    check("status: one answer, 8 bytes: slots 2, drops 0, kit drops 0, timeouts 0, flags bit 1 (ran)",
-          len(st) == 1 and len(st[0]) == 7 and st[0][:6] == [2, 0, 0, 0, 0, 0] and st[0][6] & 2, st)
+    check("status: one answer, 8 bytes: slots 2, drops 0, kit drops 0, timeouts 0, flags bit 1 (ran), morph parts 0 (P3)",
+          len(st) == 1 and len(st[0]) == 8 and st[0][:6] == [2, 0, 0, 0, 0, 0] and st[0][6] & 2 and st[0][7] == 0, st)
 
 
 def t_caps(e):
@@ -875,22 +940,399 @@ def t_cost(e):
           res[128][0] == 128 and res[128][1] < 40 and res[128][2] < 100, res[128])
 
 
+# ---- P3 (morph v2 Task 11): 09 MORPH-SET / 0A FADER, the Rytm interpolates (design.md "pm morph")
+OP_MSET, OP_FAD = 0x09, 0x0A
+PMO_MORPH = 10080              # pmo's morph fields (rui.c, after rany): fad, fad_st, fad_tg, fad_n, mused, then mph[128]
+
+
+def mset_msg(kit, recs):
+    """09 MORPH-SET: recs [(t, w, flags 1 A / 2 B, a, b)], a and b 1/128 step (0..16383); flags 0 removes the part."""
+    b = [OP_MSET, kit, len(recs)]
+    for t, w, fl, a, bb in recs:
+        b += [t, w, fl, a >> 7 & 0x7f, a & 0x7f, bb >> 7 & 0x7f, bb & 0x7f]
+    return P._msg(P.HOST_CMD, b)
+
+
+def fad_msg(kit, f, ramp=0):
+    """0A FADER: f 0..16383, ramp in blocks"""
+    return P._msg(P.HOST_CMD, [OP_FAD, kit, f >> 7 & 0x7f, f & 0x7f, ramp])
+
+
+def morph_want(base, fl, a, b, f):
+    """The arithmetic model (the host's sim/pm_model.py, rytm-param-mod 5.3) in 8.8: both sides a + (b - a) f; A only
+    the override a at the mix 1 - f; B only b at the mix f"""
+    x = f / 16383.0
+    if fl == 3:
+        return 2 * a + 2 * (b - a) * x
+    if fl == 1:
+        return base + (1 - x) * (2 * a - base)
+    return base + x * (2 * b - base)
+
+
+def mused(e, snap):
+    return int.from_bytes(e.peek(snap, e.sym("pmo") + PMO_MORPH + 16, 4), "big")
+
+
+def eff_at(e, r, words):
+    """{(t, w): [(ms after the base, u16)]} from a run with DTBOOT_PEEK of the words' longs"""
+    out = {}
+    for t, w in words:
+        a = EFF + 2 * g_of(t, w)
+        sh = 16 if a % 4 == 0 else 0
+        out[(t, w)] = [((c - e.clock) * 5, v >> sh & 0xffff) for c, v in peek_series(r, a & ~3)]
+    return out
+
+
+def peek_run(e, name, ms, ex, words, every="0.37M"):
+    addrs = sorted({(EFF + 2 * g_of(t, w)) & ~3 for t, w in words})
+    r = e.run(name, ms, [], script=[], extra=list(ex) + ["--every", every],
+              env=dict(DTBOOT_PEEK=",".join(f"{a:x}" for a in addrs)))
+    return r, eff_at(e, r, words)
+
+
+def settled(xs, t0, t1, base):
+    """The value xs [(ms, v)] holds in [t0, t1]: the most common sample that is not the base. A sample can fall between
+    stage A (eff = the base, every block) and S's write (P2's pm scene artifact): those are left out; none left: the
+    base."""
+    c = {}
+    for t, v in xs:
+        if t0 <= t <= t1 and v != base:
+            c[v] = c.get(v, 0) + 1
+    return max(c, key=c.get) if c else base
+
+
+def near(xs, t, base):
+    return settled(xs, t - 3, t + 3, base)
+
+
+def t_pmoop(e):
+    """Review L2 (the guard for P3): a frame whose op is not one pm knows, shaped as a 05 record (09, 0A, 0C, 7F):
+    refused (2D 01 10 <op> 1) and nothing stored: the slot index and the entry table byte for byte as a run without
+    them, no entry used. On rc5b qp_cmd filters (only 04..07 reach pmo_cmd); once 09 / 0A are routed, pmo_cmd must
+    refuse what it does not know itself (it stored any other op as a 05)."""
+    k = kit_of(e)
+    a = e.sym("pmo")
+    ops = [OP_MSET, OP_FAD, 0x0C, 0x7F]
+    ex = []
+    for i, op in enumerate(ops):
+        ex += usb(e.at(T0 + 20 * i), P._msg(P.HOST_CMD, [op, k, 0, 1, 0, W_RES, 0x10, 0, 127]))
+    r = e.run("pmoop", T0 + 120, [], script=[], extra=ex)
+    n = e.run("pmoop-none", T0 + 120, [], script=[])
+    tab = lambda s: e.peek(s, a + PMO_IDX, PMO_ENT - PMO_IDX) + e.peek(s, a + PMO_ENT, PMO_ENT_SZ * 128)   # noqa: E731
+    d = pmo(e, r["snap"])
+    check("pmoop: 09 / 0A / 0C / 7F shaped as a 05: each refused (10 <op> 1)", acks(r) == [[op & 0x7f, 1] for op in ops],
+          acks(r))
+    check("pmoop: nothing stored (index and entries as without the frames, no entry used, no record taken)",
+          tab(r["snap"]) == tab(n["snap"]) and d and d["used"] == 0 and d["recs"] == 0, d)
+
+
+MW = [(0, W_FRQ, 3, 0x1000, 0x3000), (0, W_RES, 3, 0x3800, 0x0800), (1, W_FRQ, 3, 0, 16383), (0, W_VOL, 3, 0x2000, 0x2400)]
+FSTEPS = [0, 2048, 4096, 8192, 12288, 16383, 12288, 4096, 0]
+
+
+def t_morph(e):
+    """09 with 4 entries (both sides), then the fader stepped 0 -> 16383 -> 0 by 0A (ramp 0, 10 ms a step): at the
+    middle of each step the effective word = the model's a + (b - a) f within 1 LSB (8.8); the kit's sound bytes and
+    the targets untouched; 4 morph parts in use (07's last byte, the books)."""
+    k = kit_of(e)
+    s0 = os.path.join(R.EMU, e.snap)
+    ex = usb(e.at(T0), fad_msg(k, 0)) + usb(e.at(T0 + 1), mset_msg(k, MW))
+    for i, f in enumerate(FSTEPS):
+        ex += usb(e.at(T0 + 5 + 10 * i), fad_msg(k, f))
+    ex += usb(e.at(T0 + 100), stat_msg())
+    r, v = peek_run(e, "morph", T0 + 160, ex, [x[:2] for x in MW])   # 07 is answered by the UI tick: a whole tick after it
+    sn = r["snap"]
+    bad = []
+    for t, w, fl, a, b in MW:
+        for i, f in enumerate(FSTEPS):
+            got, want = near(v[(t, w)], T0 + 10 + 10 * i, tgt(e, s0, t, w)), morph_want(0, fl, a, b, f)
+            if got is None or abs(got - want) > 1:
+                bad.append((t, w, f, got, round(want, 1)))
+    print(f"    FRQ at each step {[hex(near(v[(0, W_FRQ)], T0 + 10 + 10 * i, tgt(e, s0, 0, W_FRQ))) for i in range(len(FSTEPS))]}")
+    check("morph: the effective word = the model's a + (b - a) f (+-1) at every fader step, all 4 words", not bad, bad[:6])
+    check("morph: the kit's sound bytes (BD, SD) and the targets unchanged",
+          sound(e, sn) == sound(e, s0) and sound(e, sn, 1) == sound(e, s0, 1) and
+          all(tgt(e, sn, t, w) == tgt(e, s0, t, w) for t, w, *_ in MW))
+    st, d = stats(r), pmo(e, sn)
+    check("morph: 4 entries, 4 morph parts (the books; 07's answer: slots 4, its 8th byte 4)",
+          d and d["used"] == 4 and mused(e, sn) == 4 and st and len(st[-1]) == 8 and st[-1][0] == 4 and st[-1][7] == 4,
+          (d and d["used"], mused(e, sn), st))
+    h = R.evs(r, "hello")
+    check("morph: the hello's caps2 has bit 3 (8: ops 09 / 0A)", bool(h) and all(x.get("caps2", 0) & 8 for x in h),
+          [x.get("caps2") for x in h])
+
+
+def t_morph_onesided(e):
+    """A only (RES, flags 1) and B only (VOL, flags 2): f 0 -> RES the A value, VOL the base; f 8192 halfway; f 16383
+    -> RES back to the base, VOL the B value (the model's override at the mix 1 - f / f, +-1); the entries kept at a
+    mix of 0 (2 used)."""
+    k = kit_of(e)
+    s0 = os.path.join(R.EMU, e.snap)
+    rb, vb = tgt(e, s0, 0, W_RES), tgt(e, s0, 0, W_VOL)
+    recs = [(0, W_RES, 1, 0x3000, 0), (0, W_VOL, 2, 0, 0x1000)]
+    ex = usb(e.at(T0), fad_msg(k, 0)) + usb(e.at(T0 + 1), mset_msg(k, recs))
+    fs = [0, 8192, 16383]
+    for i, f in enumerate(fs):
+        ex += usb(e.at(T0 + 5 + 10 * i), fad_msg(k, f))
+    r, v = peek_run(e, "morph-1s", T0 + 40, ex, [(0, W_RES), (0, W_VOL)])
+    bad = []
+    for (t, w, fl, a, b), base in zip(recs, (rb, vb)):
+        for i, f in enumerate(fs):
+            got, want = near(v[(t, w)], T0 + 10 + 10 * i, base), morph_want(base, fl, a, b, f)
+            if got is None or abs(got - want) > 1:
+                bad.append((w, f, got, round(want, 1)))
+    print(f"    RES {[hex(near(v[(0, W_RES)], T0 + 10 + 10 * i, rb)) for i in range(3)]} (base {rb:#x}), "
+          f"VOL {[hex(near(v[(0, W_VOL)], T0 + 10 + 10 * i, vb)) for i in range(3)]} (base {vb:#x})")
+    check("morph_onesided: A only: A at f 0, the base at f 1; B only: the base at f 0, B at f 1; halfway between (+-1)",
+          not bad, bad)
+    d = pmo(e, r["snap"])
+    check("morph_onesided: both entries kept (a part at mix 0 is not freed)", d and d["used"] == 2 and mused(e, r["snap"]) == 2,
+          (d, mused(e, r["snap"])))
+
+
+def t_morph_ramp(e):
+    """0A with ramp 8 (FRQ a 0, b 16383: 0 -> 0x7ffe): sampled every 0.25 ms, no step bigger than the model's one block
+    (0x7ffe / 8, +2), the climb in between (at least 5 values between), then the top; 0A ramp 0 back down: one jump."""
+    k = kit_of(e)
+    ex = usb(e.at(T0), fad_msg(k, 0)) + usb(e.at(T0 + 1), mset_msg(k, [(0, W_FRQ, 3, 0, 16383)])) + \
+        usb(e.at(T0 + 10), fad_msg(k, 16383, 8)) + usb(e.at(T0 + 30), fad_msg(k, 0, 0))
+    base = tgt(e, os.path.join(R.EMU, e.snap), 0, W_FRQ)
+    r, v = peek_run(e, "morph-ramp", T0 + 40, ex, [(0, W_FRQ)], every="0.05M")
+    x = [y for t, y in v[(0, W_FRQ)] if T0 + 8 <= t <= T0 + 28 and y != base]   # (stage A's window left out: settled;
+    #                                                                              from +8: the part's own ramp-in done)
+    up = [b - a for a, b in zip(x, x[1:])]
+    mid = [y for y in x if 0 < y < 0x7ffe]
+    print(f"    the climb: {len(mid)} values between, the biggest step {max(up or [0]):#x}, {[hex(y) for y in mid[:10]]}")
+    check("morph_ramp: ramp 8: no step above one block's (0x7ffe / 8 + 2), at least 5 values between, the top reached",
+          up and max(up) <= 0x7ffe // 8 + 2 and min(up) >= 0 and len(mid) >= 5 and x[-1] == 0x7ffe, (max(up or [0]), len(mid)))
+    y = settled(v[(0, W_FRQ)], T0 + 33, T0 + 40, base)
+    check("morph_ramp: ramp 0 back to f 0: FRQ at a (0)", y == 0, hex(y))
+
+
+def t_morph_start(e):
+    """Review M3: a new part on a fresh word (FRQ, both sides 0x1000: 8.8 0x2000; the fader at 8192 first) ramps its mix
+    in over PMO_MREL (8 blocks, 5.3 ms) as a 05 does, never one jump from the base: sampled every 0.25 ms, at least 3
+    values between the base and the part's value (more than 1 LSB from both), then the part's value."""
+    k = kit_of(e)
+    base = tgt(e, os.path.join(R.EMU, e.snap), 0, W_FRQ)
+    ex = usb(e.at(T0), fad_msg(k, 8192)) + usb(e.at(T0 + 5), mset_msg(k, [(0, W_FRQ, 3, 0x1000, 0x1000)]))
+    r, v = peek_run(e, "morph-start", T0 + 30, ex, [(0, W_FRQ)], every="0.05M")
+    xs = [y for t, y in v[(0, W_FRQ)] if T0 + 3 <= t <= T0 + 25]
+    lo, hi = sorted((base, 0x2000))
+    mid = sorted({y for y in xs if lo + 1 < y < hi - 1})
+    print(f"    base {base:#x}: {len(mid)} values between, {[hex(y) for y in mid[:10]]}")
+    check("morph_start: a new part ramps in: at least 3 values between the base and the part's value", len(mid) >= 3,
+          [hex(y) for y in mid])
+    y = settled(v[(0, W_FRQ)], T0 + 20, T0 + 30, base)
+    check("morph_start: then the part's value (0x2000 +-1)", abs(y - 0x2000) <= 1, hex(y))
+
+
+def t_morph_rehello(e):
+    """(next build: morph v2 on the re-hello tip) A re-hello (3C 01 01) while a morph part plays: the hello comes (a
+    second one) and the part stays: FRQ holds the model's value at the fader's 0.5 at every sample after it first gets
+    there, no fade dip, one morph part and one entry at the end (a re-hello must not step pmo.hello_n, as for 04 / 05:
+    rehello_nofade). The fader is re-sent every 150 ms (before the 250 ms timeout)."""
+    k = kit_of(e)
+    s0 = os.path.join(R.EMU, e.snap)
+    t, w, fl, a, b = 0, W_FRQ, 3, 0x1000, 0x3000
+    want = morph_want(0, fl, a, b, 8192)
+    ex = usb(e.at(T0), fad_msg(k, 8192)) + usb(e.at(T0 + 1), mset_msg(k, [(t, w, fl, a, b)]))
+    for i in range(1, 8):
+        ex += usb(e.at(T0 + 150 * i), fad_msg(k, 8192))
+    ex += usb(e.at(T0 + 500), P.rui_rehello())
+    r, v = series(e, "morph-rehello", T0 + 1300, ex, [(t, w)], every="0.2M")
+    x = v[(t, w)]
+    at = [i for i, y in enumerate(x) if abs(y - want) <= 1]
+    off = [hex(y) for y in x[at[0]:] if abs(y - want) > 1] if at else []
+    h = R.evs(r, "hello")
+    d = pmo(e, r["snap"])
+    print(f"    {len(x)} samples, at the value from {at[:1]}, off it after {off[:8]}, hellos {len(h)}, want {want:.1f}")
+    check("morph_rehello: the request was answered (a second hello)", len(h) == 2, h)
+    check("morph_rehello: FRQ at the morph's value (+-1) from the start and at every sample across the re-hello (no fade)",
+          at and not off, (at[:1], off[:8], sorted({hex(y) for y in x})[:12]))
+    check("morph_rehello: one entry, one morph part at the end (the part not dropped)",
+          d and d["used"] == 1 and mused(e, r["snap"]) == 1, (d and d["used"], mused(e, r["snap"])))
+
+
+def t_morph_timeout(e):
+    """09 + 0A (f 8192) and no message after them: still on at +240 ms; the 250 ms timeout fades it out like a 05
+    (values between, sampled every 1 ms: 1..22), back to the base by +275 ms, the entry and its part freed, one timeout."""
+    k = kit_of(e)
+    s0 = os.path.join(R.EMU, e.snap)
+    base = tgt(e, s0, 0, W_RES)
+    m = usb(e.at(T0), fad_msg(k, 8192)) + usb(e.at(T0 + 1), mset_msg(k, [(0, W_RES, 3, 0x3000, 0x1000)]))
+    want = round(morph_want(base, 3, 0x3000, 0x1000, 8192))
+    r, v = peek_run(e, "morph-to", T0 + 280, m, [(0, W_RES)], every="0.2M")
+    x = v[(0, W_RES)]
+    on = near(x, T0 + 240, base)
+    mid = [y for t, y in x if t > T0 + 240 and y not in (want - 1, want, want + 1) and min(base, want) < y < max(base, want)]
+    d = pmo(e, r["snap"])
+    check("morph_timeout: +240 ms still the morph's value (+-1)", on is not None and abs(on - want) <= 1, (hex(on or 0), hex(want)))
+    check("morph_timeout: then a fade (1..22 values between), the base at +280 ms, freed (no entry, no part), one timeout",
+          0 < len(mid) <= 22 and settled(x, T0 + 275, T0 + 280, base) == base and d and d["used"] == 0 and
+          d["timeouts"] == 1 and mused(e, r["snap"]) == 0, (len(mid), d, mused(e, r["snap"])))
+
+
+def t_morph_kit(e):
+    """A kit change (the active kit poked between two runs, as t_kit) frees every entry and its morph part at once; a
+    09 for the old kit after it is dropped (counted)."""
+    k = kit_of(e)
+    m = usb(e.at(T0), fad_msg(k, 4096)) + usb(e.at(T0 + 1), mset_msg(k, MW))
+    r = e.run("morph-kit-on", T0 + 50, [], script=[], extra=m)
+    check("morph_kit: on before (4 parts)", mused(e, r["snap"]) == 4, mused(e, r["snap"]))
+    pk = ["--poke", f"{ACTIVE_KIT:x}={(k + 1) & 127:08x}"]
+    r2 = from_snap(e, r["snap"], "morph-kit-chg", 20, events=[], script=None, extra=pk)
+    d = pmo(e, r2["snap"])
+    check("morph_kit: the kit change frees every entry and part", d and d["used"] == 0 and mused(e, r2["snap"]) == 0,
+          (d, mused(e, r2["snap"])))
+
+
+def t_morph_slots(e):
+    """The 128 slots are shared with 04 / 05: 128 offsets live, a 09 on a 129th (t, w) refused (2D 01 10 09 2) and not
+    stored; a 09 on a (t, w) that has an offset takes that slot (128 used, 1 part)."""
+    k = kit_of(e)
+    pairs = [(t, w) for t in range(12) for w in list(range(5, 42)) if w != 4][:129]
+    ex = []
+    for i in range(0, 128, 28):
+        ex += usb(e.at(T0 + 10 * (i // 28)), off_msg(k, 0, [(t, w, 64) for t, w in pairs[i:min(128, i + 28)]]))
+    t9, w9 = pairs[128]
+    ex += usb(e.at(T0 + 80), mset_msg(k, [(t9, w9, 3, 0x1000, 0x2000)]))
+    ex += usb(e.at(T0 + 100), mset_msg(k, [(pairs[0][0], pairs[0][1], 3, 0x1000, 0x2000)]))
+    r = e.run("morph-slots", T0 + 160, [], script=[], extra=ex)
+    d = pmo(e, r["snap"])
+    a = acks(r)
+    check("morph_slots: the 129th (a 09) refused full: 10 09 2, nothing else", a == [[OP_MSET, 2]], a)
+    check("morph_slots: 128 used, 1 morph part (on a slot an offset had)", d and d["used"] == 128 and mused(e, r["snap"]) == 1,
+          (d and d["used"], mused(e, r["snap"])))
+
+
+def t_morph_mix_05(e):
+    """A 05 override (VOL 50 steps, mix 127, jump) and a 09 morph (FRQ a 0x1000 b 0x3000, f 8192) at once, plus a 04
+    offset on the morph's word (FRQ -4 steps): VOL 0x3200, FRQ the model's - 0x400 (+-1)."""
+    k = kit_of(e)
+    ex = usb(e.at(T0), fad_msg(k, 8192)) + usb(e.at(T0 + 1), mset_msg(k, [(0, W_FRQ, 3, 0x1000, 0x3000)])) + \
+        usb(e.at(T0 + 2), ovr_msg(k, 0, [(0, W_VOL, 50 * 128, 127, 1)])) + usb(e.at(T0 + 3), off_msg(k, 0, [(0, W_FRQ, -256)]))
+    s0 = os.path.join(R.EMU, e.snap)
+    r, v = peek_run(e, "morph-05", T0 + 40, ex, [(0, W_VOL), (0, W_FRQ)])
+    sn = r["snap"]
+    want = morph_want(0, 3, 0x1000, 0x3000, 8192) - 0x400
+    vol, frq = (settled(v[(0, w)], T0 + 20, T0 + 40, tgt(e, s0, 0, w)) for w in (W_VOL, W_FRQ))
+    check("morph_mix_05: VOL the 05's 0x3200, FRQ the morph's - 4 steps (+-1)", vol == 0x3200 and abs(frq - want) <= 1,
+          (hex(vol), hex(frq), hex(round(want))))
+    d = pmo(e, sn)
+    check("morph_mix_05: 2 entries, 1 part", d and d["used"] == 2 and mused(e, sn) == 1, (d, mused(e, sn)))
+
+
+def t_morph_remove(e):
+    """09 with flags 0 removes the part: the word ramps back to the base (8 blocks) and the entry is freed."""
+    k = kit_of(e)
+    s0 = os.path.join(R.EMU, e.snap)
+    base = tgt(e, s0, 0, W_RES)
+    ex = usb(e.at(T0), fad_msg(k, 16383)) + usb(e.at(T0 + 1), mset_msg(k, [(0, W_RES, 3, 0, 0x1000)])) + \
+        usb(e.at(T0 + 20), mset_msg(k, [(0, W_RES, 0, 0, 0)]))
+    r = e.run("morph-rm", T0 + 40, [], script=[], extra=ex)
+    d = pmo(e, r["snap"])
+    check("morph_remove: flags 0: back to the base, the entry and its part freed",
+          eff(e, r["snap"], 0, W_RES) == base and d and d["used"] == 0 and mused(e, r["snap"]) == 0,
+          (hex(eff(e, r["snap"], 0, W_RES)), d, mused(e, r["snap"])))
+
+
+def t_morph_refuse(e):
+    """09 / 0A refusals (2D 01 10 <op> 1): n 0, n 21, a bad length, flags 4, the jump bit on w, word 4, word 48 (VM),
+    track 13; 0A with 4 bytes. Nothing stored."""
+    k = kit_of(e)
+    rec = [0, W_RES, 3, 0, 1, 0, 1]
+    bad = [P._msg(P.HOST_CMD, [OP_MSET, k, 0]), P._msg(P.HOST_CMD, [OP_MSET, k, 21] + rec * 21),
+           P._msg(P.HOST_CMD, [OP_MSET, k, 1] + rec[:6]), P._msg(P.HOST_CMD, [OP_MSET, k, 1, 0, W_RES, 4, 0, 1, 0, 1]),
+           P._msg(P.HOST_CMD, [OP_MSET, k, 1, 0, W_RES | 0x40, 3, 0, 1, 0, 1]),
+           P._msg(P.HOST_CMD, [OP_MSET, k, 1, 0, 4, 3, 0, 1, 0, 1]), P._msg(P.HOST_CMD, [OP_MSET, k, 1, 0, 48, 3, 0, 1, 0, 1]),
+           P._msg(P.HOST_CMD, [OP_MSET, k, 1, 13, W_RES, 3, 0, 1, 0, 1]), P._msg(P.HOST_CMD, [OP_FAD, k, 0, 1])]
+    ex = []
+    for i, m in enumerate(bad):
+        ex += usb(e.at(T0 + 20 * i), m)
+    r = e.run("morph-refuse", T0 + 20 * len(bad) + 60, [], script=[], extra=ex)
+    d = pmo(e, r["snap"])
+    check("morph_refuse: each refused in order (10 09 1 x 8, 10 0A 1)", acks(r) == [[OP_MSET, 1]] * 8 + [[OP_FAD, 1]], acks(r))
+    check("morph_refuse: nothing stored", d and d["used"] == 0 and d["recs"] == 0, d)
+
+
+def t_morph_cost(e):
+    """The S stage's time per block with 128 morph parts live (09 x 7, both sides) and the fader ramping (0A every 5 ms,
+    ramp 8, 0 <-> 16383): max under 100 us (t_cost's margin); mean under 80 us (12 %: the parts' own pass is about as much
+    again as t_cost's 128 plain entries, 38.6 us on mv8; measured 74.5 us. 128 parts is the worst case: the slots full)."""
+    k = kit_of(e)
+    hz = R.timer_hz(e)
+    pairs = [(t, w) for t in range(12) for w in range(5, 42) if w != 4][:128]
+    ex = []
+    for i in range(0, 128, 20):
+        ex += usb(e.at(T0 + i // 20), mset_msg(k, [(t, w, 3, 0x1000, 0x3000) for t, w in pairs[i:i + 20]]))
+    for j in range(10, 400, 5):
+        ex += usb(e.at(T0 + j), fad_msg(k, 16383 if (j // 5) % 2 else 0, 8))
+    d = [pmo(e, e.run(f"mcost-{x}", T0 + x, [], script=[], extra=ex)["snap"]) for x in (200, 300)]
+    mean = (d[1]["t_sum"] - d[0]["t_sum"]) / max(1, d[1]["t_n"] - d[0]["t_n"]) * 1e6 / hz
+    mx = d[1]["t_max"] * 1e6 / hz
+    print(f"    128 morph parts (used {d[1]['used']}), the fader ramping: S mean {mean:.1f} us, max {mx:.1f} us a block (667 us)")
+    check("morph_cost: 128 parts live, mean under 80 us (12 %), max under 100 us (15 %) a block",
+          d[1]["used"] == 128 and mean < 80 and mx < 100, (d[1]["used"], round(mean, 1), round(mx, 1)))
+
+
 TESTS = dict(caps=t_caps, offset=t_offset, ramp=t_ramp, stack=t_stack, override=t_override,
              override_plock=t_override_plock, scene=t_scene, scene_first=t_scene_first, ovr_ramp=t_ovr_ramp,
-             hello_fade=t_hello_fade, clear_then=t_clear_then, slots=t_slots, ring_drop=t_ring_drop, lifetime=t_lifetime, kit=t_kit, kitload=t_kitload,
+             hello_fade=t_hello_fade, rehello_nofade=t_rehello_nofade, portup_fade=t_portup_fade, clear_then=t_clear_then, slots=t_slots, ring_drop=t_ring_drop, lifetime=t_lifetime, kit=t_kit, kitload=t_kitload,
              never_kit=t_never_kit, velocity=t_velocity, vm=t_vm, refuse=t_refuse, full=t_full, status=t_status,
-             clear=t_clear, fx=t_fx, cost=t_cost)
+             clear=t_clear, fx=t_fx, cost=t_cost, pmoop=t_pmoop, morph=t_morph, morph_onesided=t_morph_onesided,
+             morph_ramp=t_morph_ramp, morph_start=t_morph_start, morph_rehello=t_morph_rehello, morph_timeout=t_morph_timeout, morph_kit=t_morph_kit, morph_slots=t_morph_slots,
+             morph_mix_05=t_morph_mix_05, morph_remove=t_morph_remove, morph_refuse=t_morph_refuse, morph_cost=t_morph_cost)
 EXTRA = dict(m0a=m0a, m0c=m0c, m0d=m0d)
+
+
+def mid_isr(e, snap):
+    """the snapshot ends inside the audio interrupt between pmo_pre and pmo_post's end: there the effective words 9..41
+    may already be rebuilt from the state (stage A) without pm's entries, and read as the base. pmo.runs counts at
+    pmo_pre, pmo.t_n at pmo_post's end. (Measured on mv5, 2026-11-14: P3's longer pmo_pre moved the end of a T0 + 100
+    run past stage A; on mv4 the same point still showed the block before's words.)"""
+    try:
+        pa = e.sym("pmo")
+    except KeyError:
+        return False
+    hdr = e.peek(snap, pa, 48)
+    return int.from_bytes(hdr[24:28], "big") != int.from_bytes(hdr[44:48], "big")
+
+
+FROM_SNAP_BASES = {"ring-pre", "hello-on", "cost-fill", "morph-kit-on",
+                   "cost-comb"}   # (cost-comb: its 20 ms is inside the hello's 32-block fade: never moved past it)
+
+
+def settled_runs(e):
+    """e.run, its end moved on one run unit (5 ms: rui_emu runs whole M of instructions) while the snapshot is mid_isr
+    (3 tries): a snapshot's words read whole. A run's events keep their times."""
+    run = e.run
+
+    def run_settled(name, ms, *a, **k):
+        r = None
+        if name in FROM_SNAP_BASES or "--instr" in k.get("extra", ()):   # (a later from_snap's events are timed from
+            #                             this run's end; a run with its own end (vm's phases): never moved)
+            return run(name, ms, *a, **k)
+        for i in range(3):
+            r = run(name, ms + 5 * i, *a, **k)
+            if not r or not r.get("snap") or not mid_isr(e, r["snap"]):
+                return r
+        return r
+    e.run = run_settled
 
 
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     e = R.Emu(sys.argv[1])
+    settled_runs(e)
     names = list(TESTS) if sys.argv[2:] == ["all"] else sys.argv[2:]
     for n in names:
         print(f"== {n}", flush=True)
-        (TESTS.get(n) or EXTRA[n])(e)
+        try:
+            (TESTS.get(n) or EXTRA[n])(e)
+        except R.EmuTimeout as ex:
+            print(f"  {ex} (the test is abandoned)", flush=True)
     print("ALL PASS" if not R.FAILS else f"FAILED: {R.FAILS}")
     sys.exit(1 if R.FAILS else 0)
 

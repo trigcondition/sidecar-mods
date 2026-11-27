@@ -9,7 +9,8 @@
 #   sections/us_<TAG>.snap         the state after the boot and the settings
 #   sections/us_<TAG>.json         {"clock": the snapshot's clock in M instructions}
 # and in this checkout build/emu/<TAG>/: the build's manifest and its 0021 / 0023 objects (us_emu.py's symbols).
-# RYTM_EMU: rytm-emu's checkout (default ../rytm-emu).
+# RYTM_EMU: rytm-emu's checkout (default ../rytm-emu). US_BASE_DIRTY=1: the cold boot over junk in the DDR buffers
+# (see below).
 set -eo pipefail
 TAG=${1:?usage: us_base.sh TAG}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -48,8 +49,12 @@ dtboot() {
   grep -E "saved|FAULT" "$TMP/log" || true
   if grep -q FAULT "$TMP/log"; then echo "FAULT in dtboot"; exit 1; fi
 }
+# US_BASE_DIRTY=1: the cold boot runs over junk in every DDR buffer claim of the build (tools/emu/ram_emu.py --pokes: the
+# registry's [[buffer]] claims, filled before the first instruction), as the DDR is at power-on: a base to run the suites on
+DIRTY=()
+[ -n "$US_BASE_DIRTY" ] && read -ra DIRTY <<< "$(python3 "$ROOT/tools/emu/ram_emu.py" --pokes "$TAG")"
 dtboot "$FW" --instr 4400M --every 4400M --card "$CARD" \
-  --press YES@2600M --press NO@3000M --press NO@3400M --press NO@3800M --save "$TMP/cold.snap"
+  --press YES@2600M --press NO@3000M --press NO@3400M --press NO@3800M --save "$TMP/cold.snap" "${DIRTY[@]}"
 [ -f "$TMP/cold.snap" ] || { echo "no cold-boot snapshot"; exit 1; }
 byte() { DTEMU_FW="$FW" ./target/release/dtpeek "$TMP/cold.snap" mem $1 1 | sed -n 's/^[0-9a-f]*: \([0-9a-f]*\).*/\1/p'; }
 TS=$(byte 407c2d32); USB=$(byte 405c8e4c)

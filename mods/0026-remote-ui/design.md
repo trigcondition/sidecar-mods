@@ -2458,7 +2458,7 @@ SEQ_SCENE, HOST_CMD, HOST_ACK; the engine's side core/mod/scene.h `qperf`, `rytm
   rui_render_in, every block): pos the OS's word & 0xff; mask the kit's macros on the knob (the stock accessor's value,
   clamped as the type-5 handler clamps it; read at the UI tick); flags bit 0 FUNC held, bit 1 the knob has sent since
   boot (the word or its stamp changed since 0026's first block, or the word was not 0 then: the MCU's message can only
-  have put it there), bit 2 macros muted: 0 (not located). Sent when any of them changes, or a hello owes one, at most
+  have put it there), bit 2 macros muted (morph v2, section "ms-mute": the gate 0x8000ed74; before it 0). Sent when any of them changes, or a hello owes one, at most
   one per 12 blocks (8 ms), by isr_send (none while the mutex is held, a stock SysEx is under way or the ring / pool is
   short: the next block tries again); nothing before this connection's hello (qp.hello, cleared when the port drops:
   Phase 7 review L4) or while the port is down. The newest value goes
@@ -2890,3 +2890,459 @@ to +300 ms (20..300 ms) against the SMPL WAVEFORM header and layout of an analog
 runs in the tick after the activation, before the first frame), so no change for B; the test stays (it fails on smp0).
 
 **Not done (later feature):** a Sidecar-drawn waveform page for the SAMPLER on the SMPL key (design B of the research).
+
+## 0.5.2 re-hello: the host asks the Rytm to say hello again
+
+**Problem.** The hello (`35 1 <up hi> <up lo> <caps> <caps2>`) goes out only at the USB port-up (HELLO_TICKS after it, again at
++1 s and +2 s while the host says nothing). A host that starts later never learns caps / caps2, so the host command (`5A`),
+QPERF, the edit arm and the `36` items stay off until the Rytm restarts.
+
+**Design: a flag on 3C, no new opcode.** The host's keepalive `3C` already goes out every 250 ms and the Rytm's handler is
+`case 0x3c: break;`, reading no payload. The request is `F0 7D 52 54 3C 01 <flags> F7` with flags bit 0 = "send your hello
+again" (`n >= 1 && (b[0] & 1)`; further bits are free for later requests). No free opcode is used (0x56, a contributor's PARAMS
+DELTA, and `2E` bit 3 stay untouched). Rytm side:
+
+- The MIDI task only sets `host_rehello` (a volatile byte next to `host_open`). The UI task's tick takes it, inside the
+  `PORT_STATE == 1` block, after the port has been up for HELLO_TICKS (earlier requests are dropped; the host asks again):
+  `st.hello_n = 3` (no port-up repeat on top), `st.pend_hello = 1`, and the same owed reports as the port-up hello
+  (`mr.all`, `mr.kit_owed`, `ar.owed`, `sq_forget()`), so a late host also gets the state it missed. `pm.c_hello` is not
+  touched (it marks the port's first hello for the "host has drawn" test). The hello is built by `flush()`, the same code and
+  bytes as at port-up (the uptime is current).
+- Rate limit: `st.rh_t` = the tick of the last answer; a request within `REHELLO_TICKS` (20 ticks of 50 ms = 1 s) is dropped.
+  Requests that arrive between two ticks collapse into one. A port drop clears the pending request.
+- caps2 bit 4 (16) says "this Rytm answers a re-hello"; the hello then sent caps2 = 17 (bits 0 and 4); it sent 49 (1 | 16 | 32, TBLB's bit 5, see the `tblb` section) and, with
+  morph v2 ported, now sends 63 (bits 0..5: 2 the QUICK PERF mute flag, 4 the scene edit, 8 the Rytm-side morph; see `ms-mute`,
+  `ms` and `pm morph`). Bit 3 was the morph-v2 branch's (caps2 15 there), so bit 4 was the next free one. The bit table is in the firmware's docs/core.md.
+- New struct fields at the end of `st`: `rehellos` (answers), `rh_t` (offsets after `ov_asides`). Cost: 140 bytes of the
+  elekloader RAM area (13388 -> 13248 bytes spare, 1.74 build).
+
+**An older Rytm** (every 0026 build before this one, checked in rkss, rel0511 and this tree's base): `case 0x3c: break;` and the
+payload is never read. The request is a plain keepalive: no `rx_bad`, no reply, nothing else. The host stops after 3 tries and
+keeps its claim fallback.
+
+**Host** (firmware docs/core.md): with Rytm traffic and no hello (`hellos == 0`), never for a box: one request, then every 5 s,
+3 tries at most, until a hello comes. Its caps then turn everything gated on them on.
+
+**Test** (rui_emu.py `rehello`; fails on the A2 tip, build rh0: caps2 1, no answer): the Rytm is up long after the port-up
+hello; requests at 4.0 s, 4.4 s and 5.3 s: one hello at ~3.95 s (caps 127, caps2 17, the uptime current), none for the 4.4 s
+request, one for the 5.3 s request.
+
+**Fix round 1 (review M2, L1, L2).**
+
+- **A re-hello does not fade param modulation (M2).** `flush()` stepped `pmo.hello_n` for every hello it sent, so a re-hello
+  faded all modulation and dropped the link's ring records (`pmo_tick`). Least invasive: a flag `st.pm_hello`, set where the
+  port-up hello is queued (the tick at HELLO_TICKS and its two repeats), cleared on a port drop; `flush()` steps
+  `pmo.hello_n` only when it is set. A re-hello queues no flag, so the link, which did not change, keeps its modulation. A
+  re-hello that falls into the same flush as a port-up hello collapses into it and the port-up's flag counts. Everything else
+  a hello does (the owed reports, `st.hellos`, dp / pj) stays the same.
+- **No lost request (L1).** The flag set by the MIDI task and cleared by the UI task could lose a set between the UI task's
+  test and its clear. `host_rehello` is now a counter the MIDI task alone increments; the tick compares it with `st.rh_seen`
+  and copies what it read (one read: a request after it is seen at the next tick, not lost; requests in the same tick
+  collapse). A port drop copies it too: a request pending at the drop is the old link's.
+- **L2.** A port drop clears `st.rh_t`: the 1 s limit is the old link's.
+- New fields at the end of `st`: `rh_seen`, `pm_hello` (4 B each). Tests: rui_emu.py `rehello_early` (a request inside
+  HELLO_TICKS is ignored), `rehello_drop` (a pending request does not outlive a drop; the limit does not survive it; the second
+  fails on the previous tip), `rehello_owed` (the machines' snapshot, the kit, the 12 arpeggiator codes, 2D 0F / 2D 0E arrive),
+  `rehello_old` (rui1043: no `rx_bad`, no reply); pm_emu.py `rehello_nofade` (fails on the previous tip: the word dips),
+  `portup_fade` (the port-up hello still fades).
+
+## big-ram: the frame, text and name buffers in the bundle's DDR region (next build, A3)
+
+Based on twwwy's #34 (sidecar-mods): the idea, the buffer list and the placement. It is reshaped here: only buffers of the UI
+and MIDI task move, through the bundle's declared region, with no sentinels and no per-buffer fallbacks.
+
+**What moved** (registry `[[buffer]]` claims of the pool `sidecar_buffers`, 0x47C00000-0x47F00000, which the bundle declares
+as `resources.regions`; see 0027's design.md section 10). 16,512 B of 0026's `.bss`:
+
+| symbol | claim | size | who touches it |
+|---|---|---|---|
+| `shadow` | `rui_shadow` | 1024 | MIDI task commits `staging` into it (`sysex_body`, under `sh_seq`); UI task copies it in `compose` and `draw_page` |
+| `staging` | `rui_staging` | 1024 | MIDI task only (`unpack_rect`, 0x39 / 0x3D) |
+| `comp`, `comp_in` | `rui_comp`, `rui_comp_in` | 1024 each | UI task only (`compose`; the bitmap `st.bm` is built over `comp`) |
+| `txt_st` | `rui_txt_st` | 2816 | MIDI task only (0x3D, 0x3E) |
+| `txt_sh` | `rui_txt_sh` | 2816 | MIDI task commits it with `shadow`; UI task copies it |
+| `txt_tl` | `rui_txt_tl` | 2816 | UI task only: `compose`'s copy of `txt_sh` (it was `static tl` in `compose`; now a named buffer) |
+| `ux` | `rui_ux` | 3968 | MIDI task writes the source names (0x47) and the write queue (0x48); UI task reads them (`key_body` push bits, `cu_text`, `wr_tick`) |
+
+None of them is read by the audio interrupt (`pmo_pre`, `pmo_post`, `pmo_vel`, `fp_check`, `isr_send`, `rui_uart`,
+`rui_rec_note`: a grep of every use of the nine names finds only `sysex_body`, `compose`, `draw_page`, `key_body`, `cu_text`,
+`wr_tick` and the tick). **`pmo` stays in `.bss`, with every init flag and the rest of `st`.** #34 moved `rui_pmo` too and its
+review (pm `ramp` failing, the worst-case bound raised from 100 to 105 us) found that the interrupt's state does not belong
+in a block nothing zeroes: `pm_emu.py ramp` passes here and the bound is 100 us.
+
+**Access.** One line a buffer: `DDR(<declaration>, <name>, <CLAIM>)` declares `extern <declaration>` and an absolute symbol
+`<name>` = the assembler symbol `RAM_<CLAIM>` that `tools/build.py` defines from the registry (with `RAM_<CLAIM>_SIZE`).
+The names stay (`shadow`, `ux`, ...), so the emulator suites peek them as before; `txt_tl` is new. To put one back in
+`.bss`: replace its `DDR()` line with `static <declaration>;` and drop its `ZERO()` in `ram_init`. A build without the
+claim does not link (undefined `RAM_...`), and `build.py` refuses an OS without the region entry (`re/os/<os>.toml`); there
+is no fallback branch and no 1.73 path (1.74 only).
+
+**Zeroing and order.** Nothing zeroes the block at boot (only the area's `.bss`, by core's boot copier; DDR holds noise at
+power-on). `ram_init()` runs in the first UI tick (`st.init == 0`), zeroes each buffer (`ZERO()`: the assembler refuses a
+registry claim smaller than the buffer, with `.error`) and only then publishes `rui_sysex` in 0022's mailbox, so the MIDI
+task cannot write a buffer before. `st.init` (in `.bss`) is the flag. What could run before the first tick, and what keeps
+it off the buffers: `draw_page` returns unless `st.active`, `st.splash_on` or `sv.show` (all zero until the tick or the
+host); `enter()` returns while `!st.init` (a TRK + YES held at power-on); the two readers of `ux` outside the tick
+(`key_body`'s push release, `cu_text`'s name lookup) check `st.init`; `wr_tick` already runs only after it. The zeroing is
+one pass of ~4,100 words in the boot tick.
+
+**Cost.** 1.74 build, area spare 13,248 -> 36,236 bytes (the rehello tip -> a3b1: -22,988 B `.bss`, +232 B code and
+tables for `ram_init` and the guards); 23,232 B of the 3 MB block are claimed (0026 16,512 B, 0029 6,720 B).
+
+**Tests** (`tools/emu/ram_emu.py`, suite `ram`): `region` (each symbol lies in its claim, the claims in the bundle's region,
+`pmo` / `fp` / `st` / `qp` stay in the area; fails on the rehello tip), `dirty` (a cold boot with every claim filled with
+junk before the first instruction: no junk word is left, 0026's buffers read all zero, 0029 initialised) and `dirtyui` (the
+same with the host attached: the splash is on the panel byte for byte). Mutants: a build that does not zero `comp_in` and `txt_tl`
+fails `dirty` (253 and 701 junk words left, both buffers non-zero); one without the `ram_init()` call wedges the UI task on the
+junk (the run does not finish). The features run on a dirty base: `US_BASE_DIRTY=1 tools/emu/us_base.sh <alias tag>`, then the suites.
+
+## wtlabels: WAVETABLE v2's labels (0.5.2, emulator only)
+
+The host's WAVETABLE v2 (second table, mix, nine warps, new filters; rytm-teensy docs/WAVETABLE.md 6) changed the machine's
+parameter set; the Rytm showed the old labels. Changes, all in `rui.c` (no change in 0021, 0029 or the registry: the page-2
+records are the shared ones and the steps and ranges come from the knob tables):
+
+- **P13..P16** (SMPL E..H, records 460 403 404 405: `cu_p2[4..7]`) are `cu_wtp2k[4..7]`: TBLB (long Table B,
+  text 12, steps `CU_BANKED`, default 0), POSB (Position B, dial), MIX (Mix A-B, dial, the plain number) and FTYP (Filter
+  Type, text 34, steps 0x108: a stepped list of 8). They replace CHD INV SPR VOI (`CU_CHORD`) for machine 46 only; 6-OP
+  FM, MULTISAMPLE and GRANULAR keep `CU_CHORD` and `cu_chd`. Defaults 0 0 0 0 (the host's `kPageTwo`).
+- **P13 is a banked row word like P1.** The banked behaviour is the knob table's, not P1's code: `CU_BANKED` makes `cu_steps` answer
+  0x380 | 0x800 (0029 mode 3, all 128, bank kept), `cu_knob` gives the record the fine flag and the range 0..0x7fe0, and text
+  12 reads the host's WAVETABLE names (47, list 1, with its bank byte) through `cu.p1m == CU_WT`, which holds whenever the
+  selected track is WAVETABLE. The host's 48 for P13 is `wr_tick`'s generic path (k = 12: `SPID(21, 46)`, `SET_PARAM`,
+  `US_COMMIT`), which keeps the fraction (`lo << 1`): measured, index 5 bank F is 0x05a0, a knob turn goes to 0x06a0 / 0x04a0.
+  **The list view (4A) and the p-lock of a pick for P13 are the `tblb` section below** (they were not done in this step).
+- **WARP** has 9 zones: `cu_warp[9]` (OFF SYNC PWM FM FRMT QNT BEND SQZE RM, the host's short set), zone `(v * 9) >> 7`, steps
+  0x109 (0029 mode 1, N = 9: stored `ceil(128 k / 9)`: 0 15 29 43 57 72 86 100 114).
+- **FTYP** has 8 zones: `cu_ftyp[8]` (DJ LP12 LP24 BP12 BP24 HP12 HP24 LDR), text 34, `v >> 4`, steps 0x108.
+- **No chord write-back for WAVETABLE:** `pc_apply` answers 28 2 <track> 7F 3 for a WAVETABLE track (its P13..P16 would be
+  locked to CHD INV SPR VOI, i.e. to TBLB POSB MIX FTYP). The host does not send a 28 1 for it either; this is the guard.
+- **LFO:** the Rytm's own LFO lists are stock's; the Sidecar's LFO page is the host's (page_lfo.cpp: its PAR list stops at P12 on a
+  WAVETABLE voice). Nothing here.
+
+Tests (OS 1.74): `cu_emu.py wt wttext` (labels, long names, 9 and 8 zone ranges, banked P13's range and fine flag, the text tables
+in memory), `bk_emu.py wtwarp wtftyp wtbank` (the screens: nine and eight different zone texts, a zone's high end the same as its
+low; P13 48 / knob / names with and without the bank), `pc_emu.py wt28` (the guard; `rec` keeps FM's write-back). Each fails on the
+baseline build (wt0).
+
+## ovl_pub: telling 0029 that the page or the splash is the screen (next build, step 6 fix round 1)
+
+0029's page key (SRC / SMPL's further press on a user effect's SEND FX page) must not page the stock page hidden under
+this page or its splash: both are overlays and push no view, so 0029's view list still shows SEND FX k. `ovl_pub()` writes
+`st.active | st.splash_on` into the word `sfu_p.ovl` of 0029's claim (0x47C071F0, offset 4704; registry claim `sfu_p`),
+at every change of either (`enter`, `leave`, `splash_end`, the splash coming on). The write waits for 0029's mailbox magic
+`SFXU` (0x401b9e54), which 0029 sets after the first tick has zeroed its claims, so it is never the first access to the
+claim (`ram_emu first`); without 0029 nothing is written. Order stays as it was (0029's `ev_key` 5, before this mod's 10):
+0029 reads the word, passes the key on, and this mod handles it by its mask as before. Test: `sfu_emu.py xfix` (the page
+open over SEND FX 1: SRC leaves the page alone, the host gets it when its mask names SRC).
+
+## tblb: TBLB (P13) gets TBL's pool list (0.5.2, emulator only)
+
+TBL's browser is a host-drawn list: the Rytm sends 4A open / close frames, the keys and the knob's turns, and the host draws the
+list on the OLED over its view (29 1). P13 (TBLB, knob E of the SMPL page) has the same list now, on the SMPL page of a WAVETABLE
+track. The protocol and the host half: the host's `docs/core.md` "The P13 list".
+
+- **Announce.** The host sends `4A 7D 1` after each hello when the hello's caps2 has **bit 5 (32)** (this hello said
+  caps2 = 1 | 16 | 32 = 49; with morph v2 ported it says 63, bits 0..5). `ls_host_p13` (the rx case 4A, `n == 2 && b[0] == 0x7d`) is cleared at a port drop, at the
+  port-up hello and when the Rytm answers a re-hello (not at the +1 s / +2 s port-up repeats: they would race the announce), so a
+  host announces again after every hello. (`ls_host_presets` and `fk_claim` stay as they were: cleared at the port drop only.)
+  Without it knob E on the SMPL page is stock's banked step, as before (`tblbold`); an older host never
+  announces, so the Rytm never opens a list nobody draws.
+- **Gates (fix round 1).** `ls_p13` also needs `mr_vb(t, 46) != 0x7f`, `sv.idle < TIMEOUT_TICKS` (a host alive) and `commits` (the
+  host has drawn), and `ls.nd_hello != st.hellos + 1`: a P13 list that never showed within a second sets `ls.nd_hello`, and a host
+  that announced but draws nothing is not asked again until the next hello (knob E is the banked step meanwhile).
+- **The view over the SMPL page.** `sv_page` sets `sv.spage` (1 the SMPL page is the screen, 2 covered; new last field of `sv`)
+  when the walk found the SamplePageView and no SynthPageView. `sv_tick` turns the view on over that page for as long as P13's
+  list is open (`ls_smpl` = track + 1, set when it opens, cleared by `ls_close`): 29 0 1, the host's frame, 29 0 0 when the list
+  ends. `ls_tick` gives it the first second to show (the view comes on a tick after the knob, the host's first frame after that),
+  as 0.3.0's DSP SAMPLE list did (a92f331's `ls_smpl`, removed in step 7h when SMP moved to the SRC page).
+  `sv.view` stays 0 on the SMPL page: the 2A's P1..P8 are the kit words there, and F9's normaliser is untouched.
+- **Opening.** `ls_p13()`: announced, a WAVETABLE track selected, `sv.spage == 1` (not covered: a held BANK key, a menu), no page,
+  no splash, the port up. Then knob E's first turn (`ls_enc`, encoder 4) opens the list (`ls.p = 12`, `ls.knob = 4`) and moves
+  nothing; its turns go to the host as `32 4 <delta>` (the host takes 0 or 4); YES / NO / another knob / another key end it as
+  for TBL. FUNC + YES on that page opens it with the host's file browser at once (the 1049 branch, `ls_p13()` as the other
+  condition): 4A on, then 4A on 3 with why 6.
+- **The frame.** `ls.q` has a 6th byte (12 for P13's list, else 0). `ls_flush` sends the 13-byte frame
+  `4A 01 <track> <on> <hi> <lo> <why> 0C` for P13, every other list's the 12 bytes it was (byte-identical: `tblbcover`).
+  The value is P13's kit word (`sv_word(t, 12)`: 14 bits, index . bank).
+- **The commit.** The host's `48 <t> 12 <index> <bank << 4> 1` is `wr_tick`'s generic path (the bank kept) or, with trigs held
+  at the YES, `ls_lock(t, v, 9 + 12)`: the lock branch now has `k == 12 && m == CU_WT` beside P1 and DSP SAMPLE's P11 (status 4
+  locked, 3 slots full), the fine flag set on P13's slot (`tblblock`).
+- **Cost:** 556 B of area RAM (31,852 -> 31,296 B spare, one build).
+
+Known and left as they are (review of the TBLB Rytm part): a host that announces but whose first frame takes more than a second
+once sets `ls.nd_hello`, and knob E is the banked step until the next hello, which on a stable link may be never (the 0.3.0
+behaviour of `ls_dsps`; no timed retry); `commits == sv.base` as "the host drew nothing" could be fooled by a `leave()` that resets
+`sv.base` under a long-open list, but `ls_tick` closes the list on `st.active` first and no path was found; the port-up clear of
+`ls_host_p13` is redundant with the port-drop clear unless the drop is shorter than a tick (harmless). A later hello clears the
+lock: `bk_emu.py tblbnodraw` (the non-drawing close, a re-hello, a new announce, the list opens again).
+
+Tests (OS 1.74): `bk_emu.py tblblist tblbbrowse tblblock tblbold tblbguard tblbcover`, `sv_emu.py tblbview` (the view ends with
+the list: YES, NO, another knob, FLTR; none without the announce), `rui_emu.py rehello` (caps2 = 63 since morph v2; 49 before), `bk_emu.py tblbgate` (the announce ends at a re-hello and at a port drop), `tblbnodraw` (a host that announces but draws nothing, or is silent: knob E is the banked step).
+## ms-mute: the QUICK PERF mute in the 0E flags (morph v2 P2 Task 8, emulator only)
+
+FUNC + QUICK PERF mutes the macros on the knob: the toggle at 0x400a6de8 (1.74; `move.l d2,a0@(2495)`) flips the
+active kit's u32 at kit + 2495, and the store at 0x4011f882 (1.74; 1.73 0x4011f816) copies it every block into the
+gate **0x8000ed74** (u32, nonzero = muted) that stage G tests (`tst.l 0x8000ed74` at 0x40120fc0, 1.73 0x40120f54).
+It is per kit: a kit load or RELOAD changes it without any key [measured: ms_emu.py mute].
+
+qp_isr reads the gate (QP_MUTED) and puts it in v as bit 2, so the report goes on a mute edge by itself (no FUNC, no
+knob move: the host rebases its MORPH QPERF there); `m[11] = v & 7`. The hello's caps2 (4th byte) gains bit 1 (value
+2): the host trusts the flag only then (an older 0026 always sent 0). Both OS: the gate's address is checked per OS in
+re/os/1.74.toml (`[[data]]` qp_muted at site 0x40120fc0).
+
+Test: `ms_emu.py <tag> qpmute` (toggle, a knob move while muted, RELOAD with no FUNC, caps2 in the hello).
+
+## ms: the momentary edit on stock pages (morph v2 P2 Task 9, emulator only)
+
+The host arms it (`5A 01 0B <1|0>`, ms.on); a port drop and **every hello** clear the arm (`ms.on`), and a port-up hello
+(`st.pm_hello`: a new link, also its +1 s / +2 s repeats) also ends a held gesture and drops what is owed (the host arms
+again after each hello, firmware-052 core/ui/remote.cpp 1556-1561). A **re-hello** (`3C 1`, see "0.5.2 re-hello": the
+link stayed up) clears the arm and nothing else of `ms`: the gesture in progress goes on, the owed let-go (`2D 01 13 0`)
+and a PAGE kept back (`pdef`) are still the link's, and the host's re-arm after the hello (`5A 01 0B 1`) completes it. A
+host that does not arm again (an older one after a restart) no longer leaves PAGE + T15 / T16 swallowed: with `ms.on` 0
+they are stock's (the turn reports of a gesture held across such a hello stop, its let-go still comes). Before the
+re-hello rule the re-hello ended the gesture with no let-go reported and dropped PAGE's kept-back press (stock got its
+release alone). Tests `ms_emu.py edrehello` (a re-hello without a re-arm: `ms.on` 0, PAGE + T15 stock's; with it: one
+gesture). The hello's caps2 bit 2 (4) says the build has it.
+
+- **PAGE deferred.** On a stock page (`ms_stock_ok`: armed, no host page, no splash, no list, not seq mode) PAGE
+  without FUNC is kept from stock: tapped, stock gets press and release at its release; held past MS_PAGE_TICKS (6, 300
+  ms) ms_tick gives stock the press then (fwd_late, its NORMAL PLAYBACK popup comes as unarmed); another key first:
+  PAGE's press goes to stock before it (fwd_key). PAGE alone so behaves as stock (test edpage tap / held / chro).
+- **PAGE + T15 / T16** (T15 side A, T16 side B): the gesture. PAGE and the key are eaten (stock_down: if stock already
+  had PAGE, its release is synthesized first, which lets the popup go: ms.cut). `2D 01 13 <state> <side> <arg>`: 1 held,
+  0 let go, 2 a scene pick (T1..T12 under the side: arg = the trig). T13..T16 under the side are eaten.
+- **LEDs.** While PAGE is held on a stock page and armed: T15 blue (47), T16 yellow (60), all four slots (ovm, the
+  override mask beside ov's; stock's own values come back on release: sh[14], sh[15], the selector shs[3]).
+- **Knob turns under a side** (`ms_pad`, detour `ms_pad_det` at param_apply_delta 0x400378c2, 1.74 the same address,
+  6 B `moveal %a2@,%a0; pea 0xffffffff`, where 0013's hpf_delta rejoins; registry). The record (0x401bf918 + 0x34 id,
+  +4 the sound word) gives the word; the TRIG ids 28..38 and words outside 1..41 or not lockable (`pmo_word_ok`) are
+  refused ("NOT LOCKABLE" readout, ms.nolock); else the turn is caught (stock's apply skipped: no kit, pattern or lock
+  write) and its detents summed per track / word / FUNC. The base is stock's own getter, the view's parameter set
+  (vtable +160, -1) and its value (+0x28): the kit's stored word, 8.8 [measured: base_raw 0x7f00 for BD FRQ 127], sent
+  as 7.7. ms_tick sends `2D 01 12 <side> <t> <w> <detents & 7F> <func> <base hi7> <base lo7>` every tick while turned
+  (the summed raw deltas / 16 with FUNC, / 256 without, clamped to +-63, the remainder kept; the host moves 8 resp.
+  128 units of 7.7 a detent from the lock, else from the base).
+- **Readout** `5A 01 08 <n 1..16> <text 0x20..0x5F>`: drawn by draw_body over the stock page's bottom (font 16) for
+  MS_HDR_TICKS (20, 1 s), via a seqlock (rd_in / rd_gen), redraw flag ctrl + 0x20 while it shows.
+- **M2** (review of P1): on a host page with PAGE held (ours or both), T15 / T16 then T1..T12 under it reach the host
+  as keys (31), not stock, whatever the near-chord's order.
+
+After the review (Opus, P2): the queue's last slot is kept for a let-go (a let-go dropped by a full queue left the
+host in EDIT); a repeat of PAGE while it is kept back is eaten (it would restart the 300 ms); PAGE kept back past 300
+ms when a host page or the list has come meanwhile goes to nobody (its release eaten); the hello clears the arm before
+it is sent (a host arming at once is not undone). FUNC + turn: stock's never calls param_apply_delta on FLTR FRQ and
+writes nothing [measured, mv3, armed and not], so the func byte of 2D 01 12 is 0 in practice (kept for a page that
+does pass it). Known limits: a turn summed while the queue is full is dropped
+when the side ends; 0002 / 0003 / 0004 / 0013 (not in the release build) have param_apply_delta detours that run before
+ms_pad_det and still write under a side.
+
+ms is one struct (new fields at its end); ms_emu.py peeks its offsets (a `_Static_assert` pins them).
+
+Tests: `ms_emu.py <tag> edcap edfx edgrid edpick edpage edleds edread edhello m2` (edcap FUNC and edpage pagekey
+since the review); all but the edpage "PAGE alone" regression guards fail on mv0 (no ms). The tests arm at 140M, after the run's first hello (~100M).
+
+After the flash review (mv4): a port-up hello and a port drop end a held gesture too, not only the arm (ms.side, acc_on,
+page_held, pdef cleared with ms.on): before, PAGE + T15 held across a hello kept eating trigs as scene picks (test
+edhold: T3 in GRID REC after the drop reaches stock; mv3 failed, side 1, picks 1). The readout lights the header
+field (rows 0..8, columns 0..69, as stock's bar) before drawing its text, so a longer stock header no longer shows
+past a short readout (test edclear: "A LEV 9" on FLTR and on AMP, the top rows the same; mv3 failed, rows 2..6).
+
+## ms: a knob press under a held side removes that parameter's scene lock (0.5.2 rc3)
+
+The owner (2026-11-26): while setting a parameter in a scene edit, pressing the DATA ENTRY knob removes that
+parameter's scene lock, as the Octatrack's trig + knob press removes a p-lock. Stock's own "trig held + knob press =
+clear that p-lock" is the model.
+
+**What stock does** [measured, emulator OS 1.74, `ms_emu.py edclr` and the probes behind it; the same bytes on 1.73]. The
+nine DATA ENTRY pushes are key ids `PUSH_A..PUSH_H` 0x70..0x77 (LEVEL / DATA 0x78). Every stock parameter page class has
+the same key handler (0x4003a544, at vtable +12 of the vtables at 0x401cc36c, 0x401e1454, 0x401e158c, 0x401e3144 and
+0x401e3570). For a key 0x70..0x77 (0x4003a5d6) it takes `idx = key - 0x70`, the page's own id
+lookup `id = vtable +156 (page, idx)` (the same id the turn's `param_apply_delta` gets at +0x1c: measured equal on TRIG,
+SRC, SMPL, FLTR, AMP, LFO and the FX track's pages, FX track = track 12), and `word = ROM record(id) +4` (0x40006ea8). On
+the press's release, when a trig is held (and the press found the knob's lock, byte 0x417e3241 [inferred from the code]),
+it calls the page's vtable +168 (0x40038500): `track_lock_clear(page, step, word)` (0x400c05e2 -> 0x400ac7ac) for every held trig,
+which writes 0xffff over the lock word (BD step 15 FRQ 0x407e0c80: `0x7f00`, the turn's `0x7a00`, the clear's `0xffff`,
+by pc 0x400ac836). The press itself runs the knob's own press path (0x40039b8e, its vtable +128). So the scene edit case
+resolves the same `(track, word)` the turn reports, from the same id.
+
+**The hook.** `ms_knob_det` at 0x4003a5fc (`movel %d0,%fp@(-20); tstl %d4`, 6 B, nothing pc-relative; the page's id is in
+d4, its word in d0 and the event in d2, the page in a2; registry `[[detour]]`, `re/os/1.74.toml`'s derived hash) calls
+`ms_knob(page, event, id)`. It is the page handler itself, not 0026's key handler, because the id comes from the page
+(which key handler instance has no other way to name it). 1 = the handler ends there with d3 = 1 (0x4003ac56, as its own
+"no id" exit does); 0 = the two displaced instructions and 0x4003a602.
+
+- **Press with a side held** (`ms.on`, `ms.side`; the gesture exists only on a stock page, `ms_stock_ok`): eaten, so
+  stock's lock clear never runs (also for a trig held *before* PAGE + T15: test `edclr` "held", kc0 cleared its lock and
+  wrote 5 bytes, kc1 nothing) and neither does its popup state. The word is checked as the turn's: ids 28..38 (TRIG page)
+  and a record whose +4 is outside 1..41 or `pmo_word_ok` (the FX track's 29 and 38..41, word 0, 4) show **NOT
+  LOCKABLE** (`ms.nolock`, nothing sent). Else one report is queued, in order after any turn still being coalesced
+  (`ms_acc_out`; the rest of that turn is dropped, `ms.acc_on` 0, so the next turn re-bases from the kit):
+  `2D 01 14 <side> <track> <word>` (side 0 A / 1 B, track 0..12, word 1..41, the same bytes as 2D 01 12's), `ms.clrs`.
+- **Release.** `ms.pushd` bit i marks an eaten press of knob i. While the side is still held its repeats and its
+  release are eaten (the release clears the bit; a repeat of the held press is eaten without a second report). **Known
+  (rc3, next release): after the side let go** the first repeat of the still-held press is a down event with no side,
+  which clears the bit and goes to stock, and the real release then goes to stock too, without the press it never had
+  [measured: the branch addresses of `ms_knob` in the watch of `ms.pushd`, test `edclr` "late"]. Benign as measured: stock
+  wrote nothing (memory diff 0, also with a GRID REC trig held on an FRQ lock). The behaviour fix (treat a repeat as
+  belonging to whoever had the press: `if (ev[4] & 8) return (ms.pushd & bit) ? 1 : 0;` at the top of the press
+  branch) waits for the next release, as the Rytm code is frozen for rc3. A press with no side held is stock's.
+- **Outside a side** the press is stock's: trig held + press clears the p-lock (armed or not), a plain press as before.
+- **Wire and caps.** `2D 01 14` is a new op (the ops 12 and 13 are the turn and the gesture). No caps bit: the Rytm
+  always eats the press under a side; a host that does not know the op ignores it (the Sidecar engine's `seq.cpp`
+  default), so with an older Pi the press under a side does nothing (stock's clear is eaten as well; nothing is
+  written). The host removes only that parameter's lock from that side's scene and shows "A LEV CLR" (5A 01 08);
+  `ms_emu.py edclr` checks the Rytm side, `core/tests/test_scene.cpp` the host's.
+
+The ms struct got two fields at its end: `clrs` (268) and `pushd` (272); the `_Static_assert` and `ms_emu.py`'s MS_OFF
+follow. Known limit: the LEVEL / DATA push (0x78) is not a parameter knob and stays stock's.
+
+Tests: `ms_emu.py <tag> edclr` (side A and B on FLTR knob E: one `2D 01 14 <side> 0 30`; GRID REC under the side writes
+nothing; the release after the side let go; TRIG page and FX SRC page: NOT LOCKABLE, nothing sent; a trig held before the
+gesture keeps its lock; the release with the side held takes the release-eaten branch and after the side let go the
+stale-drop branch (memory as without the knob); the op's (t, w) equals the turn's on another drum track (LT, AMP and
+LFO pages) and on the FX track (DELAY, FILTER); outside the side stock's clear still runs, armed and unarmed). It fails on
+kc0 (rc2) on every case but the two stock controls. `sv_emu.py <tag> pushside`: on the SRC view of a Sidecar track the
+push under the side is still sent to the host (31 0x70).
+
+Known, for the next release (review of rc3, 2026-11-26; the Pi side closes the first two for the Pi release):
+- A push on the SRC view of a Sidecar-machine track under the side is sent to the host as key 31 (the `sv` branch of
+  0026's key handler sits after the ms block, which catches T1..T16 / PAGE only) and also reaches stock. The Pi ignores
+  SRC-view pushes (slice editor, SAMPLE EDIT, the source list and its row action) while a side is held, and their
+  releases. Rytm fix: skip the host forward under `ms.side && ms.on`.
+- The release bookkeeping above (after the side let go).
+- A knob with no parameter (record 0, id 0) under a side shows NOT LOCKABLE; stock does nothing there. Harmless.
+- A stale `pushd` bit (an eaten press whose release never reaches 0x4003a544) eats the next press of that knob under a
+  side once, with no report; self-healing. Fix: clear `pushd` when the side starts.
+- A 0x14 dropped on a full queue is silent (the press was eaten, no readout), as a dropped turn is.
+- The comment at rui.c:4431 names 0x400b693e (1.74) while the code calls 0x400b68d2 (1.73, ported to 0x400b693e).
+
+## ms: the scene edit on a Sidecar machine's SRC view (0.5.2 rc4)
+
+The owner on hardware (rc3): on the SRC view of a Sidecar-machine track (the host's frame over the stock SRC page, `sv.show`),
+with PAGE + T15 / T16 held, turning the source knob opened the pool list and locked nothing, and no turn showed a readout
+(TUNE, FINE did lock). Both measured in the emulator (`bk_emu.py <tag> srcside`, SAMPLER and GRANULAR drawn, armed, side A):
+
+- **The list.** `enc_body` asks `ls_enc` before stock (the 1038 bank list): knob A on a banked SRC view (`ls_banked`,
+  `SMP_M`) and TBLB's knob E opened the list (4A on) on the first turn and sent the later ones to the host (32), so the turn
+  never reached `param_apply_delta` / `ms_pad`: no 2D 01 12, the source unchanged, the host's list on the glass.
+- **The readout.** `draw_body` drew the 5A 01 08 readout only with `!sv.show`; on the SRC view the host's frame (draw_page)
+  was all there was. The turns of TUNE / FINE were reported (2D 01 12) and locked by the host, whose readout came and was
+  not drawn.
+
+**The source is NOT LOCKABLE.** The source word (GRANULAR SRC, WAVETABLE TBL / TBLB, MULTISAMPLE INST, CHOP SRC, DSP SAMPLE /
+SAMPLER SMP, JUNO / 6-OP FM's preset) is index << 8 | bank << 5 into a pool; the host's MORPH interpolates a Sidecar voice's
+P (not a list cell on its pages: `ui::remote_is_list` is false for these), so a lock on it would sweep through the pool's
+entries and banks. So, under a held side (`ms.on`, `ms.side`) `ls_enc` does not open the list: the turn is eaten (stock
+never moves the source), `ms.nolock` counts it and the readout says NOT LOCKABLE (as `ms_pad` does for its refusals); a
+0 delta (1046's UP + SRC asking) is just "no list". The host refuses the same words (scene.cpp `stock_target`:
+`ui::remote_track_src_list`, for 2D 01 12 and 2D 01 14 alike), e.g. a DSP SAMPLE / SAMPLER SMP turned with no host frame.
+
+**The readout over the view.** `draw_body` draws it whenever no page or splash is up, the SRC view included, over the
+header field as on stock pages (lit, text cut out); ms_tick's redraw at its end gives the host's frame back.
+
+The other ways to the list follow the same rule (fix round 1, review MED 1 / LOW 2): FUNC + YES on the SRC view (1049)
+under a held side opens neither the list nor the host's browser (YES and its release eaten, NOT LOCKABLE); an UP + SRC
+ask (1046's `u46`, retried up to a second) made under the side is dropped, so the list does not open by itself once the
+side lets go. A knob press on the source under the side is the 2D 01 14 as for any knob; the host answers NOT LOCKABLE.
+
+Outside a held side nothing changed: the list opens as before (`srcside` "no side", bk `list salist saopen upsrc dsplist
+tblblist ...`). Knob press under the side on the view: unchanged (the Pi ignores SRC-view pushes under a side, rc3).
+Tests: `bk_emu.py <tag> srcside` (fails on the rc3 build on the list, NOT LOCKABLE and the readout; on sp1 on FUNC + YES and
+UP + SRC; also covers WAVETABLE TBL, TBLB knob E, DSP SAMPLE SMP, JUNO's preset, the knob press), core `test_scene`
+capture_src_list_not_lockable (also MULTISAMPLE, CHOP, 6-OP FM; DSP SAMPLE P1, PLAITS P1, GRANULAR P11 still lock).
+
+## BANK menu pattern copy / paste: the pattern in the 2D 0A report (P2)
+
+pattern_copy 0x400abde0 and pattern_paste 0x400abff6 take the pattern's slot record, project + 16092 + 1468 p
+(0x400ae510; project = project_singleton). FUNC + REC / STOP pass the working pattern's, the BANK menu (copy loop
+0x400406ec; paste: PASTE PATTERN? confirmed by holding STOP while the trigs stay held, then 0x4003f296's loop) the held
+trigs' [measured, mv0 --break]. ed_report now derives the pattern from that argument for ops 1 / 2 (else, or out of
+range: the working pattern, as before). Test: `sq_emu.py <tag> bankcopy` (BANK + T3 + REC: COPY pattern 2; BANK + T2 +
+STOP held: PASTE pattern 1): mv0 reported pattern 0 for both, mv2 2 and 1.
+
+## pm morph: the Rytm-side morph, ops 09 MORPH-SET / 0A FADER (morph v2 P3, emulator only)
+
+The host's MORPH no longer streams the Rytm's own params as 05 overrides on every fader move: it sends each lock's
+A / B once (09) and then only the fader (0A); the audio interrupt interpolates. The hello's caps2 bit 3 says the mod
+has it (caps2 was 15 on the morph-v2 branch, bits 0..3; with the re-hello and TBLB bits 63). An older host never sends 09 / 0A; a host that sees no bit 3 keeps the 05 path.
+
+**Wire** (host -> Rytm, `qp_cmd` routes 4..7, 9 and 10 to `pmo_cmd`):
+
+- `5A 01 09 <kit> <n 1..20> {<t> <w> <flags> <a hi7> <a lo7> <b hi7> <b lo7>} x n`: a and b 1/128 step (as 05's v);
+  flags 1 has A, 2 has B, 3 both; 0 removes the entry's part. Checked as a 05 record (`pmo_word_ok(t, w, 5)`: no VM / AT
+  words), w <= 0x3f, flags <= 3, n and the length exact; any bad record refuses the whole message (2D 01 10 09 1).
+- `5A 01 0A <kit> <f hi7> <f lo7> <ramp>`: f 0..16383, ramped over `ramp` blocks (0: a jump). n == 5 exactly.
+- Both count as traffic for the 250 ms timeout (`pmo.last_blk`), and both carry the kit (a message for the kit before
+  is dropped, `kit_drop`, as 04..06).
+- `pmo_cmd` refuses any op it does not know (`else return 1`, review L2): before P3 an op outside 4..6 fell through to
+  the 05 parser. `pm_emu.py pmoop` is the guard (failed on the scratch build that routed 9/10 without it).
+- 07 STATUS's answer has one more byte before F7: the parts in use (`pmo.mused`, 127 at most): 2D 01 11 is 8 bytes now.
+
+**Records.** A 09 record goes into the ring as one 8-byte `pmo_rec`: `t`, `w`, `op` 9, `v` = flags << 14 | a,
+`ramp` = b's high 7 bits, `mix` = b's low 7 (so b needs no wider field). A 0A is one record: `v` = f, `ramp` the ramp.
+
+**State** (fields at the END of `pmo`, after `rany`; m68k aligns an int32 to 2 bytes, so `mpad[3]` puts `fad` on a
+4-byte boundary; the static assert pins the offsets pm_emu.py peeks):
+
+| offset in `pmo` | field | meaning |
+|---|---|---|
+| 10077 | `mpad[3]` | padding |
+| 10080 | `fad`, `fad_st`, `fad_tg` (int32) | the fader, 1 << 23 = 1.0; its ramp step and target |
+| 10092 | `fad_n` (u32) | blocks of the fader's ramp left |
+| 10096 | `mused` (u32) | morph parts in use (07's last byte) |
+| 10100 | `mph[128]` {int32 a, b; u32 fl} | the part of slot i (`ent[i]`): a, b 1/128 step, fl & 3: 1 A / 2 B / 3 both, 0 none; fl >> 8 the ramp-in's blocks left |
+
+`PMO_MREL` (8 blocks): a removed part's mix ramps out over it. f -> 1 << 23 maps 16383 to exactly 1.0
+(`x + (x + 8191) / 16383` with x = f << 9: one divide per 0A record, in the drain, not per block).
+
+**The interrupt** (`pmo_pre`, stage S-pre, after the drain): the fader's ramp advances once a block, then for each entry
+with a part (before its 05 ramps): both sides `ovr = 2a + ((b - a) x f7 + 2^14) >> 15` (f7 = fad >> 7, 0..65536), mix
+1.0; A only `ovr = 2a`, mix `1.0 - fad`; B only `ovr = 2b`, mix `fad`. Written into the entry's `ovr` / `ovr_tg` /
+`mix` / `mix_tg` (n_ovr 0), so the stage S code that applies an override (the scene mask, the base, the clamp) is the
+05 path's, unchanged. An entry with a part is never freed by the "all at 0" check.
+
+**Rules.**
+- The part wins over a 05 on the same word (it rewrites the override every block). The host sends no 05 for a word
+  with a part, and fills a one-sided part's other side with the step's p-lock value (`flags 3`).
+- A new part (on a fresh word, or after its end) ramps its mix in over `PMO_MREL` (8 blocks, 5.3 ms; review M3): from
+  the entry's mix, 1 / n of the way a block (`pmo_step`), the override value at once (as a new 05's). The part's pass
+  is its own loop before the entries' (only while `mused`), so the loop below runs as before P3.
+- A part ends (`pmo_mph_end`: fl 0, `mused--`, the mix to its target) on a 09 remove (8 blocks), a CLEAR or the
+  timeout (`pmo_fade`: their ramp). Its last value stays as a plain override whose mix ramps out, as a 05 release.
+- A kit change frees every entry and its part (`pmo_free_all`: `mused` 0; a slot taken again resets its part in
+  `pmo_get`). The fader is kept across kits; the host sends 0A again before the parts anyway.
+- A port-up hello (and a port drop) fades every entry and ends its part, as for 04 / 05 (`pmo.hello_n`). A re-hello
+  (3C with flags bit 0, the `re-hello` section) does not: `flush()` steps `pmo.hello_n` only for a port-up hello
+  (`st.pm_hello`), so the parts and the fader stay (next build: `morph_rehello`).
+- The slots are shared with 04 / 05: a part needs a slot (`pmo_get`); none left: `full++`, `full_op` 9 (the "full"
+  notice 2D 01 10 09 2, at most once a second).
+
+**Host** (Sidecar engine `core/mod/rytm_param.cpp`, `rp_morph_set` / `rp_fader`): 0A on a move (at most one a 5 ms
+grid, ramped over the fader's own pace) and every 100 ms while a part lives (the keepalive); 09 records once per change
+of A / B / flags (removes first), every live part again every 1 s; stepped words and an older mod stay on 05.
+
+**Tests** (pm_emu.py): `pmoop`, `status` (8 bytes), `morph` (4 parts, 0A sweep 0 -> 16383 -> 0, the effective word
+the model's within 1 LSB, the kit word untouched), `morph_onesided`, `morph_ramp`, `morph_timeout`, `morph_kit`,
+`morph_slots` (the 129th refused), `morph_mix_05`, `morph_remove`, `morph_refuse`, `morph_start` (a new part ramps in),
+`morph_rehello` (a re-hello keeps the parts),
+`morph_cost` (the ISR cost below).
+
+**The ISR cost** (stage S a block, emulator, OS 1.74, `pm_emu.py cost` / `morph_cost`; mv4 = before P3, mv8 = P3):
+
+| case | mv4 | mv8 |
+| --- | --- | --- |
+| idle | 0.25 us | 0.27 us |
+| 128 entries live (mean / max) | 37.8 / 51.7 us | 38.6 / 54.1 us |
+| 64 CLEARs queued (max) | 63.2 us | 66.3 us |
+| 64 new entries into holes (max) | 79.4 us | 84.1 us |
+| a timeout fade of 128 (max) | 83.6 us | 91.9 us |
+| a hello + 64 records + CLEAR (max) | 83.6 us | 91.8 us |
+| 128 with 96 route amounts (max) | 94.2 us | 97.2 us |
+| 128 morph parts, the fader ramping (mean / max) | - | 74.5 / 92.4 us |
+
+Every max under 100 us (15 % of the 667 us block). 128 parts (the slots full of parts, the worst case) cost about as
+much again as 128 plain entries: mean 74.5 us (11 %). The first P3 build (mv5) measured 41.9 us mean for 128 plain
+entries and 117.6 us for the timeout fade: -Os stopped inlining `pmo_step` and the part check sat in the entries' loop;
+mv8 inlines it (`always_inline`) and gives the parts their own pass.

@@ -109,7 +109,18 @@ applied to the trig array [measured], but with no kit slot and no lock type. Wor
 | `sfx_ksave` | 0x40007f8c (`lsll #8,%d0` / `movew %d0,%a2@(68)`, re-emitted) | kit FX saver: live FX 38..41 -> storage 0x816..0x81D |
 
 - Never a `0x80 0x80` continuation after our types (stock would OR it into the previous valid slot).
-- Capacity: up to 8 of a pattern's 72 lock slots; k 38..41 come last in the rebuild, so a full pattern drops them first.
+- Capacity (corrected 2026-11-25, fxfull): the stored pool has 72 slots but stock's full rebuild writes at most **71**
+  rows (0x400092a2: `moveq #71,%d4; cmpl %d6,%d4; bltw 0x40009330`, before the track-12 test where `sfx_rebuild` hooks
+  in). It walks lock index 0..41 outer, track 0..12 inner; a (index, track) with a lock on any step is one row, two with
+  the track's fine flag for the index (+5632), and a row pair that would pass 71 is skipped whole (pair-atomic) while
+  later, smaller rows can still fit. FX 38..41 come last, and via 0029 every FX lock has the fine flag (2 rows), so a
+  full pattern drops them first. Up to 8 of the 71 rows are ours. Since 0.5.2 0029 refuses every new lock that would
+  pass 71 with stock's LOCK MEM FULL! (round 2, owner 2026-11-25): a Send FX or stock lock of any track and page, live
+  record, FREEZE TRACK (all at stock's one lock-set, track_lock_set), and a track, page or trig paste as a whole
+  (nothing pasted); a lock that adds no row is made as before. A pasted Send FX lock gets the FX track's fine flag (the
+  pastes left it 0: the lo half's row was lost). Not checked in 0.5.2: UNDO (track / page) and RELOAD TRACK put locks
+  back wholesale and can still take a pattern past 71 (the save then drops the Send FX rows first). 0029 design.md
+  section 14.
 - Stock: skips types 42..49 at load, drops them at its next full rebuild, never reads 0x816 (a zeroing kit save path
   erases it): harmless loss.
 - The misaligned long moves in `sfx_kload` / `sfx_ksave`: ColdFire splits misaligned accesses; stock itself moves words
